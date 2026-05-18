@@ -1,0 +1,11 @@
+# macOS build artifacts
+HelperStatusBar.app/
+*.o
+smchelper
+smchelper_arm64
+smchelper_x86_64
+dmg_staging/
+.DS_Store
+
+# Exclude DMG locally from git repo (we will attach it to release, or if we want it in repo we can commit it, but best practice is release assets)
+*.dmg
