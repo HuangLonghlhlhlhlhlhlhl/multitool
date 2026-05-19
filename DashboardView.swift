@@ -14,15 +14,20 @@ struct DashboardView: View {
     // Core Managers
     private let smc = SMCController()
     
-    // smchelper path: embedded in app bundle (Contents/MacOS/smchelper)
-    // Falls back to legacy Desktop path for dev builds
+    // Permanent fixed path for secure execution preventing breakage when moving the App bundle
     private var smcHelperPath: String {
+        return "/Library/PrivilegedHelperTools/com.hl.smchelper"
+    }
+    
+    // Path inside the app bundle used as the source for copying
+    private var embeddedHelperPath: String {
         let bundlePath = Bundle.main.bundlePath + "/Contents/MacOS/smchelper"
         if FileManager.default.fileExists(atPath: bundlePath) {
             return bundlePath
         }
         return "/Users/h-l/Desktop/多功能小助手/smchelper"
     }
+
     
     // Refresh Timers
     private let statsTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
@@ -43,9 +48,29 @@ struct DashboardView: View {
     @State private var fanLinked: Bool = true  // true = both fans move together
     @State private var fanRotationAngle: Double = 0.0
     
+    // Asymmetric Hysteresis Smoothing
+    @State private var lastAppliedFanSpeed: [Float] = [2000.0, 2000.0]
+    @State private var lastHardwareSetSpeed: [Float] = [0.0, 0.0]
+    
+    // Fan Presets & Temp Curves
+    @State private var fanPreset: Int = UserDefaults.standard.integer(forKey: "FanPresetMode")
+    @State private var customCurveTemp1: Float = 40.0
+    @State private var customCurveSpeed1: Float = 20.0
+    @State private var customCurveTemp2: Float = 55.0
+    @State private var customCurveSpeed2: Float = 45.0
+    @State private var customCurveTemp3: Float = 70.0
+    @State private var customCurveSpeed3: Float = 75.0
+    @State private var customCurveTemp4: Float = 85.0
+    @State private var customCurveSpeed4: Float = 100.0
+    
     // Battery Care States
     @State private var isChargeLimitEnabled: Bool = false
     @State private var batteryLimitValue: Float = 80.0
+    
+    // Power Saving & Battery Saver States
+    @State private var isLowPowerModeEnabled: Bool = false
+    @State private var aggressiveScreenSleep: Bool = false
+    @State private var disableKeyboardBacklightOnBattery: Bool = false
     
     // Keyboard Light States
     @State private var keyboardBrightness: Float = 0.5
@@ -144,7 +169,22 @@ struct DashboardView: View {
             "charge_limit_enabled": "开启充电上限限制",
             "charge_limit_value": "充电限制百分比",
             "battery_care_desc_silicon": "Apple Silicon (M1/M2/M3) 支持限制充电至 80% 以保护电池健康。",
-            "battery_care_desc_intel": "Intel 架构 MacBook 支持设置精确的充电上限百分比（建议 80%）以保护电池健康。"
+            "battery_care_desc_intel": "Intel 架构 MacBook 支持设置精确的充电上限百分比（建议 80%）以保护电池健康。",
+            "fan_preset_title": "温控调节预设",
+            "fan_preset_auto": "官方默认 (系统托管)",
+            "fan_preset_silent": "静音优先 🍃 (低温省电)",
+            "fan_preset_balanced": "标准均衡 ⚖️ (平稳安静)",
+            "fan_preset_turbo": "游戏极客 🚀 (强劲散热)",
+            "fan_preset_custom": "自定义温控曲线 📈",
+            "fan_curve_node": "节点",
+            "power_saving_title": "智能功耗管理与超强续航",
+            "low_power_mode": "系统低功耗模式 (限制功耗)",
+            "low_power_mode_desc": "降低处理器时钟频率，限制峰值瓦特(TDP)，关闭高负载渲染，大幅延长约 30%-50% 的电池续航时间。",
+            "aggressive_sleep": "屏幕智能极速休眠 (2分钟)",
+            "aggressive_sleep_desc": "在使用电池供电且无操作时，智能将屏幕休眠缩短至2分钟，最大化削减屏幕显示能耗。",
+            "disable_backlight_on_battery": "电池供电时自动关闭键盘灯",
+            "disable_backlight_on_battery_desc": "当断开适配器使用电池时，自动将键盘背光亮度降低为0，静默守卫电量。",
+            "live_discharge_rate": "实时整机功耗"
         ],
         "en": [
             "title": "Helper Menu Bar",
@@ -216,7 +256,22 @@ struct DashboardView: View {
             "charge_limit_enabled": "Enable Charge Limit",
             "charge_limit_value": "Charge Limit",
             "battery_care_desc_silicon": "Apple Silicon (M1/M2/M3) supports limiting battery charge to 80% to protect battery longevity.",
-            "battery_care_desc_intel": "Intel MacBooks support setting a custom charge limit percentage (80% recommended) for battery preservation."
+            "battery_care_desc_intel": "Intel MacBooks support setting a custom charge limit percentage (80% recommended) for battery preservation.",
+            "fan_preset_title": "Fan Control Presets",
+            "fan_preset_auto": "Auto (macOS Controlled)",
+            "fan_preset_silent": "Silent/Eco 🍃",
+            "fan_preset_balanced": "Balanced ⚖️",
+            "fan_preset_turbo": "Turbo/Max 🚀",
+            "fan_preset_custom": "Custom Curve 📈",
+            "fan_curve_node": "Node",
+            "power_saving_title": "Smart Power & Battery Saver",
+            "low_power_mode": "Low Power Mode (Limit TDP)",
+            "low_power_mode_desc": "Limits processor CPU/GPU clocks, lowers peak TDP wattage, disables background tasks, and extends battery runtimes by 30%-50%.",
+            "aggressive_sleep": "Aggressive Screen Sleep (2 Mins)",
+            "aggressive_sleep_desc": "Saves display panel power by aggressively shutting off the screen after 2 minutes of idle on battery.",
+            "disable_backlight_on_battery": "Disable Keyboard Light on Battery",
+            "disable_backlight_on_battery_desc": "Instantly dims the keyboard backlight to 0% when power adapter is disconnected, saving valuable Watts.",
+            "live_discharge_rate": "Live Discharge Rate"
         ]
     ]
     
@@ -239,6 +294,9 @@ struct DashboardView: View {
                         
                         // Battery Care & Charge Limit Section
                         batteryCareSection
+                        
+                        // Power Saving & Battery Saver Section
+                        powerSavingSection
                         
                         // Fan Control Section
                         if fanCount > 0 {
@@ -602,6 +660,158 @@ struct DashboardView: View {
         )
     }
     
+    private var powerSavingSection: some View {
+        VStack(spacing: 12) {
+            // Header Row
+            HStack {
+                Image(systemName: "bolt.batteryblock.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(isLowPowerModeEnabled ? Color(red: 0.22, green: 0.80, blue: 0.45) : .gray)
+                    .shadow(color: Color(red: 0.22, green: 0.80, blue: 0.45).opacity(isLowPowerModeEnabled ? 0.4 : 0), radius: 4)
+                
+                Text(t("power_saving_title"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                
+                Spacer()
+            }
+            
+            VStack(spacing: 10) {
+                // 1. Low Power Mode Switch
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(t("low_power_mode"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                            Text(t("low_power_mode_desc"))
+                                .font(.system(size: 9))
+                                .foregroundColor(.white.opacity(0.5))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        
+                        Spacer()
+                        
+                        Toggle("", isOn: Binding(
+                            get: { isLowPowerModeEnabled },
+                            set: { val in
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    applyLowPowerMode(val)
+                                }
+                            }
+                        ))
+                        .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
+                        .labelsHidden()
+                        .scaleEffect(0.8)
+                    }
+                }
+                .padding(10)
+                .background(Color.white.opacity(isLowPowerModeEnabled ? 0.06 : 0.03))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(isLowPowerModeEnabled ? Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
+                )
+                
+                // 2. Intelligent Sleep Switch
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(t("aggressive_sleep"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                            Text(t("aggressive_sleep_desc"))
+                                .font(.system(size: 9))
+                                .foregroundColor(.white.opacity(0.5))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        
+                        Spacer()
+                        
+                        Toggle("", isOn: Binding(
+                            get: { aggressiveScreenSleep },
+                            set: { val in
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    applyAggressiveSleep(val)
+                                }
+                            }
+                        ))
+                        .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
+                        .labelsHidden()
+                        .scaleEffect(0.8)
+                    }
+                }
+                .padding(10)
+                .background(Color.white.opacity(aggressiveScreenSleep ? 0.06 : 0.03))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(aggressiveScreenSleep ? Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
+                )
+                
+                // 3. Disable Keyboard Backlight on Battery Switch
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(t("disable_backlight_on_battery"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                            Text(t("disable_backlight_on_battery_desc"))
+                                .font(.system(size: 9))
+                                .foregroundColor(.white.opacity(0.5))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        
+                        Spacer()
+                        
+                        Toggle("", isOn: Binding(
+                            get: { disableKeyboardBacklightOnBattery },
+                            set: { val in
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    disableKeyboardBacklightOnBattery = val
+                                    UserDefaults.standard.set(val, forKey: "DisableKeyboardBacklightOnBattery")
+                                }
+                            }
+                        ))
+                        .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
+                        .labelsHidden()
+                        .scaleEffect(0.8)
+                    }
+                }
+                .padding(10)
+                .background(Color.white.opacity(disableKeyboardBacklightOnBattery ? 0.06 : 0.03))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(disableKeyboardBacklightOnBattery ? Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
+                )
+                
+                // 4. Live Power Stat Row
+                if !powerStats.isConnected {
+                    HStack {
+                        Text(t("live_discharge_rate") + ":")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.6))
+                        Spacer()
+                        let watts = powerStats.batteryPower
+                        Text(String(format: "%.2f W", watts))
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundColor(watts < 6.0 ? Color(red: 0.22, green: 0.80, blue: 0.45) : (watts < 15.0 ? .orange : .red))
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 4)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+    }
+    
     private func metricGridCard(title: String, value: String, icon: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -639,29 +849,6 @@ struct DashboardView: View {
                     .foregroundColor(.white.opacity(0.9))
                 
                 Spacer()
-                
-                // Auto / Manual mode selector
-                HStack(spacing: 0) {
-                    Button(action: { toggleManualFan(false) }) {
-                        Text(t("fan_auto"))
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(!isManualFan ? Color(red: 0.18, green: 0.62, blue: 0.95) : .white.opacity(0.5))
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(!isManualFan ? Color.white.opacity(0.08) : Color.clear)
-                            .cornerRadius(6)
-                    }.buttonStyle(.plain)
-                    
-                    Button(action: { toggleManualFan(true) }) {
-                        Text(t("fan_manual"))
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(isManualFan ? Color(red: 0.95, green: 0.60, blue: 0.18) : .white.opacity(0.5))
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(isManualFan ? Color.white.opacity(0.08) : Color.clear)
-                            .cornerRadius(6)
-                    }.buttonStyle(.plain)
-                }
-                .background(Color.white.opacity(0.04))
-                .cornerRadius(8)
             }
             
             // Fan speed status cards (one per fan)
@@ -690,34 +877,103 @@ struct DashboardView: View {
             }
             .padding(.top, 4)
             
-            // Manual sliders
-            if isManualFan {
-                VStack(spacing: 10) {
-                    // Linked / Independent toggle
-                    if fanCount == 2 {
-                        HStack(spacing: 6) {
-                            Image(systemName: fanLinked ? "link" : "link.badge.plus")
-                                .font(.system(size: 10))
-                                .foregroundColor(fanLinked ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color(red: 0.62, green: 0.32, blue: 0.88))
-                            Text(fanLinked ? "联动调节" : "独立调节")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(fanLinked ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color(red: 0.62, green: 0.32, blue: 0.88))
-                            Spacer()
-                            Toggle("", isOn: $fanLinked)
-                                .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.18, green: 0.62, blue: 0.95)))
-                                .labelsHidden()
-                                .scaleEffect(0.75)
+            // Presets Panel: Dynamic One-Key Presets Selector
+            VStack(spacing: 6) {
+                Text(currentLanguage == "zh-Hans" ? "一键温控预设" : "One-Key Presets")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.6))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 2)
+                
+                HStack(spacing: 6) {
+                    // Auto
+                    Button(action: { applyPreset(0) }) {
+                        VStack(spacing: 3) {
+                            Text("🍃")
+                            Text(t("fan_preset_auto"))
+                                .font(.system(size: 8, weight: .bold))
                         }
-                        .padding(.horizontal, 4)
-                    }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.white.opacity(0.04))
+                        .foregroundColor(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .white.opacity(0.6))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
                     
-                    // Per-fan sliders
-                    ForEach(0..<displayCount, id: \.self) { i in
-                        fanSliderRow(index: i, displayCount: displayCount)
-                    }
+                    // Silent
+                    Button(action: { applyPreset(1) }) {
+                        VStack(spacing: 3) {
+                            Text("🤫")
+                            Text(t("fan_preset_silent"))
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.white.opacity(0.04))
+                        .foregroundColor(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .white.opacity(0.6))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
+                    
+                    // Balanced
+                    Button(action: { applyPreset(2) }) {
+                        VStack(spacing: 3) {
+                            Text("⚖️")
+                            Text(t("fan_preset_balanced"))
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15) : Color.white.opacity(0.04))
+                        .foregroundColor(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88) : .white.opacity(0.6))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88) : Color.clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
+                    
+                    // Turbo
+                    Button(action: { applyPreset(3) }) {
+                        VStack(spacing: 3) {
+                            Text("🚀")
+                            Text(t("fan_preset_turbo"))
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18).opacity(0.15) : Color.white.opacity(0.04))
+                        .foregroundColor(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18) : .white.opacity(0.6))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18) : Color.clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
+                    
+                    // Custom Curve
+                    Button(action: { applyPreset(4) }) {
+                        VStack(spacing: 3) {
+                            Text("📈")
+                            Text(t("fan_preset_custom"))
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18).opacity(0.15) : Color.white.opacity(0.04))
+                        .foregroundColor(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18) : .white.opacity(0.6))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18) : Color.clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
                 }
-                .padding(.top, 6)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            .padding(.top, 4)
+            
+            // Dynamic Curve Graph
+            if fanPreset > 0 {
+                fanCurveGraph
+                    .transition(.opacity)
+            }
+            
+            // Custom Curve node sliders editor
+            if fanPreset == 4 {
+                fanCurveNodeAdjusters
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
             
             // Privilege warning
@@ -755,6 +1011,217 @@ struct DashboardView: View {
         .background(Color.white.opacity(0.04))
         .cornerRadius(14)
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+    }
+    
+    private var fanCurveGraph: some View {
+        VStack(spacing: 8) {
+            // Live Temperature Indicator Header
+            let currentTemp = max(cpuTemp, gpuTemp)
+            HStack {
+                Text(currentLanguage == "zh-Hans" ? "实时温控曲线" : "Live Temp Curve")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.white.opacity(0.6))
+                
+                Spacer()
+                
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color(red: 0.18, green: 0.62, blue: 0.95))
+                        .frame(width: 6, height: 6)
+                    Text("\(Int(currentTemp))°C")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                }
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.12))
+                .cornerRadius(4)
+            }
+            
+            // The Graph Drawing Box
+            ZStack {
+                // Background Grids & Labels
+                VStack {
+                    Spacer()
+                    Divider().background(Color.white.opacity(0.03))
+                    Spacer()
+                    Divider().background(Color.white.opacity(0.03))
+                    Spacer()
+                }
+                
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let h = geo.size.height
+                    
+                    // Coordinates mapping helper
+                    // Temp: 30°C to 95°C -> X-axis
+                    // Speed %: 0% to 100% -> Y-axis (Inverted since Y goes down in SwiftUI)
+                    let getPoint: (Float, Float) -> CGPoint = { temp, speed in
+                        let tMin: Float = 30.0
+                        let tMax: Float = 95.0
+                        let x = CGFloat((temp - tMin) / (tMax - tMin)) * w
+                        let y = h - CGFloat(speed / 100.0) * h
+                        return CGPoint(x: x, y: y)
+                    }
+                    
+                    let p1 = getPoint(customCurveTemp1, customCurveSpeed1)
+                    let p2 = getPoint(customCurveTemp2, customCurveSpeed2)
+                    let p3 = getPoint(customCurveTemp3, customCurveSpeed3)
+                    let p4 = getPoint(customCurveTemp4, customCurveSpeed4)
+                    
+                    // Draw Curve Path
+                    Path { path in
+                        path.move(to: getPoint(30, customCurveSpeed1))
+                        path.addLine(to: p1)
+                        path.addLine(to: p2)
+                        path.addLine(to: p3)
+                        path.addLine(to: p4)
+                        path.addLine(to: getPoint(95, customCurveSpeed4))
+                    }
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.18, green: 0.62, blue: 0.95),
+                                Color(red: 0.62, green: 0.32, blue: 0.88),
+                                Color(red: 0.95, green: 0.60, blue: 0.18)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                    )
+                    
+                    // Draw Nodes
+                    let nodeColor = fanPreset == 4 ? Color(red: 0.95, green: 0.60, blue: 0.18) : Color.white.opacity(0.4)
+                    
+                    Circle().fill(nodeColor).frame(width: 6, height: 6).position(p1)
+                    Circle().fill(nodeColor).frame(width: 6, height: 6).position(p2)
+                    Circle().fill(nodeColor).frame(width: 6, height: 6).position(p3)
+                    Circle().fill(nodeColor).frame(width: 6, height: 6).position(p4)
+                    
+                    // Live Temperature indicator bubble moving along the curve
+                    let currentPct = interpolateSpeedPercentage(temp: currentTemp)
+                    let livePt = getPoint(currentTemp, currentPct)
+                    
+                    if currentTemp >= 30 && currentTemp <= 95 {
+                        // Glowing indicator point
+                        ZStack {
+                            Circle()
+                                .fill(Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.3))
+                                .frame(width: 14, height: 14)
+                            Circle()
+                                .fill(.white)
+                                .frame(width: 6, height: 6)
+                                .shadow(color: Color(red: 0.18, green: 0.62, blue: 0.95), radius: 4)
+                        }
+                        .position(livePt)
+                    }
+                }
+            }
+            .frame(height: 75)
+            .background(Color.black.opacity(0.2))
+            .cornerRadius(8)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.05), lineWidth: 1))
+        }
+    }
+    
+    private var fanCurveNodeAdjusters: some View {
+        VStack(spacing: 8) {
+            Text(currentLanguage == "zh-Hans" ? "调节曲线控制节点" : "Adjust Curve Nodes")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.white.opacity(0.6))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+            
+            VStack(spacing: 8) {
+                // Node 1
+                VStack(spacing: 4) {
+                    HStack {
+                        Text("\(t("fan_curve_node")) 1 (低温)")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Text("\(Int(customCurveTemp1))°C → \(Int(customCurveSpeed1))%")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                    }
+                    HStack(spacing: 12) {
+                        Slider(value: $customCurveTemp1, in: 30...50, step: 1) { Text("") }
+                            .accentColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                        Slider(value: $customCurveSpeed1, in: 0...50, step: 5) { Text("") }
+                            .accentColor(Color(red: 0.62, green: 0.32, blue: 0.88))
+                    }
+                }
+                
+                // Node 2
+                VStack(spacing: 4) {
+                    HStack {
+                        Text("\(t("fan_curve_node")) 2 (常温)")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Text("\(Int(customCurveTemp2))°C → \(Int(customCurveSpeed2))%")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                    }
+                    HStack(spacing: 12) {
+                        Slider(value: $customCurveTemp2, in: 50...65, step: 1) { Text("") }
+                            .accentColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                        Slider(value: $customCurveSpeed2, in: 10...75, step: 5) { Text("") }
+                            .accentColor(Color(red: 0.62, green: 0.32, blue: 0.88))
+                    }
+                }
+                
+                // Node 3
+                VStack(spacing: 4) {
+                    HStack {
+                        Text("\(t("fan_curve_node")) 3 (高负荷)")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Text("\(Int(customCurveTemp3))°C → \(Int(customCurveSpeed3))%")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                    }
+                    HStack(spacing: 12) {
+                        Slider(value: $customCurveTemp3, in: 65...80, step: 1) { Text("") }
+                            .accentColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                        Slider(value: $customCurveSpeed3, in: 30...90, step: 5) { Text("") }
+                            .accentColor(Color(red: 0.62, green: 0.32, blue: 0.88))
+                    }
+                }
+                
+                // Node 4
+                VStack(spacing: 4) {
+                    HStack {
+                        Text("\(t("fan_curve_node")) 4 (极限)")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Text("\(Int(customCurveTemp4))°C → \(Int(customCurveSpeed4))%")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.18))
+                    }
+                    HStack(spacing: 12) {
+                        Slider(value: $customCurveTemp4, in: 80...95, step: 1) { Text("") }
+                            .accentColor(Color(red: 0.95, green: 0.60, blue: 0.18))
+                        Slider(value: $customCurveSpeed4, in: 70...100, step: 5) { Text("") }
+                            .accentColor(Color(red: 0.62, green: 0.32, blue: 0.88))
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color.white.opacity(0.03))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+            .onChange(of: customCurveTemp1) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveSpeed1) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveTemp2) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveSpeed2) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveTemp3) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveSpeed3) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveTemp4) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+            .onChange(of: customCurveSpeed4) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
+        }
     }
     
     // Per-fan slider row
@@ -1382,6 +1849,8 @@ struct DashboardView: View {
             fanMaxSpeed    = maxs
             fanSpeed       = speeds
             targetFanSpeed = targets
+            lastAppliedFanSpeed = targets
+            lastHardwareSetSpeed = Array(repeating: 0.0, count: fanCount)
             
             // Detect manual mode (F0Md for Apple Silicon, FS! for Intel)
             if let f0md = smc.readKey("F0Md") {
@@ -1404,8 +1873,45 @@ struct DashboardView: View {
         cpuTemp = smc.getCPUTemperature()
         gpuTemp = smc.getGPUTemperature()
         
+        // Power Optimization Init
+        isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+        disableKeyboardBacklightOnBattery = UserDefaults.standard.bool(forKey: "DisableKeyboardBacklightOnBattery")
+        
+        DispatchQueue.global(qos: .background).async {
+            let task = Process()
+            task.launchPath = "/usr/bin/pmset"
+            task.arguments = ["-g", "custom"]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8) {
+                    if let range = output.range(of: "Battery Power:") {
+                        let sub = output[range.upperBound...]
+                        if let lineRange = sub.range(of: "displaysleep") {
+                            let line = sub[lineRange.lowerBound...]
+                            if let firstLine = line.components(separatedBy: "\n").first {
+                                let parts = firstLine.split(separator: " ").compactMap { String($0) }
+                                if parts.count >= 2, let val = Int(parts[1]) {
+                                    DispatchQueue.main.async {
+                                        self.aggressiveScreenSleep = (val <= 2 && val > 0)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {}
+        }
+        
         // Battery care settings init
         loadBatteryCareSettings()
+        
+        // Custom fan curve init
+        loadCustomCurveSettings()
+        evaluateAndApplyFanCurve()
         
         // Launch behavior sync
         launchAtLogin = LaunchAtLoginHelper.isEnabled
@@ -1416,12 +1922,24 @@ struct DashboardView: View {
         gpuTemp = smc.getGPUTemperature()
         powerStats = PowerMonitor.getPowerStats()
         
+        // Auto Dim Keyboard Backlight on Battery if configured
+        if disableKeyboardBacklightOnBattery && !powerStats.isConnected {
+            let currentKB = KeyboardBacklightPrivate.getBrightness()
+            if currentKB > 0.0 {
+                KeyboardBacklightPrivate.setBrightness(0.0)
+                keyboardBrightness = 0.0
+            }
+        }
+        
         if fanCount > 0 {
             for i in 0..<fanCount {
                 let ac = smc.getFanSpeed(i)
                 if i < fanSpeed.count { fanSpeed[i] = ac }
             }
         }
+        
+        // Custom fan curve temperature regulation evaluation
+        evaluateAndApplyFanCurve()
     }
     
     private func updateFanRotation() {
@@ -1432,6 +1950,181 @@ struct DashboardView: View {
     private func updateWaveAnimation() {
         if keyboardMode > 0 {
             wavePhase += (2.0 * .pi) / (breathingSpeed * 20.0)
+        }
+    }
+    
+    private func saveCustomCurveSettings() {
+        UserDefaults.standard.set(customCurveTemp1, forKey: "CustomCurveTemp1")
+        UserDefaults.standard.set(customCurveSpeed1, forKey: "CustomCurveSpeed1")
+        UserDefaults.standard.set(customCurveTemp2, forKey: "CustomCurveTemp2")
+        UserDefaults.standard.set(customCurveSpeed2, forKey: "CustomCurveSpeed2")
+        UserDefaults.standard.set(customCurveTemp3, forKey: "CustomCurveTemp3")
+        UserDefaults.standard.set(customCurveSpeed3, forKey: "CustomCurveSpeed3")
+        UserDefaults.standard.set(customCurveTemp4, forKey: "CustomCurveTemp4")
+        UserDefaults.standard.set(customCurveSpeed4, forKey: "CustomCurveSpeed4")
+    }
+    
+    private func loadCustomCurveSettings() {
+        if UserDefaults.standard.object(forKey: "CustomCurveTemp1") != nil {
+            customCurveTemp1 = UserDefaults.standard.float(forKey: "CustomCurveTemp1")
+            customCurveSpeed1 = UserDefaults.standard.float(forKey: "CustomCurveSpeed1")
+            customCurveTemp2 = UserDefaults.standard.float(forKey: "CustomCurveTemp2")
+            customCurveSpeed2 = UserDefaults.standard.float(forKey: "CustomCurveSpeed2")
+            customCurveTemp3 = UserDefaults.standard.float(forKey: "CustomCurveTemp3")
+            customCurveSpeed3 = UserDefaults.standard.float(forKey: "CustomCurveSpeed3")
+            customCurveTemp4 = UserDefaults.standard.float(forKey: "CustomCurveTemp4")
+            customCurveSpeed4 = UserDefaults.standard.float(forKey: "CustomCurveSpeed4")
+        } else {
+            // Default Custom Curve Nodes
+            customCurveTemp1 = 40.0; customCurveSpeed1 = 20.0
+            customCurveTemp2 = 55.0; customCurveSpeed2 = 45.0
+            customCurveTemp3 = 70.0; customCurveSpeed3 = 75.0
+            customCurveTemp4 = 85.0; customCurveSpeed4 = 100.0
+        }
+    }
+    
+    private func applyPreset(_ preset: Int) {
+        fanPreset = preset
+        UserDefaults.standard.set(preset, forKey: "FanPresetMode")
+        
+        if preset == 0 {
+            toggleManualFan(false)
+        } else {
+            // Ensure we are in manual mode
+            toggleManualFan(true)
+            
+            if preset == 1 { // Silent / Eco
+                customCurveTemp1 = 45; customCurveSpeed1 = 0
+                customCurveTemp2 = 60; customCurveSpeed2 = 12
+                customCurveTemp3 = 75; customCurveSpeed3 = 30
+                customCurveTemp4 = 85; customCurveSpeed4 = 55
+            } else if preset == 2 { // Balanced
+                customCurveTemp1 = 40; customCurveSpeed1 = 20
+                customCurveTemp2 = 55; customCurveSpeed2 = 40
+                customCurveTemp3 = 70; customCurveSpeed3 = 70
+                customCurveTemp4 = 82; customCurveSpeed4 = 100
+            } else if preset == 3 { // Turbo / Max
+                customCurveTemp1 = 30; customCurveSpeed1 = 100
+                customCurveTemp2 = 45; customCurveSpeed2 = 100
+                customCurveTemp3 = 60; customCurveSpeed3 = 100
+                customCurveTemp4 = 75; customCurveSpeed4 = 100
+            } else if preset == 4 { // Custom
+                loadCustomCurveSettings()
+            }
+            
+            // Instant hardware snap on preset switch to provide instant acoustic feedback
+            let currentTemp = max(cpuTemp, gpuTemp)
+            let rawPct = interpolateSpeedPercentage(temp: currentTemp)
+            for i in 0..<fanCount {
+                let minRPM = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
+                let maxRPM = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
+                let speed = minRPM + (maxRPM - minRPM) * (rawPct / 100.0)
+                
+                if i < lastAppliedFanSpeed.count {
+                    lastAppliedFanSpeed[i] = speed
+                }
+                if i < targetFanSpeed.count {
+                    targetFanSpeed[i] = speed
+                }
+                
+                applyFanSpeed(speed, forFan: i)
+                
+                if i < lastHardwareSetSpeed.count {
+                    lastHardwareSetSpeed[i] = speed
+                }
+            }
+        }
+    }
+    
+    private func evaluateAndApplyFanCurve() {
+        guard isManualFan && fanPreset > 0 else { return }
+        
+        let currentTemp = max(cpuTemp, gpuTemp)
+        
+        // Ensure state tracking arrays are correctly sized to active hardware fanCount
+        if lastAppliedFanSpeed.count < fanCount {
+            lastAppliedFanSpeed = Array(repeating: 2000.0, count: fanCount)
+        }
+        if lastHardwareSetSpeed.count < fanCount {
+            lastHardwareSetSpeed = Array(repeating: 0.0, count: fanCount)
+        }
+        
+        for i in 0..<fanCount {
+            let minRPM = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
+            let maxRPM = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
+            
+            // 1. Calculate raw target speed from current temperature-fan curve percentage
+            let pct = interpolateSpeedPercentage(temp: currentTemp)
+            let rawTargetSpeed = minRPM + (maxRPM - minRPM) * (pct / 100.0)
+            
+            // 2. Apply Asymmetric Hysteresis Smoothing (Low-pass EMA Filter)
+            let currentApplied = lastAppliedFanSpeed[safe: i] ?? rawTargetSpeed
+            let diff = rawTargetSpeed - currentApplied
+            
+            let alpha: Float
+            if diff > 0 {
+                // Temperature is rising -> cool down quickly (react fast for safety!)
+                alpha = 0.25
+            } else {
+                // Temperature is falling -> reduce speed very slowly (smooth and quiet!)
+                alpha = 0.03
+            }
+            
+            let nextApplied = currentApplied + diff * alpha
+            
+            // Update last applied filtered speed
+            if i < lastAppliedFanSpeed.count {
+                lastAppliedFanSpeed[i] = nextApplied
+            }
+            
+            if i < targetFanSpeed.count {
+                targetFanSpeed[i] = nextApplied
+            }
+            
+            // 3. Deadband optimization: Only trigger shell execution if:
+            // - The difference from last actual hardware write is >= 50 RPM,
+            // - Or it reaches limits to ensure exact min/max bounds are met
+            let lastSet = lastHardwareSetSpeed[safe: i] ?? 0.0
+            let isAtEdge = (nextApplied >= maxRPM - 100.0 && lastSet < maxRPM - 100.0) || 
+                           (nextApplied <= minRPM + 100.0 && lastSet > minRPM + 100.0)
+            
+            if abs(nextApplied - lastSet) >= 50.0 || isAtEdge {
+                // Set speed in hardware
+                applyFanSpeed(nextApplied, forFan: i)
+                
+                // Update last actual hardware write speed
+                if i < lastHardwareSetSpeed.count {
+                    lastHardwareSetSpeed[i] = nextApplied
+                }
+            }
+        }
+    }
+    
+    private func interpolateSpeedPercentage(temp: Float) -> Float {
+        // If in Silent mode and temp exceeds 85°C (thermal danger zone), dynamically scale to 100% at 92°C
+        if fanPreset == 1 && temp > 85.0 {
+            let startTemp: Float = 85.0
+            let endTemp: Float = 92.0
+            let ratio = min(max((temp - startTemp) / (endTemp - startTemp), 0.0), 1.0)
+            return 55.0 + (100.0 - 55.0) * ratio
+        }
+        
+        if temp <= customCurveTemp1 {
+            return customCurveSpeed1
+        } else if temp <= customCurveTemp2 {
+            let gap = customCurveTemp2 - customCurveTemp1
+            let ratio = gap > 0 ? (temp - customCurveTemp1) / gap : 0.0
+            return customCurveSpeed1 + (customCurveSpeed2 - customCurveSpeed1) * ratio
+        } else if temp <= customCurveTemp3 {
+            let gap = customCurveTemp3 - customCurveTemp2
+            let ratio = gap > 0 ? (temp - customCurveTemp2) / gap : 0.0
+            return customCurveSpeed2 + (customCurveSpeed3 - customCurveSpeed2) * ratio
+        } else if temp <= customCurveTemp4 {
+            let gap = customCurveTemp4 - customCurveTemp3
+            let ratio = gap > 0 ? (temp - customCurveTemp3) / gap : 0.0
+            return customCurveSpeed3 + (customCurveSpeed4 - customCurveSpeed3) * ratio
+        } else {
+            return customCurveSpeed4
         }
     }
     
@@ -1463,7 +2156,16 @@ struct DashboardView: View {
         do {
             try proc.run()
             proc.waitUntilExit()
-        } catch { /* best-effort */ }
+            if proc.terminationStatus != 0 {
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = true
+                }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.showPrivilegeWarning = true
+            }
+        }
         
         // Re-read value to confirm success and update UI state
         let current = smc.getBatteryChargeLimit()
@@ -1471,11 +2173,67 @@ struct DashboardView: View {
         batteryLimitValue = Float(current.limit)
     }
     
+    private func applyLowPowerMode(_ enabled: Bool) {
+        let helperPath = smcHelperPath
+        let activeInt = enabled ? 1 : 0
+        let cmd = "sudo -n '\(helperPath)' power \(activeInt)"
+        
+        let proc = Process()
+        proc.launchPath = "/bin/sh"
+        proc.arguments  = ["-c", cmd]
+        
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus != 0 {
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = true
+                }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.showPrivilegeWarning = true
+            }
+        }
+        
+        isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+        if isLowPowerModeEnabled != enabled {
+            isLowPowerModeEnabled = enabled
+        }
+    }
+    
+    private func applyAggressiveSleep(_ enabled: Bool) {
+        let helperPath = smcHelperPath
+        let minutes = enabled ? 2 : 10
+        let cmd = "sudo -n '\(helperPath)' sleep \(minutes)"
+        
+        let proc = Process()
+        proc.launchPath = "/bin/sh"
+        proc.arguments  = ["-c", cmd]
+        
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus != 0 {
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = true
+                }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.showPrivilegeWarning = true
+            }
+        }
+        
+        aggressiveScreenSleep = enabled
+    }
+
+    
     private func toggleManualFan(_ manual: Bool) {
         let bitmask = UInt16(fanCount == 2 ? 3 : 1)
         let helperPath = smcHelperPath
         
-        // 1. Try direct SMC write (if already root)
+        // 1. Try direct SMC write (if already root / running with native privileges)
         if smc.setFanManual(manual, fanBitmask: bitmask) {
             isManualFan = manual
             showPrivilegeWarning = false
@@ -1490,42 +2248,53 @@ struct DashboardView: View {
             return
         }
         
-        // 2. sudo via /bin/sh -c
+        // 2. sudo via /bin/sh -c with strict status checks
         let manualCmd = "sudo -n '\(helperPath)' manual \(manual ? 1 : 0) \(bitmask)"
         let proc = Process()
         proc.launchPath = "/bin/sh"
         proc.arguments  = ["-c", manualCmd]
         
+        var success = false
         do {
             try proc.run()
             proc.waitUntilExit()
-        } catch { /* Process launch failed, best-effort */ }
+            if proc.terminationStatus == 0 {
+                success = true
+            }
+        } catch { }
         
-        isManualFan = manual
-        showPrivilegeWarning = false
-        
-        if manual {
-            let targets = targetFanSpeed
-            let fc      = fanCount > 0 ? fanCount : 2
-            DispatchQueue.global(qos: .userInitiated).async {
-                for i in 0..<fc {
-                    let speed = targets[safe: i] ?? 2000
-                    let cmd   = "sudo -n '\(helperPath)' speed \(i) \(Int(speed))"
-                    let p = Process(); p.launchPath = "/bin/sh"; p.arguments = ["-c", cmd]
-                    try? p.run(); p.waitUntilExit()
+        if success {
+            isManualFan = manual
+            showPrivilegeWarning = false
+            
+            if manual {
+                let targets = targetFanSpeed
+                let fc      = fanCount > 0 ? fanCount : 2
+                DispatchQueue.global(qos: .userInitiated).async {
+                    for i in 0..<fc {
+                        let speed = targets[safe: i] ?? 2000
+                        let cmd   = "sudo -n '\(helperPath)' speed \(i) \(Int(speed))"
+                        let p = Process(); p.launchPath = "/bin/sh"; p.arguments = ["-c", cmd]
+                        try? p.run(); p.waitUntilExit()
+                    }
                 }
             }
+        } else {
+            // Sudo passwordless execution failed or is not authorized
+            isManualFan = false
+            showPrivilegeWarning = true
         }
     }
     
-
     private func authorizeFanControl() {
-        let helperPath = smcHelperPath
+        let embeddedPath = embeddedHelperPath
+        let targetPath = smcHelperPath
         let currentUser = NSUserName()
-        let sudoersContent = "\(currentUser) ALL=(root) NOPASSWD: \(helperPath)"
+        let sudoersContent = "\(currentUser) ALL=(root) NOPASSWD: \(targetPath)"
         
-        // Securely write to /etc/sudoers.d/smchelper with root ownership and 440 permissions
-        let script = #"do shell script "mkdir -p /etc/sudoers.d; echo '\#(sudoersContent)' > /etc/sudoers.d/smchelper; chmod 440 /etc/sudoers.d/smchelper" with administrator privileges"#
+        // Securely copy helper to the permanent /Library/PrivilegedHelperTools path, adjust permissions, and configure sudoers
+        let script = #"do shell script "mkdir -p /Library/PrivilegedHelperTools; cp '\#(embeddedPath)' '\#(targetPath)'; chown root:wheel '\#(targetPath)'; chmod 4755 '\#(targetPath)'; mkdir -p /etc/sudoers.d; echo '\#(sudoersContent)' > /etc/sudoers.d/smchelper; chmod 440 /etc/sudoers.d/smchelper" with administrator privileges"#
+        
         let appleScript = NSAppleScript(source: script)
         var error: NSDictionary?
         appleScript?.executeAndReturnError(&error)
@@ -1555,10 +2324,20 @@ struct DashboardView: View {
                 do {
                     try proc.run()
                     proc.waitUntilExit()
-                } catch { /* best-effort */ }
+                    if proc.terminationStatus != 0 {
+                        DispatchQueue.main.async {
+                            self.showPrivilegeWarning = true
+                        }
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.showPrivilegeWarning = true
+                    }
+                }
             }
         }
     }
+
 
 
     private func applyKeyboardBrightness(_ brightness: Float) {

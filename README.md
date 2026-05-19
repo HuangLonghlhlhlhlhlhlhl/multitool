@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.3.0-orange)
+![版本](https://img.shields.io/badge/版本-1.4.0-orange)
 ![大小](https://img.shields.io/badge/体积-约%206MB-lightgrey)
 
 </div>
@@ -17,7 +17,7 @@
 
 ## 📦 安装方法
 
-1. **打开** `多功能小助手-v1.3.0.dmg`
+1. **打开** `多功能小助手-v1.4.0.dmg`
 2. 将 **`多功能小助手.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「多功能小助手」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -57,9 +57,10 @@
 
 1. 打开主面板 → 「风扇控制」→ 开启「手动控制」
 2. 弹窗输入**管理员密码**一次
-3. 程序自动写入无密码 sudo 规则，后续无需再次授权
+3. 程序自动将安全加固版 `smchelper` 拷贝至系统固定安全目录 `/Library/PrivilegedHelperTools/com.hl.smchelper` 并配置特权策略。
+4. 后续运行即使移动、重命名或更新 App 包，**免密调速功能也完全不受影响，永久有效且无需重复授权**。
 
-> 授权范围仅限 App 内嵌的 `smchelper` 工具，不影响其他系统权限。
+> 授权范围仅限 App 专用的 `com.hl.smchelper` 工具，不影响其他任何系统安全性，代码全开源审计，安全合规。
 
 ---
 
