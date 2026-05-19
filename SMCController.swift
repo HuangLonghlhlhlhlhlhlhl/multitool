@@ -401,4 +401,47 @@ class SMCController {
         
         return callDriver(&inputWrite)
     }
+    
+    // Enable/Disable battery charging or set charging limit
+    func setBatteryChargeLimit(_ limit: Int, active: Bool) -> Bool {
+        let isAppleSilicon = readKey("FS! ") == nil
+        
+        if isAppleSilicon {
+            // Apple Silicon (M1/M2/M3) uses CHWA key (1 byte)
+            // 01 = Enable 80% charge limit
+            // 00 = Disable limit (charge to 100%)
+            let key = "CHWA"
+            var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            bytes.0 = active ? 1 : 0
+            return writeKey(key, bytes: bytes, size: 1)
+        } else {
+            // Intel Macs use BCLM key (1 byte) representing percentage
+            let key = "BCLM"
+            var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            bytes.0 = active ? UInt8(limit) : 100
+            return writeKey(key, bytes: bytes, size: 1)
+        }
+    }
+    
+    // Read current battery charge limit setting
+    func getBatteryChargeLimit() -> (limit: Int, active: Bool) {
+        let isAppleSilicon = readKey("FS! ") == nil
+        
+        if isAppleSilicon {
+            if let bytes = readKey("CHWA") {
+                let enabled = bytes.0 != 0
+                return (limit: 80, active: enabled)
+            }
+            return (limit: 80, active: false)
+        } else {
+            if let bytes = readKey("BCLM") {
+                let val = Int(bytes.0)
+                let active = val < 100
+                return (limit: val, active: active)
+            }
+            return (limit: 80, active: false)
+        }
+    }
 }

@@ -43,6 +43,10 @@ struct DashboardView: View {
     @State private var fanLinked: Bool = true  // true = both fans move together
     @State private var fanRotationAngle: Double = 0.0
     
+    // Battery Care States
+    @State private var isChargeLimitEnabled: Bool = false
+    @State private var batteryLimitValue: Float = 80.0
+    
     // Keyboard Light States
     @State private var keyboardBrightness: Float = 0.5
     @State private var keyboardMode: Int = UserDefaults.standard.integer(forKey: "KeyboardLightingMode") // 0 = Static, 1 = Breathing, 2 = Wave
@@ -135,7 +139,12 @@ struct DashboardView: View {
             "mode_wave": "交替波浪",
             "wave_desc": "左侧渐亮右侧渐暗，往复波动",
             "breathing_status": "✨ 键盘背光均匀呼吸中...",
-            "wave_status": "🌊 键盘背光交替波浪中..."
+            "wave_status": "🌊 键盘背光交替波浪中...",
+            "battery_care": "电池保养与充电限制",
+            "charge_limit_enabled": "开启充电上限限制",
+            "charge_limit_value": "充电限制百分比",
+            "battery_care_desc_silicon": "Apple Silicon (M1/M2/M3) 支持限制充电至 80% 以保护电池健康。",
+            "battery_care_desc_intel": "Intel 架构 MacBook 支持设置精确的充电上限百分比（建议 80%）以保护电池健康。"
         ],
         "en": [
             "title": "Helper Menu Bar",
@@ -202,7 +211,12 @@ struct DashboardView: View {
             "mode_wave": "Wave Shift",
             "wave_desc": "Left and right alternating wave",
             "breathing_status": "✨ Keyboard pulsing uniformly...",
-            "wave_status": "🌊 Keyboard wave shifting..."
+            "wave_status": "🌊 Keyboard wave shifting...",
+            "battery_care": "Battery Care & Charge Limit",
+            "charge_limit_enabled": "Enable Charge Limit",
+            "charge_limit_value": "Charge Limit",
+            "battery_care_desc_silicon": "Apple Silicon (M1/M2/M3) supports limiting battery charge to 80% to protect battery longevity.",
+            "battery_care_desc_intel": "Intel MacBooks support setting a custom charge limit percentage (80% recommended) for battery preservation."
         ]
     ]
     
@@ -222,6 +236,9 @@ struct DashboardView: View {
                     VStack(spacing: 16) {
                         // Power Monitor Section
                         powerSection
+                        
+                        // Battery Care & Charge Limit Section
+                        batteryCareSection
                         
                         // Fan Control Section
                         if fanCount > 0 {
@@ -449,6 +466,132 @@ struct DashboardView: View {
             }
             .padding(.top, 4)
             .padding(.horizontal, 4)
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+    
+    // 2b. Battery Care & Preservation Section
+    private var batteryCareSection: some View {
+        VStack(spacing: 12) {
+            // Header Row
+            HStack {
+                Image(systemName: "battery.100.bolt")
+                    .font(.system(size: 14))
+                    .foregroundColor(isChargeLimitEnabled ? Color(red: 0.22, green: 0.80, blue: 0.45) : .gray)
+                    .shadow(color: Color(red: 0.22, green: 0.80, blue: 0.45).opacity(isChargeLimitEnabled ? 0.4 : 0), radius: 4)
+                
+                Text(t("battery_care"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                
+                Spacer()
+                
+                // Toggle Button for limit with spring feedback animation
+                Toggle("", isOn: Binding(
+                    get: { isChargeLimitEnabled },
+                    set: { val in
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            toggleChargeLimit(val)
+                        }
+                    }
+                ))
+                .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
+                .labelsHidden()
+                .scaleEffect(0.8)
+            }
+            
+            // Slider / Custom details
+            let isSilicon = smc.readKey("FS! ") == nil
+            
+            if isChargeLimitEnabled {
+                VStack(spacing: 10) {
+                    if isSilicon {
+                        // Silicon is locked to 80% natively in SMC
+                        HStack {
+                            Text(currentLanguage == "zh-Hans" ? "健康保养限额 (已固定):" : "Care Limit (Fixed):")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.5))
+                            Spacer()
+                            Text("80%")
+                                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                        }
+                        .padding(10)
+                        .background(Color.white.opacity(0.04))
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                    } else {
+                        // Intel can set custom limit
+                        VStack(spacing: 6) {
+                            HStack {
+                                Text(t("charge_limit_value"))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.5))
+                                Spacer()
+                                Text("\(Int(batteryLimitValue))%")
+                                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                            }
+                            
+                            Slider(value: $batteryLimitValue, in: 50...100, step: 5) {
+                                Text("")
+                            } minimumValueLabel: {
+                                Text("50%").font(.system(size: 9)).foregroundColor(.white.opacity(0.3))
+                            } maximumValueLabel: {
+                                Text("100%").font(.system(size: 9)).foregroundColor(.white.opacity(0.3))
+                            }
+                            .accentColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                            .onChange(of: batteryLimitValue) { newValue in
+                                applyChargeLimit(Int(newValue), enabled: true)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color.white.opacity(0.04))
+                        .cornerRadius(10)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                    }
+                    
+                    // Maintenance Tips Info block
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                        Text(isSilicon ? t("battery_care_desc_silicon") : t("battery_care_desc_intel"))
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineSpacing(3)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08))
+                    .cornerRadius(10)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(.gray)
+                    Text(currentLanguage == "zh-Hans" ? "已开启全量充电模式，电池将充至 100%。建议开启充电限制以延长寿命。" : "Full charge mode active. The battery will charge to 100%. Enable charge limit to prolong lifespan.")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.white.opacity(0.4))
+                        .lineSpacing(3)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+                .padding(10)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(10)
+            }
         }
         .padding(14)
         .background(Color.white.opacity(0.04))
@@ -1261,6 +1404,9 @@ struct DashboardView: View {
         cpuTemp = smc.getCPUTemperature()
         gpuTemp = smc.getGPUTemperature()
         
+        // Battery care settings init
+        loadBatteryCareSettings()
+        
         // Launch behavior sync
         launchAtLogin = LaunchAtLoginHelper.isEnabled
     }
@@ -1287,6 +1433,42 @@ struct DashboardView: View {
         if keyboardMode > 0 {
             wavePhase += (2.0 * .pi) / (breathingSpeed * 20.0)
         }
+    }
+    
+    private func loadBatteryCareSettings() {
+        let res = smc.getBatteryChargeLimit()
+        isChargeLimitEnabled = res.active
+        batteryLimitValue = Float(res.limit)
+    }
+    
+    private func toggleChargeLimit(_ enabled: Bool) {
+        let limit = Int(batteryLimitValue)
+        applyChargeLimit(limit, enabled: enabled)
+    }
+    
+    private func applyChargeLimit(_ limit: Int, enabled: Bool) {
+        let helperPath = smcHelperPath
+        
+        // 1. Direct SMC attempt (in case of root privileges already present or running natively)
+        let _ = smc.setBatteryChargeLimit(limit, active: enabled)
+        
+        // 2. Privilege-based execution (standard way via smchelper)
+        let activeInt = enabled ? 1 : 0
+        let cmd = "sudo -n '\(helperPath)' charge \(limit) \(activeInt)"
+        
+        let proc = Process()
+        proc.launchPath = "/bin/sh"
+        proc.arguments  = ["-c", cmd]
+        
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch { /* best-effort */ }
+        
+        // Re-read value to confirm success and update UI state
+        let current = smc.getBatteryChargeLimit()
+        isChargeLimitEnabled = current.active
+        batteryLimitValue = Float(current.limit)
     }
     
     private func toggleManualFan(_ manual: Bool) {
