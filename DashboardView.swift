@@ -1107,15 +1107,6 @@ struct DashboardView: View {
             
             // The Graph Drawing Box
             ZStack {
-                // Background Grids & Labels
-                VStack {
-                    Spacer()
-                    Divider().background(Color.white.opacity(0.03))
-                    Spacer()
-                    Divider().background(Color.white.opacity(0.03))
-                    Spacer()
-                }
-                
                 GeometryReader { geo in
                     let w = geo.size.width
                     let h = geo.size.height
@@ -1130,6 +1121,44 @@ struct DashboardView: View {
                         let y = h - CGFloat(speed / 100.0) * h
                         return CGPoint(x: x, y: y)
                     }
+                    
+                    // Draw grid lines
+                    Path { path in
+                        // Y-axis grid lines (25%, 50%, 75%)
+                        for pct in [25.0, 50.0, 75.0] {
+                            let pStart = getPoint(30, Float(pct))
+                            let pEnd = getPoint(95, Float(pct))
+                            path.move(to: pStart)
+                            path.addLine(to: pEnd)
+                        }
+                        // X-axis grid lines (40°C, 55°C, 70°C, 85°C)
+                        for t in [40.0, 55.0, 70.0, 85.0] {
+                            let pStart = getPoint(Float(t), 0)
+                            let pEnd = getPoint(Float(t), 100)
+                            path.move(to: pStart)
+                            path.addLine(to: pEnd)
+                        }
+                    }
+                    .stroke(Color.white.opacity(0.04), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                    
+                    // Tiny Y-Axis Labels
+                    Group {
+                        Text("75%").position(x: 14, y: getPoint(30, 75).y)
+                        Text("50%").position(x: 14, y: getPoint(30, 50).y)
+                        Text("25%").position(x: 14, y: getPoint(30, 25).y)
+                    }
+                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.25))
+                    
+                    // Tiny X-Axis Labels
+                    Group {
+                        Text("40°C").position(x: getPoint(40, 0).x, y: h - 6)
+                        Text("55°C").position(x: getPoint(55, 0).x, y: h - 6)
+                        Text("70°C").position(x: getPoint(70, 0).x, y: h - 6)
+                        Text("85°C").position(x: getPoint(85, 0).x, y: h - 6)
+                    }
+                    .font(.system(size: 6.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.25))
                     
                     let p1 = getPoint(customCurveTemp1, customCurveSpeed1)
                     let p2 = getPoint(customCurveTemp2, customCurveSpeed2)
@@ -1155,7 +1184,7 @@ struct DashboardView: View {
                             startPoint: .leading,
                             endPoint: .trailing
                         ),
-                        style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                        style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round)
                     )
                     
                     // Draw Nodes
@@ -1171,6 +1200,26 @@ struct DashboardView: View {
                     let livePt = getPoint(currentTemp, currentPct)
                     
                     if currentTemp >= 30 && currentTemp <= 95 {
+                        // Dynamic crosshair lines intersecting at the active point
+                        Path { path in
+                            // Horizontal crosshair
+                            path.move(to: CGPoint(x: 0, y: livePt.y))
+                            path.addLine(to: CGPoint(x: w, y: livePt.y))
+                            // Vertical crosshair
+                            path.move(to: CGPoint(x: livePt.x, y: 0))
+                            path.addLine(to: CGPoint(x: livePt.x, y: h))
+                        }
+                        .stroke(Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        
+                        // Interactive numeric speed badge directly at the crosshair right end
+                        Text("\(Int(currentPct))%")
+                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Color.black.opacity(0.75))
+                            .cornerRadius(3)
+                            .position(x: w - 20, y: livePt.y)
+                        
                         // Glowing indicator point
                         ZStack {
                             Circle()
