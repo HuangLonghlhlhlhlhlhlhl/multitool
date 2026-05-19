@@ -18,6 +18,13 @@ class PowerMonitor {
         var batteryHealthPercent: Int = 100
         var adapterName: String = "Unknown"
         
+        // Expanded Battery telemetry
+        var batteryTemperature: Double = 0.0 // Celsius (°C)
+        var timeRemaining: Int = 0           // Minutes
+        var avgTimeToEmpty: Int = 0          // Minutes
+        var avgTimeToFull: Int = 0           // Minutes
+        var hasBattery: Bool = false
+        
         // Dynamic port diagnostic fields
         var activePortIndex: Int = -1     // -1 = disconnected, 0 = L1, 1 = L2, 2 = R1, 3 = R2
         var hasRightPorts: Bool = false
@@ -34,8 +41,11 @@ class PowerMonitor {
             // Safe fallbacks for Desktop Macs or VMs with no internal battery
             stats.isConnected = true
             stats.adapterPower = 0.0
+            stats.hasBattery = false
             return stats
         }
+        
+        stats.hasBattery = true
         
         defer {
             IOObjectRelease(service)
@@ -84,6 +94,20 @@ class PowerMonitor {
             // 3. External Charger Connection
             if let extConnected = dict["ExternalConnected"] as? Bool {
                 stats.isConnected = extConnected
+            }
+            
+            // Expanded Battery stats (Temperature, Runtimes)
+            if let temp = dict["Temperature"] as? Double {
+                stats.batteryTemperature = temp / 100.0
+            }
+            if let timeRem = dict["TimeRemaining"] as? Int {
+                stats.timeRemaining = timeRem
+            }
+            if let timeEmpty = dict["AvgTimeToEmpty"] as? Int {
+                stats.avgTimeToEmpty = timeEmpty
+            }
+            if let timeFull = dict["AvgTimeToFull"] as? Int {
+                stats.avgTimeToFull = timeFull
             }
             
             // 4. Charger adapter details (Voltage, Amperage, Watts)

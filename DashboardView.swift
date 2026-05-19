@@ -280,6 +280,41 @@ struct DashboardView: View {
         return dict[key] ?? key
     }
     
+    private func getBatteryTimeText() -> String {
+        let isZh = currentLanguage == "zh-Hans"
+        if powerStats.isConnected {
+            if powerStats.isCharging {
+                let time = powerStats.avgTimeToFull
+                if time > 0 && time != 65535 {
+                    let hours = time / 60
+                    let mins = time % 60
+                    if hours > 0 {
+                        return isZh ? "预计 \(hours)小时\(mins)分钟 充满" : "Est. \(hours)h \(mins)m to Full"
+                    } else {
+                        return isZh ? "预计 \(mins)分钟 充满" : "Est. \(mins)m to Full"
+                    }
+                } else {
+                    return isZh ? "正在计算充电时间..." : "Calculating charge time..."
+                }
+            } else {
+                return isZh ? "已接通电源 (未充电/已充满)" : "AC Connected (Not Charging)"
+            }
+        } else {
+            let time = powerStats.timeRemaining
+            if time > 0 && time != 65535 {
+                let hours = time / 60
+                let mins = time % 60
+                if hours > 0 {
+                    return isZh ? "预计可用 \(hours)小时\(mins)分钟" : "Est. \(hours)h \(mins)m left"
+                } else {
+                    return isZh ? "预计可用 \(mins)分钟" : "Est. \(mins)m left"
+                }
+            } else {
+                return isZh ? "正在计算剩余续航..." : "Calculating runtime..."
+            }
+        }
+    }
+    
     var body: some View {
         ZStack {
             // Main Dashboard View Panel
@@ -378,6 +413,9 @@ struct DashboardView: View {
             HStack(spacing: 8) {
                 tempBadge(title: "CPU", temp: cpuTemp, color: Color(red: 0.18, green: 0.62, blue: 0.95))
                 tempBadge(title: "GPU", temp: gpuTemp, color: Color(red: 0.62, green: 0.32, blue: 0.88))
+                if powerStats.hasBattery {
+                    tempBadge(title: "BATT", temp: Float(powerStats.batteryTemperature), color: Color(red: 0.22, green: 0.80, blue: 0.45))
+                }
                 
                 // Settings Gear Button with spring feedback
                 Button(action: {
@@ -500,30 +538,60 @@ struct DashboardView: View {
             .cornerRadius(10)
             
             // Battery Health Info Panel
-            HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "battery.100")
-                        .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
-                    Text("\(t("battery_percent")): \(powerStats.stateOfCharge)%")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+            if powerStats.hasBattery {
+                VStack(spacing: 8) {
+                    HStack {
+                        HStack(spacing: 4) {
+                            Image(systemName: "battery.100")
+                                .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                            Text("\(t("battery_percent")): \(powerStats.stateOfCharge)%")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                        
+                        Spacer()
+                        
+                        Text("\(t("battery_health")): \(powerStats.batteryHealthPercent)%")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                        
+                        Spacer()
+                        
+                        let cycleText = currentLanguage == "zh-Hans" ? "循环: \(powerStats.batteryCycleCount) 次" : "Cycles: \(powerStats.batteryCycleCount)"
+                        Text(cycleText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    .padding(.horizontal, 4)
+                    
+                    Divider()
+                        .background(Color.white.opacity(0.1))
+                        .padding(.vertical, 2)
+                    
+                    HStack {
+                        HStack(spacing: 4) {
+                            Image(systemName: "thermometer.medium")
+                                .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                            Text(currentLanguage == "zh-Hans" ? String(format: "电池温度: %.1f°C", powerStats.batteryTemperature) : String(format: "Battery Temp: %.1f°C", powerStats.batteryTemperature))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                        
+                        Spacer()
+                        
+                        HStack(spacing: 4) {
+                            let timeText = getBatteryTimeText()
+                            Image(systemName: powerStats.isConnected ? "bolt.hourglass.fill" : "hourglass.badge.plus")
+                                .foregroundColor(powerStats.isCharging ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color(red: 0.95, green: 0.60, blue: 0.18))
+                            Text(timeText)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                    }
+                    .padding(.horizontal, 4)
                 }
-                
-                Spacer()
-                
-                Text("\(t("battery_health")): \(powerStats.batteryHealthPercent)%")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-                
-                Spacer()
-                
-                let cycleText = currentLanguage == "zh-Hans" ? "循环: \(powerStats.batteryCycleCount) 次" : "Cycles: \(powerStats.batteryCycleCount)"
-                Text(cycleText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
+                .padding(.top, 4)
             }
-            .padding(.top, 4)
-            .padding(.horizontal, 4)
         }
         .padding(14)
         .background(Color.white.opacity(0.04))
