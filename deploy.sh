@@ -2,32 +2,42 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-echo "=========================================="
-echo "🚀 开始部署 多功能小助手 v1.3.0 到 GitHub"
-echo "=========================================="
-
-# 1. 检查 SSH 连接
-echo "🔑 正在测试 GitHub SSH 联通性..."
-if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
-    echo "✅ GitHub SSH 认证成功！"
-else
-    echo "❌ 认证失败，请确保您已将以下公钥添加到 GitHub 设置 (https://github.com/settings/keys) 中："
-    echo "--------------------------------------------------"
-    cat ~/.ssh/id_ed25519.pub
-    echo "--------------------------------------------------"
+if [ -z "$GH_TOKEN" ]; then
+    echo "❌ 错误: 未设置 GH_TOKEN 环境变量！"
+    echo "💡 请在运行脚本时通过环境变量传入，例如: GH_TOKEN=\"your_token\" ./deploy.sh"
     exit 1
 fi
 
-# 2. 推送代码
-echo "📦 正在推送代码到 main 分支..."
-git push -u origin main --force
+echo "=================================================="
+echo "🚀 开始全自动部署与发布 STATUS CTRL v1.4.0"
+echo "=================================================="
 
-# 3. 推送 Release 标签
-echo "🏷️ 正在推送 v1.3.0 标签..."
-git push origin v1.3.0 --force
+# 1. 提交本地修改
+echo "📦 [Git] 正在暂存本地更改并提交..."
+git add AppDelegate.swift DashboardView.swift Makefile PowerMonitor.swift SMCController.swift README.md CHANGELOG.md generate_icns.sh deploy.sh AppIcon.icns run.sh
+git commit -m "feat: 🎨 STATUS CTRL 品牌设计焕新与硬件遥测性能升级 (v1.4.0)" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
 
-echo "=========================================="
-echo "🎉 部署完成！"
-echo "代码和 v1.3.0 的 DMG 文件已成功上传至您的 GitHub 仓库："
-echo "👉 git@github.com:HuangLonghlhlhlhlhlhlhl/multitool.git"
-echo "=========================================="
+# 2. 推送至 GitHub main 分支
+echo "📤 [Git] 正在推送代码至远程仓库 main 分支..."
+git push -u origin main
+
+# 3. 清理并重新构建版本标签 v1.4.0
+echo "🏷️ [Git] 正在重建版本标签 v1.4.0..."
+git tag -d v1.4.0 >/dev/null 2>&1 || true
+git push origin :refs/tags/v1.4.0 >/dev/null 2>&1 || true
+
+git tag v1.4.0
+git push origin v1.4.0
+
+# 4. 使用 GitHub CLI 自动创建 Release 并上传 DMG
+echo "🎁 [GitHub] 正在通过 GitHub CLI 创建/更新 v1.4.0 发布包，并上传 DMG 附件..."
+/usr/local/bin/gh release create v1.4.0 "/Users/h-l/Desktop/STATUS CTRL-v1.4.0.dmg" \
+    --title "STATUS CTRL v1.4.0" \
+    --notes-file CHANGELOG.md \
+    --clobber
+
+echo "=================================================="
+echo "🎉 全自动部署与 GitHub Release 发布完美完成！"
+echo "👉 您的项目仓库: https://github.com/HuangLonghlhlhlhlhlhlhl/multitool"
+echo "👉 最新发布页面: https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/tag/v1.4.0"
+echo "=================================================="

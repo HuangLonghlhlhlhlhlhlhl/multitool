@@ -32,6 +32,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.action = #selector(handleStatusBarClick(_:))
             button.target = self
         }
+        
+        // 启动高密度状态栏遥测定时器
+        startTelemetryTimer()
     }
     
     // MARK: - Icon
@@ -112,11 +115,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         
         // 标题（不可点击）
-        let titleItem = NSMenuItem(title: "多功能小助手", action: nil, keyEquivalent: "")
+        let titleItem = NSMenuItem(title: "STATUS CTRL", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         if let font = NSFont.systemFont(ofSize: 12, weight: .semibold) as NSFont? {
             titleItem.attributedTitle = NSAttributedString(
-                string: "多功能小助手",
+                string: "STATUS CTRL",
                 attributes: [
                     .font: font,
                     .foregroundColor: NSColor.secondaryLabelColor
@@ -141,7 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(settingsItem)
         
         // 关于
-        let aboutItem = NSMenuItem(title: "关于多功能小助手…", action: #selector(openAbout), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "关于 STATUS CTRL…", action: #selector(openAbout), keyEquivalent: "")
         aboutItem.target = self
         aboutItem.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: nil)
         menu.addItem(aboutItem)
@@ -206,6 +209,90 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+    
+    // MARK: - Telemetry Integration
+    
+    private var telemetryTimer: Timer?
+    private let cpuMonitor = CPUMonitor()
+    
+    func startTelemetryTimer() {
+        telemetryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.updateTelemetryText()
+        }
+        RunLoop.current.add(telemetryTimer!, forMode: .common)
+        updateTelemetryText()
+    }
+    
+    private func updateTelemetryText() {
+        guard let button = self.statusBarItem?.button else { return }
+        
+        let cpuTemp = SMCController.shared.getCPUTemperature()
+        let cpuUsage = cpuMonitor.getUsage()
+        
+        let ramTemp = SMCController.shared.getMemoryTemperature()
+        let ramUsage = getRAMUsage()
+        
+        let ssdTemp = SMCController.shared.getSSDTemperature()
+        let ssdUsage = getSSDUsage()
+        
+        // Format: C:45° 5% M:36° 42% S:32° 48%
+        let text = String(format: "C:%.0f° %.0f%% M:%.0f° %.0f%% S:%.0f° %.0f%%",
+                          cpuTemp, cpuUsage,
+                          ramTemp, ramUsage,
+                          ssdTemp, ssdUsage)
+        
+        let font = NSFont.monospacedSystemFont(ofSize: 7.5, weight: .regular)
+        let attribs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+        let attributedString = NSAttributedString(string: " " + text, attributes: attribs)
+        
+        DispatchQueue.main.async {
+            button.attributedTitle = attributedString
+            button.imagePosition = .imageLeft
+        }
+    }
+    
+    func getRAMUsage() -> Double {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard kerr == KERN_SUCCESS else { return 0.0 }
+        
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        
+        let activePages = Double(stats.active_count)
+        let wirePages = Double(stats.wire_count)
+        let compressedPages = Double(stats.compressor_page_count)
+        let freePages = Double(stats.free_count)
+        let inactivePages = Double(stats.inactive_count)
+        
+        let usedPages = activePages + wirePages + compressedPages
+        let totalPages = usedPages + freePages + inactivePages
+        
+        guard totalPages > 0 else { return 0.0 }
+        return (usedPages / totalPages) * 100.0
+    }
+    
+    func getSSDUsage() -> Double {
+        let fileURL = URL(fileURLWithPath: "/")
+        do {
+            let values = try fileURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
+            if let total = values.volumeTotalCapacity, let available = values.volumeAvailableCapacity, total > 0 {
+                let used = total - available
+                return (Double(used) / Double(total)) * 100.0
+            }
+        } catch {
+            print("[Telemetry] Error getting SSD usage: \(error)")
+        }
+        return 0.0
     }
 }
 
@@ -300,30 +387,38 @@ struct AboutView: View {
     var body: some View {
         VStack(spacing: 20) {
             // App 图标区
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(red: 0.08, green: 0.08, blue: 0.15),
-                                     Color(red: 0.12, green: 0.05, blue: 0.25)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+            if let nsImage = NSApp.applicationIconImage {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
                     .frame(width: 72, height: 72)
-                    .shadow(color: .purple.opacity(0.4), radius: 12)
-                
-                Image(systemName: "fan.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(
-                        LinearGradient(colors: [.cyan, .purple, .pink],
-                                       startPoint: .topLeading,
-                                       endPoint: .bottomTrailing)
-                    )
+                    .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(red: 0.08, green: 0.08, blue: 0.15),
+                                         Color(red: 0.12, green: 0.05, blue: 0.25)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 72, height: 72)
+                        .shadow(color: .purple.opacity(0.4), radius: 12)
+                    
+                    Image(systemName: "fan.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(
+                            LinearGradient(colors: [.cyan, .purple, .pink],
+                                           startPoint: .topLeading,
+                                           endPoint: .bottomTrailing)
+                        )
+                }
             }
             
             VStack(spacing: 6) {
-                Text("多功能小助手")
+                Text("STATUS CTRL")
                     .font(.system(size: 20, weight: .bold))
                 
                 Text("版本 \(version)")

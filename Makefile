@@ -1,5 +1,5 @@
 APP_NAME=HelperStatusBar
-DESKTOP_APP_NAME=多功能小助手
+DESKTOP_APP_NAME=STATUS CTRL
 APP_BUNDLE=$(APP_NAME).app
 DESKTOP_APP=/Users/h-l/Desktop/$(DESKTOP_APP_NAME).app
 CONTENTS_DIR=$(APP_BUNDLE)/Contents
@@ -36,6 +36,7 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	mkdir -p $(RESOURCES_DIR)
 	cp alipay_qr.png $(RESOURCES_DIR)/alipay_qr.png
 	cp wechat_qr.png $(RESOURCES_DIR)/wechat_qr.png
+	cp AppIcon.icns $(RESOURCES_DIR)/AppIcon.icns
 
 	@echo "[Build] Compiling arm64 slice..."
 	swiftc \
@@ -78,7 +79,7 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo '    <key>CFBundleIdentifier</key>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <string>com.hl.helperstatusbar</string>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <key>CFBundleName</key>' >> $(CONTENTS_DIR)/Info.plist
-	@echo '    <string>HL 小助手</string>' >> $(CONTENTS_DIR)/Info.plist
+	@echo '    <string>STATUS CTRL</string>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <key>CFBundleShortVersionString</key>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <string>$(VERSION)</string>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <key>CFBundleVersion</key>' >> $(CONTENTS_DIR)/Info.plist
@@ -91,6 +92,8 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo '    <true/>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <key>NSHumanReadableCopyright</key>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <string>© 2026 HL. All rights reserved.</string>' >> $(CONTENTS_DIR)/Info.plist
+	@echo '    <key>CFBundleIconFile</key>' >> $(CONTENTS_DIR)/Info.plist
+	@echo '    <string>AppIcon</string>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '</dict>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '</plist>' >> $(CONTENTS_DIR)/Info.plist
 	@echo "[Build] ✅ $(APP_BUNDLE) compiled — $$(lipo -info $(MACOS_DIR)/$(APP_NAME))"

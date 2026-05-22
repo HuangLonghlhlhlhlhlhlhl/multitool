@@ -31,6 +31,9 @@ class PowerMonitor {
         var rightPortCount: Int = 2       // 0, 1, or 2 ports on the right
         var hardwareModel: String = ""
         var friendlyModelName: String = ""
+        var currentCapacity: Double = 0.0 // mAh
+        var maxCapacity: Double = 0.0     // mAh
+        var designCapacity: Double = 0.0  // mAh
     }
     
     static func getPowerStats() -> PowerStats {
@@ -90,6 +93,12 @@ class PowerMonitor {
             } else {
                 stats.batteryHealthPercent = 100
             }
+            
+            if let charge = dict["CurrentCapacity"] as? Double {
+                stats.currentCapacity = charge
+            }
+            stats.maxCapacity = rawMax
+            stats.designCapacity = designCap
             
             // 3. External Charger Connection
             if let extConnected = dict["ExternalConnected"] as? Bool {

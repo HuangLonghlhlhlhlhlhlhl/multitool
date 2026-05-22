@@ -1,4 +1,4 @@
-# 多功能小助手
+# STATUS CTRL
 
 <div align="center">
 
@@ -17,9 +17,9 @@
 
 ## 📦 安装方法
 
-1. **打开** `多功能小助手-v1.4.0.dmg`
-2. 将 **`多功能小助手.app`** 拖入右侧 **`Applications`** 文件夹
-3. 打开 Launchpad 或 Applications，找到「多功能小助手」点击启动
+1. **打开** `STATUS CTRL-v1.4.0.dmg`
+2. 将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
+3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
    「系统设置 → 隐私与安全性」→ 点「仍要打开」
 

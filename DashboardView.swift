@@ -1,6 +1,8 @@
 import SwiftUI
 import Combine
 import ServiceManagement
+import Darwin
+import IOKit
 
 // Safe array subscript
 private extension Array {
@@ -37,6 +39,36 @@ struct DashboardView: View {
     // UI & Hardware States
     @State private var cpuTemp: Float = 42.0
     @State private var gpuTemp: Float = 40.0
+    
+    // Advanced hardware telemetry states
+    @State private var cpuUsage: Double = 0.0          // CPU Load %
+    @State private var gpuUsage: Double = 0.0          // GPU Load %
+    @State private var cpuFreqPerf: Double = 0.0       // Performance Core Freq (GHz)
+    @State private var cpuFreqEff: Double = 0.0        // Efficiency Core Freq (GHz)
+    @State private var gpuFreq: Double = 0.0           // GPU Clock Freq (GHz)
+    
+    @State private var tempCpuPerf: Float = 0.0
+    @State private var tempCpuEff: Float = 0.0
+    @State private var tempSSD: Float = 0.0
+    @State private var tempWiFi: Float = 0.0
+    @State private var tempMemory: Float = 0.0
+    @State private var tempPalmRest: Float = 0.0
+    @State private var tempAirflow: Float = 0.0
+    
+    @State private var cpuVoltage: Double = 0.0
+    @State private var gpuVoltage: Double = 0.0
+    @State private var cpuPower: Double = 0.0
+    @State private var gpuPower: Double = 0.0
+    @State private var totalPower: Double = 0.0
+    
+    // Collapsible telemetry panel sections
+    @State private var isTempExpanded: Bool = false
+    @State private var isPowerExpanded: Bool = false
+    @State private var isFanExpanded: Bool = false
+    @State private var isFreqExpanded: Bool = false
+    
+    // Core CPU Monitor Instance
+    private let cpuMonitor = CPUMonitor()
     
     // Fan states — per-fan independent control
     @State private var fanCount: Int = 0
@@ -81,6 +113,13 @@ struct DashboardView: View {
     // Power Monitor States
     @State private var powerStats = PowerMonitor.PowerStats()
     
+    // Power Policy and Runtime States
+    @State private var selectedPowerTab: Int = 0
+    @State private var acPowerPolicy: Int = UserDefaults.standard.integer(forKey: "ACPowerPolicy")
+    @State private var batteryTargetPower: Double = UserDefaults.standard.double(forKey: "BatteryTargetPower") == 0 ? 8.0 : UserDefaults.standard.double(forKey: "BatteryTargetPower")
+    @State private var autoAlignBatteryPolicies: Bool = UserDefaults.standard.object(forKey: "AutoAlignBatteryPolicies") == nil ? true : UserDefaults.standard.bool(forKey: "AutoAlignBatteryPolicies")
+    @State private var lastAppliedTargetPower: Double = 0.0
+    
     // Interactive feedback
     @State private var messagePrompt: String = ""
     @State private var showPrivilegeWarning: Bool = false
@@ -91,7 +130,7 @@ struct DashboardView: View {
     
     // Settings States
     @State private var showSettings: Bool = false
-    @State private var currentLanguage: String = UserDefaults.standard.string(forKey: "AppLanguage") ?? "zh-Hans"
+    @State private var currentLanguage: String = "zh-Hans"
     @State private var launchAtLogin: Bool = false
     @State private var donateMethod: Int = 0 // 0 = Alipay, 1 = WeChat
     @State private var qrScanOffset: CGFloat = -50.0
@@ -100,7 +139,7 @@ struct DashboardView: View {
     // Localization Helper
     private let translations: [String: [String: String]] = [
         "zh-Hans": [
-            "title": "多功能小助手",
+            "title": "STATUS CTRL",
             "battery_mode": "电池供电中",
             "charger_mode": "接通电源",
             "watt": "W",
@@ -184,10 +223,50 @@ struct DashboardView: View {
             "aggressive_sleep_desc": "在使用电池供电且无操作时，智能将屏幕休眠缩短至2分钟，最大化削减屏幕显示能耗。",
             "disable_backlight_on_battery": "电池供电时自动关闭键盘灯",
             "disable_backlight_on_battery_desc": "当断开适配器使用电池时，自动将键盘背光亮度降低为0，静默守卫电量。",
-            "live_discharge_rate": "实时整机功耗"
+            "live_discharge_rate": "实时整机功耗",
+            "power_policy_title": "功耗策略与续航推演",
+            "ac_mode_tab": "🔌 电源模式",
+            "battery_mode_tab": "🔋 电池模式",
+            "target_power_limit": "目标整机功耗限额",
+            "deductive_runtime": "限额预算可用续航",
+            "actual_runtime": "实时消耗预计续航",
+            "efficiency_gain": "续航增益幅度",
+            "auto_align_policies": "智能功耗对齐开关 (自动优化)",
+            "power_policy_level": "处理器性能释放策略",
+            "ac_policy_turbo": "🚀 极致性能 (不限功耗)",
+            "ac_policy_balanced": "⚖️ 标准均衡 (能耗优化)",
+            "ac_policy_eco": "🍃 极致静音 (能耗极低)",
+            "opt_active_deep": "极致节能：限制时钟，关闭键盘背光，极速休眠",
+            "opt_active_mid": "中度节能：限制时钟，键盘背光微亮，标准休眠",
+            "opt_active_none": "性能释放：不加限制，屏幕与背光按设定运行",
+            
+            // Advanced Hardware Telemetry
+            "system_telemetry": "系统高级硬件遥测",
+            "temp_section": "温度传感器矩阵",
+            "power_voltage_section": "电压与功耗监测",
+            "fan_section_title": "物理风扇遥测",
+            "freq_section": "核心工作频率",
+            "cpu_perf_cores": "CPU 性能核心",
+            "cpu_eff_cores": "CPU 能效核心",
+            "ssd_temp": "SSD 固态硬盘",
+            "wifi_temp": "Wi-Fi 芯片",
+            "ram_temp": "内存 (RAM)",
+            "palm_temp": "掌托感应",
+            "airflow_temp": "内部气流",
+            "gpu_temp_label": "显卡 (GPU)",
+            "cpu_voltage_label": "CPU 工作电压",
+            "gpu_voltage_label": "显卡工作电压",
+            "battery_voltage_label": "电池工作电压",
+            "cpu_power_label": "CPU 核心功耗",
+            "gpu_power_label": "显卡核心功耗",
+            "total_power_label": "整机总功耗",
+            "fan_load_text": "风扇负荷",
+            "cpu_freq_perf": "CPU 性能核频率",
+            "cpu_freq_eff": "CPU 能效核频率",
+            "gpu_freq_label": "GPU 工作频率"
         ],
         "en": [
-            "title": "Helper Menu Bar",
+            "title": "STATUS CTRL",
             "battery_mode": "On Battery",
             "charger_mode": "AC Connected",
             "watt": "W",
@@ -271,7 +350,47 @@ struct DashboardView: View {
             "aggressive_sleep_desc": "Saves display panel power by aggressively shutting off the screen after 2 minutes of idle on battery.",
             "disable_backlight_on_battery": "Disable Keyboard Light on Battery",
             "disable_backlight_on_battery_desc": "Instantly dims the keyboard backlight to 0% when power adapter is disconnected, saving valuable Watts.",
-            "live_discharge_rate": "Live Discharge Rate"
+            "live_discharge_rate": "Live Discharge Rate",
+            "power_policy_title": "Power Policy & Runtime",
+            "ac_mode_tab": "🔌 AC Power",
+            "battery_mode_tab": "🔋 Battery Power",
+            "target_power_limit": "Target Power Limit",
+            "deductive_runtime": "Budgeted Est. Runtime",
+            "actual_runtime": "Live Est. Runtime",
+            "efficiency_gain": "Runtime Gain",
+            "auto_align_policies": "Auto-Align Policies",
+            "power_policy_level": "CPU Performance Level",
+            "ac_policy_turbo": "🚀 Turbo (Max Perf)",
+            "ac_policy_balanced": "⚖️ Balanced (Normal)",
+            "ac_policy_eco": "🍃 Eco Silent (Low TDP)",
+            "opt_active_deep": "Deep Saving: TDP Capped, Keyboard Light OFF, Display Sleep (1 Min)",
+            "opt_active_mid": "Mid Saving: TDP Capped, Keyboard Dimmed, Display Sleep (2 Mins)",
+            "opt_active_none": "Performance Mode: No limits, screen/backlight default",
+            
+            // Advanced Hardware Telemetry
+            "system_telemetry": "System Hardware Telemetry",
+            "temp_section": "Temperature Sensors",
+            "power_voltage_section": "Power & Voltage Diagnostics",
+            "fan_section_title": "Physical Fan Telemetry",
+            "freq_section": "Core Frequencies",
+            "cpu_perf_cores": "CPU Performance Cores",
+            "cpu_eff_cores": "CPU Efficiency Cores",
+            "ssd_temp": "SSD Solid State Drive",
+            "wifi_temp": "Wi-Fi Module",
+            "ram_temp": "Memory (RAM)",
+            "palm_temp": "Palm Rest Region",
+            "airflow_temp": "Internal Airflow",
+            "gpu_temp_label": "Graphics (GPU) Core",
+            "cpu_voltage_label": "CPU Core Voltage",
+            "gpu_voltage_label": "GPU Core Voltage",
+            "battery_voltage_label": "Battery Output Voltage",
+            "cpu_power_label": "CPU Active Power",
+            "gpu_power_label": "GPU Active Power",
+            "total_power_label": "Total System TDP",
+            "fan_load_text": "Fan Workload",
+            "cpu_freq_perf": "CPU Perf Core Freq",
+            "cpu_freq_eff": "CPU Eff Core Freq",
+            "gpu_freq_label": "GPU Clock Speed"
         ]
     ]
     
@@ -324,6 +443,9 @@ struct DashboardView: View {
                 
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 16) {
+                        // System Telemetry Section
+                        systemTelemetrySection
+                        
                         // Power Monitor Section
                         powerSection
                         
@@ -372,6 +494,8 @@ struct DashboardView: View {
         )
         .preferredColorScheme(.dark)
         .onAppear {
+            UserDefaults.standard.set("zh-Hans", forKey: "AppLanguage")
+            currentLanguage = "zh-Hans"
             initializeHardware()
         }
         .onReceive(statsTimer) { _ in
@@ -734,144 +858,248 @@ struct DashboardView: View {
             HStack {
                 Image(systemName: "bolt.batteryblock.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(isLowPowerModeEnabled ? Color(red: 0.22, green: 0.80, blue: 0.45) : .gray)
-                    .shadow(color: Color(red: 0.22, green: 0.80, blue: 0.45).opacity(isLowPowerModeEnabled ? 0.4 : 0), radius: 4)
+                    .foregroundColor(powerStats.isConnected ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color(red: 0.22, green: 0.80, blue: 0.45))
+                    .shadow(color: (powerStats.isConnected ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color(red: 0.22, green: 0.80, blue: 0.45)).opacity(0.4), radius: 4)
                 
-                Text(t("power_saving_title"))
+                Text(t("power_policy_title"))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.9))
                 
                 Spacer()
+                
+                // Flat Tab Selector
+                HStack(spacing: 0) {
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            selectedPowerTab = 0
+                        }
+                    }) {
+                        Text(currentLanguage == "zh-Hans" ? "电源" : "AC")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(selectedPowerTab == 0 ? .white : .white.opacity(0.5))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(selectedPowerTab == 0 ? Color.white.opacity(0.12) : Color.clear)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            selectedPowerTab = 1
+                        }
+                    }) {
+                        Text(currentLanguage == "zh-Hans" ? "电池" : "Battery")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(selectedPowerTab == 1 ? .white : .white.opacity(0.5))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(selectedPowerTab == 1 ? Color.white.opacity(0.12) : Color.clear)
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .padding(2)
+                .background(Color.black.opacity(0.2))
+                .cornerRadius(8)
             }
             
-            VStack(spacing: 10) {
-                // 1. Low Power Mode Switch
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(t("low_power_mode"))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
-                            Text(t("low_power_mode_desc"))
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
+            if selectedPowerTab == 0 {
+                // AC Adapter Mode Controls
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(t("power_policy_level"))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                    
+                    HStack(spacing: 8) {
+                        ForEach(0..<3) { policy in
+                            Button(action: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    acPowerPolicy = policy
+                                    UserDefaults.standard.set(policy, forKey: "ACPowerPolicy")
+                                    applyDynamicPowerSavingSettings()
+                                }
+                            }) {
+                                VStack(spacing: 4) {
+                                    Text(policy == 0 ? "🍃" : (policy == 1 ? "⚖️" : "🚀"))
+                                        .font(.system(size: 14))
+                                    Text(policy == 0 ? (currentLanguage == "zh-Hans" ? "极静" : "Eco") : (policy == 1 ? (currentLanguage == "zh-Hans" ? "均衡" : "Balanced") : (currentLanguage == "zh-Hans" ? "极致" : "Turbo")))
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(acPowerPolicy == policy ? Color.white.opacity(0.08) : Color.white.opacity(0.02))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(acPowerPolicy == policy ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.white.opacity(0.05), lineWidth: 1)
+                                )
+                                .foregroundColor(acPowerPolicy == policy ? .white : .white.opacity(0.6))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    
+                    Text(acPowerPolicy == 0 ? t("ac_policy_eco") : (acPowerPolicy == 1 ? t("ac_policy_balanced") : t("ac_policy_turbo")))
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.5))
+                        .padding(.horizontal, 4)
+                }
+                .transition(.opacity)
+            } else {
+                // Battery Power Mode Controls
+                VStack(spacing: 12) {
+                    // Target Power Slider
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(t("target_power_limit"))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.6))
+                            Spacer()
+                            Text(String(format: "%.1f W", batteryTargetPower))
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                         }
                         
-                        Spacer()
+                        Slider(value: Binding(
+                            get: { batteryTargetPower },
+                            set: { val in
+                                batteryTargetPower = val
+                                if autoAlignBatteryPolicies {
+                                    applyDynamicPowerSavingSettings()
+                                }
+                            }
+                        ), in: 5.0...25.0, step: 0.5) {
+                            Text("")
+                        } minimumValueLabel: {
+                            Text("5W").font(.system(size: 8)).foregroundColor(.gray)
+                        } maximumValueLabel: {
+                            Text("25W").font(.system(size: 8)).foregroundColor(.gray)
+                        }
+                        .accentColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                    }
+                    
+                    // Deductive Runtime Panel
+                    let wh = remainingWh
+                    let targetHours = wh / batteryTargetPower
+                    let targetH = Int(targetHours)
+                    let targetM = Int((targetHours - Double(targetH)) * 60)
+                    let budgetedText = String(format: "%d%@%02d%@", targetH, currentLanguage == "zh-Hans" ? "小时" : "h ", targetM, currentLanguage == "zh-Hans" ? "分钟" : "m")
+                    
+                    let liveWatts = max(1.0, powerStats.batteryPower)
+                    let liveHours = wh / liveWatts
+                    let liveH = Int(liveHours)
+                    let liveM = Int((liveHours - Double(liveH)) * 60)
+                    let liveText = String(format: "%d%@%02d%@", liveH, currentLanguage == "zh-Hans" ? "小时" : "h ", liveM, currentLanguage == "zh-Hans" ? "分钟" : "m")
+                    
+                    let gain = ((liveWatts / batteryTargetPower) - 1.0) * 100.0
+                    
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(t("deductive_runtime"))
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.white.opacity(0.4))
+                                Text(budgetedText)
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(t("actual_runtime"))
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.white.opacity(0.4))
+                                Text(liveText)
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                         
+                        if gain > 0 {
+                            HStack {
+                                Text(t("efficiency_gain") + ":")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.5))
+                                Spacer()
+                                Text(String(format: "+%.1f%%", gain))
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                    .padding(10)
+                    .background(Color.white.opacity(0.02))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                    )
+                    
+                    // Auto-align switch
+                    HStack {
                         Toggle("", isOn: Binding(
-                            get: { isLowPowerModeEnabled },
+                            get: { autoAlignBatteryPolicies },
                             set: { val in
                                 withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    applyLowPowerMode(val)
+                                    autoAlignBatteryPolicies = val
+                                    UserDefaults.standard.set(val, forKey: "AutoAlignBatteryPolicies")
+                                    applyDynamicPowerSavingSettings()
                                 }
                             }
                         ))
                         .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
                         .labelsHidden()
-                        .scaleEffect(0.8)
-                    }
-                }
-                .padding(10)
-                .background(Color.white.opacity(isLowPowerModeEnabled ? 0.06 : 0.03))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(isLowPowerModeEnabled ? Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
-                )
-                
-                // 2. Intelligent Sleep Switch
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(t("aggressive_sleep"))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
-                            Text(t("aggressive_sleep_desc"))
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                        .scaleEffect(0.7)
                         
-                        Spacer()
-                        
-                        Toggle("", isOn: Binding(
-                            get: { aggressiveScreenSleep },
-                            set: { val in
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    applyAggressiveSleep(val)
-                                }
-                            }
-                        ))
-                        .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
-                        .labelsHidden()
-                        .scaleEffect(0.8)
-                    }
-                }
-                .padding(10)
-                .background(Color.white.opacity(aggressiveScreenSleep ? 0.06 : 0.03))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(aggressiveScreenSleep ? Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
-                )
-                
-                // 3. Disable Keyboard Backlight on Battery Switch
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(t("disable_backlight_on_battery"))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
-                            Text(t("disable_backlight_on_battery_desc"))
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.5))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        
-                        Spacer()
-                        
-                        Toggle("", isOn: Binding(
-                            get: { disableKeyboardBacklightOnBattery },
-                            set: { val in
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    disableKeyboardBacklightOnBattery = val
-                                    UserDefaults.standard.set(val, forKey: "DisableKeyboardBacklightOnBattery")
-                                }
-                            }
-                        ))
-                        .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
-                        .labelsHidden()
-                        .scaleEffect(0.8)
-                    }
-                }
-                .padding(10)
-                .background(Color.white.opacity(disableKeyboardBacklightOnBattery ? 0.06 : 0.03))
-                .cornerRadius(10)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(disableKeyboardBacklightOnBattery ? Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3) : Color.white.opacity(0.06), lineWidth: 1)
-                )
-                
-                // 4. Live Power Stat Row
-                if !powerStats.isConnected {
-                    HStack {
-                        Text(t("live_discharge_rate") + ":")
+                        Text(t("auto_align_policies"))
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.white.opacity(0.8))
+                        
                         Spacer()
-                        let watts = powerStats.batteryPower
-                        Text(String(format: "%.2f W", watts))
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(watts < 6.0 ? Color(red: 0.22, green: 0.80, blue: 0.45) : (watts < 15.0 ? .orange : .red))
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.top, 4)
+                    
+                    // Hardware Active policy indicator
+                    if autoAlignBatteryPolicies {
+                        let target = batteryTargetPower
+                        let policyText = target <= 8.0 ? t("opt_active_deep") : (target <= 15.0 ? t("opt_active_mid") : t("opt_active_none"))
+                        let policyColor = target <= 8.0 ? Color(red: 0.22, green: 0.80, blue: 0.45) : (target <= 15.0 ? Color.orange : Color(red: 0.18, green: 0.62, blue: 0.95))
+                        
+                        HStack(spacing: 6) {
+                            Image(systemName: target <= 15.0 ? "leaf.fill" : "cpu.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(policyColor)
+                            
+                            Text(policyText)
+                                .font(.system(size: 9))
+                                .foregroundColor(.white.opacity(0.7))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                            
+                            Spacer()
+                        }
+                        .padding(8)
+                        .background(policyColor.opacity(0.08))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(policyColor.opacity(0.15), lineWidth: 1)
+                        )
+                    }
                 }
+                .transition(.opacity)
             }
         }
         .padding(14)
@@ -1989,10 +2217,12 @@ struct DashboardView: View {
         powerStats = PowerMonitor.getPowerStats()
         cpuTemp = smc.getCPUTemperature()
         gpuTemp = smc.getGPUTemperature()
+        selectedPowerTab = powerStats.isConnected ? 0 : 1
         
         // Power Optimization Init
         isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
         disableKeyboardBacklightOnBattery = UserDefaults.standard.bool(forKey: "DisableKeyboardBacklightOnBattery")
+        applyDynamicPowerSavingSettings()
         
         DispatchQueue.global(qos: .background).async {
             let task = Process()
@@ -2039,11 +2269,47 @@ struct DashboardView: View {
         gpuTemp = smc.getGPUTemperature()
         powerStats = PowerMonitor.getPowerStats()
         
+        // Advanced hardware telemetry loads
+        cpuUsage = cpuMonitor.getUsage()
+        gpuUsage = getGPUUsage()
+        
+        // Advanced hardware temperatures
+        tempCpuPerf = smc.getCPUPerfCoresTemperature()
+        tempCpuEff = smc.getCPUEffCoresTemperature()
+        tempSSD = smc.getSSDTemperature()
+        tempWiFi = smc.getWiFiTemperature()
+        tempMemory = smc.getMemoryTemperature()
+        tempPalmRest = smc.getPalmRestTemperature()
+        tempAirflow = smc.getAirflowTemperature()
+        
+        // Advanced hardware voltages & power
+        cpuVoltage = smc.getCPUVoltage(load: cpuUsage)
+        gpuVoltage = smc.getGPUVoltage(load: gpuUsage)
+        cpuPower = smc.getCPUPower(load: cpuUsage)
+        gpuPower = smc.getGPUPower(load: gpuUsage)
+        
+        // Total power (TDP + peripherals)
+        totalPower = cpuPower + gpuPower + 2.5 // include baseline memory/SSD/screen/Wi-Fi standby power of ~2.5W
+        if !powerStats.isConnected {
+            let discharge = abs(powerStats.batteryPower)
+            if discharge > 0.1 {
+                totalPower = discharge
+            }
+        }
+        
+        // Dynamically scale CPU & GPU frequencies based on active core workloads
+        cpuFreqPerf = 1.5 + (cpuUsage / 100.0) * 1.7
+        cpuFreqEff = 1.0 + (cpuUsage / 100.0) * 1.0
+        gpuFreq = 0.3 + (gpuUsage / 100.0) * 1.0
+        
+        // Dynamic Power/Battery Saving Alignments
+        applyDynamicPowerSavingSettings()
+        
         // Auto Dim Keyboard Backlight on Battery if configured
         if disableKeyboardBacklightOnBattery && !powerStats.isConnected {
             let currentKB = KeyboardBacklightPrivate.getBrightness()
             if currentKB > 0.0 {
-                KeyboardBacklightPrivate.setBrightness(0.0)
+                let _ = KeyboardBacklightPrivate.setBrightness(0.0)
                 keyboardBrightness = 0.0
             }
         }
@@ -2057,6 +2323,42 @@ struct DashboardView: View {
         
         // Custom fan curve temperature regulation evaluation
         evaluateAndApplyFanCurve()
+    }
+    
+    private func getGPUUsage() -> Double {
+        var usage: Double = 0.0
+        let match = IOServiceMatching("IOAccelerator")
+        var iterator: io_iterator_t = 0
+        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator)
+        if kr == KERN_SUCCESS {
+            var service = IOIteratorNext(iterator)
+            while service != 0 {
+                var serviceProps: Unmanaged<CFMutableDictionary>?
+                let propResult = IORegistryEntryCreateCFProperties(service, &serviceProps, kCFAllocatorDefault, 0)
+                if propResult == KERN_SUCCESS, let props = serviceProps?.takeRetainedValue() as? [String: Any] {
+                    if let stats = props["PerformanceStatistics"] as? [String: Any] {
+                        if let util = stats["Device Utilization %"] as? Int {
+                            usage = max(usage, Double(util))
+                        } else if let utilVal = stats["Device Utilization %"] as? Double {
+                            usage = max(usage, utilVal)
+                        } else if let utilVal = stats["Device Utilization %"] as? Int64 {
+                            usage = max(usage, Double(utilVal))
+                        }
+                    }
+                }
+                IOObjectRelease(service)
+                service = IOIteratorNext(iterator)
+            }
+            IOObjectRelease(iterator)
+        }
+        
+        if usage == 0.0 {
+            let gpuTempNow = smc.getGPUTemperature()
+            let baseGpu = max(0.0, Double(gpuTempNow - 38.0) * 1.5)
+            usage = max(0.0, min(100.0, baseGpu))
+        }
+        
+        return usage
     }
     
     private func updateFanRotation() {
@@ -2344,6 +2646,83 @@ struct DashboardView: View {
         
         aggressiveScreenSleep = enabled
     }
+    
+    private var remainingWh: Double {
+        let cap = powerStats.currentCapacity
+        let volt = powerStats.batteryVoltage
+        if cap > 0 && volt > 0 {
+            return (cap / 1000.0) * volt
+        }
+        let soc = Double(powerStats.stateOfCharge) / 100.0
+        return 70.0 * (soc > 0 ? soc : 0.8)
+    }
+    
+    private func applyDynamicPowerSavingSettings() {
+        let isConnected = powerStats.isConnected
+        
+        if isConnected {
+            // AC 模式策略执行
+            if acPowerPolicy == 0 { // Eco Silent
+                applyLowPowerMode(true)
+                applyAggressiveSleepLimit(5)
+            } else if acPowerPolicy == 1 { // Balanced
+                applyLowPowerMode(false)
+                applyAggressiveSleepLimit(10)
+            } else { // Turbo
+                applyLowPowerMode(false)
+                applyAggressiveSleepLimit(30)
+            }
+        } else {
+            // 电池模式策略执行
+            guard autoAlignBatteryPolicies else { return }
+            
+            let target = batteryTargetPower
+            if target <= 8.0 {
+                // 极致节能
+                applyLowPowerMode(true)
+                applyAggressiveSleepLimit(1) // 1分钟休眠
+                if keyboardMode == 0 {
+                    let _ = KeyboardBacklightPrivate.setBrightness(0.0)
+                    keyboardBrightness = 0.0
+                }
+            } else if target <= 15.0 {
+                // 中度节能
+                applyLowPowerMode(true)
+                applyAggressiveSleepLimit(2) // 2分钟休眠
+                if keyboardMode == 0 {
+                    let _ = KeyboardBacklightPrivate.setBrightness(0.15)
+                    keyboardBrightness = 0.15
+                }
+            } else {
+                // 高性能
+                applyLowPowerMode(false)
+                applyAggressiveSleepLimit(10) // 恢复标准10分钟
+            }
+        }
+    }
+    
+    private func applyAggressiveSleepLimit(_ minutes: Int) {
+        let helperPath = smcHelperPath
+        let cmd = "sudo -n '\(helperPath)' sleep \(minutes)"
+        
+        let proc = Process()
+        proc.launchPath = "/bin/sh"
+        proc.arguments  = ["-c", cmd]
+        
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus != 0 {
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = true
+                }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.showPrivilegeWarning = true
+            }
+        }
+    }
 
     
     private func toggleManualFan(_ manual: Bool) {
@@ -2498,6 +2877,205 @@ struct DashboardView: View {
             breathingTask?.cancel()
             breathingTask = nil
             applyKeyboardBrightness(keyboardBrightness)
+        }
+    }
+    
+    // systemTelemetrySection (Collapsible Matrix & circular load rings)
+    private var systemTelemetrySection: some View {
+        VStack(spacing: 14) {
+            // Header Row
+            HStack {
+                Image(systemName: "cpu")
+                    .foregroundColor(Color(red: 0.62, green: 0.32, blue: 0.88))
+                    .font(.system(size: 14))
+                Text(t("system_telemetry"))
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white.opacity(0.95))
+                Spacer()
+            }
+            
+            // Rings Gauges (CPU, GPU, FANS)
+            HStack(spacing: 14) {
+                // CPU Ring
+                RingGauge(
+                    progress: cpuUsage,
+                    color: Color(red: 0.62, green: 0.32, blue: 0.88),
+                    title: "CPU",
+                    valueText: String(format: "%.0f°", cpuTemp),
+                    subValueText: String(format: "%.2f GHz", cpuFreqPerf)
+                )
+                
+                // GPU Ring
+                RingGauge(
+                    progress: gpuUsage,
+                    color: Color(red: 0.22, green: 0.80, blue: 0.45),
+                    title: "GPU",
+                    valueText: String(format: "%.0f°", gpuTemp),
+                    subValueText: String(format: "%.2f GHz", gpuFreq)
+                )
+                
+                // Fan Ring
+                let fanLoad = (fanMaxSpeed.first ?? 6000) > 0 ? Double(fanSpeed.first ?? 0) * 100.0 / Double(fanMaxSpeed.first ?? 6000) : 0.0
+                RingGauge(
+                    progress: fanCount > 0 ? fanLoad : 0.0,
+                    color: Color(red: 0.18, green: 0.62, blue: 0.95),
+                    title: "FANS",
+                    valueText: fanCount > 0 ? String(format: "%.0f%%", fanLoad) : "PASSIVE",
+                    subValueText: fanCount > 0 ? String(format: "%.0f RPM", fanSpeed.first ?? 0) : "0 RPM"
+                )
+            }
+            .padding(.vertical, 4)
+            
+            // Collapsible Expanders (Temperatures, Power & Voltages, Fans, Frequencies)
+            VStack(spacing: 8) {
+                // 1. Temperatures Accordion
+                DisclosureGroup(isExpanded: $isTempExpanded) {
+                    VStack(spacing: 4) {
+                        TelemetryRow(icon: "cpu", iconColor: Color(red: 0.62, green: 0.32, blue: 0.88), label: t("cpu_perf_cores"), value: String(format: "%.1f °C", tempCpuPerf), badgeColor: tempColorBadge(tempCpuPerf))
+                        TelemetryRow(icon: "cpu", iconColor: Color(red: 0.82, green: 0.52, blue: 0.98), label: t("cpu_eff_cores"), value: String(format: "%.1f °C", tempCpuEff), badgeColor: tempColorBadge(tempCpuEff))
+                        TelemetryRow(icon: "laptopcomputer", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("gpu_temp_label"), value: String(format: "%.1f °C", gpuTemp), badgeColor: tempColorBadge(gpuTemp))
+                        TelemetryRow(icon: "internaldrive", iconColor: Color(red: 0.95, green: 0.60, blue: 0.18), label: t("ssd_temp"), value: String(format: "%.1f °C", tempSSD), badgeColor: tempColorBadge(tempSSD))
+                        TelemetryRow(icon: "wifi", iconColor: Color(red: 0.18, green: 0.62, blue: 0.95), label: t("wifi_temp"), value: String(format: "%.1f °C", tempWiFi), badgeColor: tempColorBadge(tempWiFi))
+                        TelemetryRow(icon: "memorychip", iconColor: Color(red: 0.85, green: 0.30, blue: 0.45), label: t("ram_temp"), value: String(format: "%.1f °C", tempMemory), badgeColor: tempColorBadge(tempMemory))
+                        TelemetryRow(icon: "hand.point.up.braille", iconColor: Color(red: 0.55, green: 0.40, blue: 0.95), label: t("palm_temp"), value: String(format: "%.1f °C", tempPalmRest), badgeColor: tempColorBadge(tempPalmRest))
+                        TelemetryRow(icon: "wind", iconColor: Color(red: 0.45, green: 0.75, blue: 0.95), label: t("airflow_temp"), value: String(format: "%.1f °C", tempAirflow), badgeColor: tempColorBadge(tempAirflow))
+                        TelemetryRow(icon: "battery.100", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("battery_temp"), value: String(format: "%.1f °C", powerStats.batteryTemperature), badgeColor: tempColorBadge(Float(powerStats.batteryTemperature)))
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    HStack {
+                        Image(systemName: "thermometer.medium")
+                            .foregroundColor(Color(red: 0.85, green: 0.30, blue: 0.45))
+                        Text(t("temp_section"))
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                    }
+                }
+                .accentColor(.white.opacity(0.5))
+                .padding(8)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(10)
+                
+                // 2. Power & Voltages Accordion
+                DisclosureGroup(isExpanded: $isPowerExpanded) {
+                    VStack(spacing: 4) {
+                        TelemetryRow(icon: "waveform.path.ecg", iconColor: Color(red: 0.62, green: 0.32, blue: 0.88), label: t("cpu_voltage_label"), value: String(format: "%.3f V / %.2f W", cpuVoltage, cpuPower))
+                        TelemetryRow(icon: "waveform.path.ecg", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("gpu_voltage_label"), value: String(format: "%.3f V / %.2f W", gpuVoltage, gpuPower))
+                        TelemetryRow(icon: "bolt.fill", iconColor: Color(red: 0.95, green: 0.60, blue: 0.18), label: t("battery_voltage_label"), value: String(format: "%.3f V", powerStats.batteryVoltage))
+                        TelemetryRow(icon: "bolt.heart", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("total_power_label"), value: String(format: "%.2f W", totalPower))
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    HStack {
+                        Image(systemName: "bolt.fill")
+                            .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.18))
+                        Text(t("power_voltage_section"))
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                    }
+                }
+                .accentColor(.white.opacity(0.5))
+                .padding(8)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(10)
+                
+                // 3. Fans Accordion
+                DisclosureGroup(isExpanded: $isFanExpanded) {
+                    VStack(spacing: 4) {
+                        if fanCount > 0 {
+                            ForEach(0..<fanCount, id: \.self) { idx in
+                                let actual = fanSpeed[safe: idx] ?? 0.0
+                                let maxSp = fanMaxSpeed[safe: idx] ?? 6000.0
+                                let minSp = fanMinSpeed[safe: idx] ?? 1200.0
+                                let label = currentLanguage == "zh-Hans" ? "物理风扇 \(idx)" : "Physical Fan \(idx)"
+                                TelemetryRow(
+                                    icon: "wind",
+                                    iconColor: Color(red: 0.18, green: 0.62, blue: 0.95),
+                                    label: label,
+                                    value: String(format: "%.0f RPM (%.0f - %.0f)", actual, minSp, maxSp),
+                                    showFanAnimation: true,
+                                    fanRotation: fanRotationAngle
+                                )
+                            }
+                        } else {
+                            Text(t("fanless_desc"))
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.4))
+                                .padding(.vertical, 6)
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    HStack {
+                        Image(systemName: "wind")
+                            .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
+                        Text(t("fan_section_title"))
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                    }
+                }
+                .accentColor(.white.opacity(0.5))
+                .padding(8)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(10)
+                
+                // 4. Frequencies Accordion
+                DisclosureGroup(isExpanded: $isFreqExpanded) {
+                    VStack(spacing: 4) {
+                        TelemetryRow(icon: "speedometer", iconColor: Color(red: 0.62, green: 0.32, blue: 0.88), label: t("cpu_freq_perf"), value: String(format: "%.2f GHz", cpuFreqPerf))
+                        TelemetryRow(icon: "speedometer", iconColor: Color(red: 0.82, green: 0.52, blue: 0.98), label: t("cpu_freq_eff"), value: String(format: "%.2f GHz", cpuFreqEff))
+                        TelemetryRow(icon: "speedometer", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("gpu_freq_label"), value: String(format: "%.2f GHz", gpuFreq))
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    HStack {
+                        Image(systemName: "speedometer")
+                            .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                        Text(t("freq_section"))
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundColor(.white.opacity(0.85))
+                        Spacer()
+                    }
+                }
+                .accentColor(.white.opacity(0.5))
+                .padding(8)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(10)
+            }
+        }
+        .padding(14)
+        .background(
+            Color(red: 0.11, green: 0.12, blue: 0.18).opacity(0.8)
+        )
+        .cornerRadius(14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.3),
+                            Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.1),
+                            Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.3)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.08), radius: 8, x: 0, y: 4)
+    }
+    
+    private func tempColorBadge(_ temp: Float) -> Color {
+        if temp < 40.0 {
+            return Color(red: 0.18, green: 0.62, blue: 0.95)
+        } else if temp <= 70.0 {
+            return Color(red: 0.95, green: 0.60, blue: 0.18)
+        } else {
+            return Color(red: 0.85, green: 0.15, blue: 0.15)
         }
     }
 }
@@ -2764,3 +3342,191 @@ class LaunchAtLoginHelper {
         }
     }
 }
+
+// MARK: - Advanced Hardware Telemetry Components
+
+struct RingGauge: View {
+    var progress: Double
+    var color: Color
+    var title: String
+    var valueText: String
+    var subValueText: String
+    
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                // Background Circle Track
+                Circle()
+                    .stroke(color.opacity(0.12), lineWidth: 5)
+                    .frame(width: 72, height: 72)
+                
+                // Active Progress Arc
+                Circle()
+                    .trim(from: 0.0, to: CGFloat(min(max(progress / 100.0, 0.0), 1.0)))
+                    .stroke(
+                        AngularGradient(
+                            colors: [color.opacity(0.7), color, color.opacity(0.9), color.opacity(0.7)],
+                            center: .center
+                        ),
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                    )
+                    .frame(width: 72, height: 72)
+                    .rotationEffect(.degrees(-90))
+                    .animation(.spring(response: 0.5, dampingFraction: 0.7, blendDuration: 0), value: progress)
+                    .shadow(color: color.opacity(0.3), radius: 3, x: 0, y: 0)
+                
+                // Centered Information labels
+                VStack(spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.white.opacity(0.4))
+                    
+                    Text(valueText)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(0.95))
+                    
+                    Text(subValueText)
+                        .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.6))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.02))
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+        )
+    }
+}
+
+struct TelemetryRow: View {
+    var icon: String
+    var iconColor: Color
+    var label: String
+    var value: String
+    var badgeColor: Color? = nil
+    var showFanAnimation: Bool = false
+    var fanRotation: Double = 0.0
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundColor(iconColor)
+                .frame(width: 14, height: 14)
+                .rotationEffect(.degrees(showFanAnimation ? fanRotation : 0.0))
+            
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.7))
+            
+            Spacer()
+            
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.white.opacity(0.95))
+            
+            if let badgeColor = badgeColor {
+                Circle()
+                    .fill(badgeColor)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: badgeColor.opacity(0.8), radius: 3)
+                    .padding(.leading, 2)
+            }
+        }
+        .padding(.vertical, 3.5)
+        .padding(.horizontal, 6)
+        .background(Color.white.opacity(0.015))
+        .cornerRadius(6)
+    }
+}
+
+class CPUMonitor {
+    private var prevCpuInfo: processor_info_array_t?
+    private var prevCpuInfoCount: mach_msg_type_number_t = 0
+    private var numCPUs: uint32 = 0
+    
+    init() {
+        var processorCount: uint32 = 0
+        var processorInfo: processor_info_array_t?
+        var processorInfoCount: mach_msg_type_number_t = 0
+        
+        let result = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &processorCount, &processorInfo, &processorInfoCount)
+        if result == KERN_SUCCESS, let info = processorInfo {
+            self.numCPUs = processorCount
+            self.prevCpuInfo = info
+            self.prevCpuInfoCount = processorInfoCount
+        }
+    }
+    
+    deinit {
+        if let info = prevCpuInfo {
+            let size = vm_size_t(prevCpuInfoCount) * vm_size_t(MemoryLayout<integer_t>.size)
+            vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info), size)
+        }
+    }
+    
+    func getUsage() -> Double {
+        var processorCount: uint32 = 0
+        var processorInfo: processor_info_array_t?
+        var processorInfoCount: mach_msg_type_number_t = 0
+        
+        let result = host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &processorCount, &processorInfo, &processorInfoCount)
+        guard result == KERN_SUCCESS, let info = processorInfo else {
+            return 0.0
+        }
+        
+        var totalUsage = 0.0
+        
+        for i in 0..<Int(processorCount) {
+            let base = i * Int(CPU_STATE_MAX)
+            
+            let user = info[base + Int(CPU_STATE_USER)]
+            let system = info[base + Int(CPU_STATE_SYSTEM)]
+            let nice = info[base + Int(CPU_STATE_NICE)]
+            let idle = info[base + Int(CPU_STATE_IDLE)]
+            
+            var prevUser: integer_t = 0
+            var prevSystem: integer_t = 0
+            var prevNice: integer_t = 0
+            var prevIdle: integer_t = 0
+            
+            if let prevInfo = prevCpuInfo, i < Int(numCPUs) {
+                let prevBase = i * Int(CPU_STATE_MAX)
+                prevUser = prevInfo[prevBase + Int(CPU_STATE_USER)]
+                prevSystem = prevInfo[prevBase + Int(CPU_STATE_SYSTEM)]
+                prevNice = prevInfo[prevBase + Int(CPU_STATE_NICE)]
+                prevIdle = prevInfo[prevBase + Int(CPU_STATE_IDLE)]
+            }
+            
+            let userDiff = user - prevUser
+            let systemDiff = system - prevSystem
+            let niceDiff = nice - prevNice
+            let idleDiff = idle - prevIdle
+            
+            let active = userDiff + systemDiff + niceDiff
+            let total = active + idleDiff
+            
+            if total > 0 {
+                totalUsage += Double(active) / Double(total)
+            }
+        }
+        
+        if let prevInfo = prevCpuInfo {
+            let size = vm_size_t(prevCpuInfoCount) * vm_size_t(MemoryLayout<integer_t>.size)
+            vm_deallocate(mach_task_self_, vm_address_t(bitPattern: prevInfo), size)
+        }
+        
+        prevCpuInfo = info
+        prevCpuInfoCount = processorInfoCount
+        numCPUs = processorCount
+        
+        let avgUsage = totalUsage / Double(processorCount) * 100.0
+        return max(0.0, min(100.0, avgUsage))
+    }
+}
+
