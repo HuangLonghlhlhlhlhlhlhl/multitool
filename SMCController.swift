@@ -54,6 +54,35 @@ class SMCController {
     
     private var connection: io_connect_t = 0
     private var isOpen = false
+    private let lock = NSLock()
+    private let cacheLock = NSLock()
+    
+    // Local memory caches for all metrics (second-level caching)
+    private var _cachedCpuTemp: Float = 38.0
+    private var _cachedGpuTemp: Float = 35.0
+    private var _cachedCpuPerfCoresTemp: Float = 38.0
+    private var _cachedCpuEffCoresTemp: Float = 36.0
+    private var _cachedSsdTemp: Float = 32.0
+    private var _cachedWifiTemp: Float = 38.0
+    private var _cachedMemoryTemp: Float = 36.0
+    private var _cachedPalmRestTemp: Float = 30.5
+    private var _cachedAirflowTemp: Float = 28.0
+    
+    private var _cachedCpuVoltage: Double = 0.9
+    private var _cachedGpuVoltage: Double = 0.85
+    private var _cachedCpuPower: Double = 1.5
+    private var _cachedGpuPower: Double = 0.5
+    
+    private var _cachedFanCount: Int = 0
+    private var _cachedFanSpeeds: [Float] = Array(repeating: 0.0, count: 4)
+    private var _cachedFanTargets: [Float] = Array(repeating: 0.0, count: 4)
+    private var _cachedFanMins: [Float] = Array(repeating: 1200.0, count: 4)
+    private var _cachedFanMaxs: [Float] = Array(repeating: 6000.0, count: 4)
+    private var _cachedBatteryLimit: (limit: Int, active: Bool) = (80, false)
+    
+    // Dynamic Blacklist for missing keys to reduce hardware IO errors
+    private var unsupportedKeys = Set<String>()
+    private var keyFailCount = [String: Int]()
     
     init() {
         doOpen()
@@ -87,7 +116,7 @@ class SMCController {
         }
     }
     
-    private func callDriver(_ input: inout SMCParamStruct, selector: UInt8 = 2) -> Bool {
+    private func runDriverCall(_ input: inout SMCParamStruct, selector: UInt8 = 2) -> Bool {
         guard isOpen && connection != 0 else { return false }
         assert(MemoryLayout<SMCParamStruct>.stride == 80, "SMCParamStruct stride must be exactly 80 bytes")
         
@@ -111,6 +140,41 @@ class SMCController {
         return false
     }
     
+    private func callDriver(_ input: inout SMCParamStruct, selector: UInt8 = 2) -> Bool {
+        if Thread.isMainThread {
+            // Main UI thread: non-blocking try-lock to protect UI responsiveness
+            guard lock.try() else {
+                return false // Lock is held by background thread, instantly bail to fallback cache
+            }
+            defer { lock.unlock() }
+            return runDriverCall(&input, selector: selector)
+        } else {
+            // Background thread: synchronous lock, perfectly safe to wait here
+            lock.lock()
+            defer { lock.unlock() }
+            return runDriverCall(&input, selector: selector)
+        }
+    }
+    
+    // Dynamic key support checking
+    private func isKeyUnsupported(_ keyStr: String) -> Bool {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return unsupportedKeys.contains(keyStr)
+    }
+    
+    private func markKeyFailed(_ keyStr: String) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        let current = keyFailCount[keyStr] ?? 0
+        let next = current + 1
+        keyFailCount[keyStr] = next
+        if next >= 3 {
+            unsupportedKeys.insert(keyStr)
+            print("[SMC] Key '\(keyStr)' failed \(next) times. Blacklisting it to eliminate hardware delays.")
+        }
+    }
+    
     // Conversions
     private func stringToFourCharCode(_ str: String) -> UInt32 {
         var result: UInt32 = 0
@@ -131,6 +195,8 @@ class SMCController {
     
     // Read Key Data
     func readKey(_ keyStr: String) -> SMCBytes? {
+        if isKeyUnsupported(keyStr) { return nil }
+        
         let key = stringToFourCharCode(keyStr)
         
         // 1. Get Key Info (size and type)
@@ -138,7 +204,10 @@ class SMCController {
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
         
-        guard callDriver(&inputInfo) else { return nil }
+        guard callDriver(&inputInfo) else {
+            markKeyFailed(keyStr)
+            return nil
+        }
         
         // 2. Read the Key Value
         var inputRead = SMCParamStruct()
@@ -146,7 +215,10 @@ class SMCController {
         inputRead.keyInfo = inputInfo.keyInfo
         inputRead.data8 = 5 // kSMCReadKey
         
-        guard callDriver(&inputRead) else { return nil }
+        guard callDriver(&inputRead) else {
+            markKeyFailed(keyStr)
+            return nil
+        }
         return inputRead.bytes
     }
     
@@ -189,18 +261,26 @@ class SMCController {
     
     // Auto-detect and decode a fan speed key (handles both fpe2 and float32)
     private func readFanFloat(_ keyStr: String, defaultVal: Float = 0.0) -> Float {
+        if isKeyUnsupported(keyStr) { return defaultVal }
+        
         let key = stringToFourCharCode(keyStr)
         
         var inputInfo = SMCParamStruct()
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
-        guard callDriver(&inputInfo) else { return defaultVal }
+        guard callDriver(&inputInfo) else {
+            markKeyFailed(keyStr)
+            return defaultVal
+        }
         
         var inputRead = SMCParamStruct()
         inputRead.key = key
         inputRead.keyInfo = inputInfo.keyInfo
         inputRead.data8 = 5 // kSMCReadKey
-        guard callDriver(&inputRead) else { return defaultVal }
+        guard callDriver(&inputRead) else {
+            markKeyFailed(keyStr)
+            return defaultVal
+        }
         
         let b = inputRead.bytes
         let dataSize = inputInfo.keyInfo.dataSize
@@ -227,52 +307,51 @@ class SMCController {
         return sign * (intVal + fracVal)
     }
     
-    // PUBLIC API
+    // PUBLIC API WITH SOLID CACHING INTEGRATION
     
     // Get CPU Temperature
-    // Key priority on Apple Silicon MacBook Pro 18,1:
-    //   Tp0b = CPU cluster die temp (~45-75°C normal)  ← preferred
-    //   Tp09 = CPU cluster                             ← fallback
-    //   Tp0j = another cluster sensor
-    //   Tp05, Tp01 = VR hotspot (can be 90-100°C even idle) ← avoid as primary
-    //   TC0F/TC0D = Intel Macs
     func getCPUTemperature() -> Float {
-        // Sensors ordered from most representative → least (VR hotspot last)
         let preferredKeys = ["Tp0b", "Tp09", "Tp0j", "Tp0f", "Tp0D", "TC0F", "TC0D", "TC0P"]
         var validReadings: [Float] = []
 
         for key in preferredKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
-                // Accept only physically plausible CPU die temps
                 if temp >= 20.0 && temp <= 95.0 {
                     validReadings.append(temp)
-                    if validReadings.count >= 2 { break }   // average up to 2 sensors
+                    if validReadings.count >= 2 { break }
                 }
             }
         }
 
         if !validReadings.isEmpty {
-            return validReadings.reduce(0, +) / Float(validReadings.count)
+            let avg = validReadings.reduce(0, +) / Float(validReadings.count)
+            cacheLock.lock()
+            _cachedCpuTemp = avg
+            cacheLock.unlock()
+            return avg
         }
 
-        // Wider fallback range — still exclude VR hotspot outliers > 115°C
         let fallbackKeys = ["Tp05", "Tp01", "Tpb0", "Tpb1", "TB0T", "TB1T"]
         for key in fallbackKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
                 if temp >= 15.0 && temp <= 95.0 {
+                    cacheLock.lock()
+                    _cachedCpuTemp = temp
+                    cacheLock.unlock()
                     return temp
                 }
             }
         }
 
-        return 38.0   // safe fallback for virtual machines / unknown hardware
+        cacheLock.lock()
+        let fallbackVal = _cachedCpuTemp
+        cacheLock.unlock()
+        return fallbackVal
     }
 
     // Get GPU Temperature
-    // Tg05 = GPU die temp on Apple Silicon (~40-80°C normal)
-    // Tg0D = GPU hotspot (higher, avoid as primary display value)
     func getGPUTemperature() -> Float {
         let gpuKeys = ["Tg05", "Tg09", "TG0D", "TG0P", "Tg0D"]
         var validReadings: [Float] = []
@@ -288,36 +367,75 @@ class SMCController {
         }
 
         if !validReadings.isEmpty {
-            return validReadings.reduce(0, +) / Float(validReadings.count)
+            let avg = validReadings.reduce(0, +) / Float(validReadings.count)
+            cacheLock.lock()
+            _cachedGpuTemp = avg
+            cacheLock.unlock()
+            return avg
         }
-        // Final fallback: derived from CPU
-        return max(getCPUTemperature() - 3.0, 20.0)
+        
+        // Final fallback: derived from CPU, or the cached value
+        cacheLock.lock()
+        let cpuT = _cachedCpuTemp
+        let cachedG = _cachedGpuTemp
+        cacheLock.unlock()
+        
+        let derived = max(cpuT - 3.0, 20.0)
+        return cachedG > 20.0 ? cachedG : derived
     }
 
     // Get CPU Performance Cores Temperature
     func getCPUPerfCoresTemperature() -> Float {
         if let bytes = readKey("Tp0b") {
             let temp = fromSP78((bytes.0, bytes.1))
-            if temp >= 20.0 && temp <= 105.0 { return temp }
+            if temp >= 20.0 && temp <= 105.0 {
+                cacheLock.lock()
+                _cachedCpuPerfCoresTemp = temp
+                cacheLock.unlock()
+                return temp
+            }
         }
         if let bytes = readKey("Tp09") {
             let temp = fromSP78((bytes.0, bytes.1))
-            if temp >= 20.0 && temp <= 105.0 { return temp }
+            if temp >= 20.0 && temp <= 105.0 {
+                cacheLock.lock()
+                _cachedCpuPerfCoresTemp = temp
+                cacheLock.unlock()
+                return temp
+            }
         }
-        return getCPUTemperature()
+        
+        cacheLock.lock()
+        let fallback = _cachedCpuPerfCoresTemp
+        cacheLock.unlock()
+        return fallback
     }
     
     // Get CPU Efficiency Cores Temperature
     func getCPUEffCoresTemperature() -> Float {
         if let bytes = readKey("Tp0c") {
             let temp = fromSP78((bytes.0, bytes.1))
-            if temp >= 20.0 && temp <= 105.0 { return temp }
+            if temp >= 20.0 && temp <= 105.0 {
+                cacheLock.lock()
+                _cachedCpuEffCoresTemp = temp
+                cacheLock.unlock()
+                return temp
+            }
         }
         if let bytes = readKey("Tp0j") {
             let temp = fromSP78((bytes.0, bytes.1))
-            if temp >= 20.0 && temp <= 105.0 { return temp }
+            if temp >= 20.0 && temp <= 105.0 {
+                cacheLock.lock()
+                _cachedCpuEffCoresTemp = temp
+                cacheLock.unlock()
+                return temp
+            }
         }
-        return max(getCPUTemperature() - 1.5, 20.0)
+        
+        cacheLock.lock()
+        let fallback = _cachedCpuEffCoresTemp
+        cacheLock.unlock()
+        return fallback
     }
     
     // Get SSD Temperature
@@ -326,10 +444,19 @@ class SMCController {
         for key in ssdKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
-                if temp >= 15.0 && temp <= 80.0 { return temp }
+                if temp >= 15.0 && temp <= 80.0 {
+                    cacheLock.lock()
+                    _cachedSsdTemp = temp
+                    cacheLock.unlock()
+                    return temp
+                }
             }
         }
-        return 32.0 // physically sound average SSD temperature
+        
+        cacheLock.lock()
+        let fallback = _cachedSsdTemp
+        cacheLock.unlock()
+        return fallback
     }
     
     // Get Wi-Fi Module Temperature
@@ -338,10 +465,19 @@ class SMCController {
         for key in wifiKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
-                if temp >= 15.0 && temp <= 85.0 { return temp }
+                if temp >= 15.0 && temp <= 85.0 {
+                    cacheLock.lock()
+                    _cachedWifiTemp = temp
+                    cacheLock.unlock()
+                    return temp
+                }
             }
         }
-        return 38.0 // physically sound average Wi-Fi temperature
+        
+        cacheLock.lock()
+        let fallback = _cachedWifiTemp
+        cacheLock.unlock()
+        return fallback
     }
     
     // Get Memory (RAM) Temperature
@@ -350,10 +486,19 @@ class SMCController {
         for key in ramKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
-                if temp >= 15.0 && temp <= 85.0 { return temp }
+                if temp >= 15.0 && temp <= 85.0 {
+                    cacheLock.lock()
+                    _cachedMemoryTemp = temp
+                    cacheLock.unlock()
+                    return temp
+                }
             }
         }
-        return 36.0 // physically sound average RAM temperature
+        
+        cacheLock.lock()
+        let fallback = _cachedMemoryTemp
+        cacheLock.unlock()
+        return fallback
     }
     
     // Get Palm Rest Temperature
@@ -362,10 +507,19 @@ class SMCController {
         for key in palmKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
-                if temp >= 15.0 && temp <= 50.0 { return temp }
+                if temp >= 15.0 && temp <= 50.0 {
+                    cacheLock.lock()
+                    _cachedPalmRestTemp = temp
+                    cacheLock.unlock()
+                    return temp
+                }
             }
         }
-        return 30.5 // physically sound average palm rest temp
+        
+        cacheLock.lock()
+        let fallback = _cachedPalmRestTemp
+        cacheLock.unlock()
+        return fallback
     }
     
     // Get Internal Airflow / Ambient Temperature
@@ -374,37 +528,78 @@ class SMCController {
         for key in ambientKeys {
             if let bytes = readKey(key) {
                 let temp = fromSP78((bytes.0, bytes.1))
-                if temp >= 10.0 && temp <= 65.0 { return temp }
+                if temp >= 10.0 && temp <= 65.0 {
+                    cacheLock.lock()
+                    _cachedAirflowTemp = temp
+                    cacheLock.unlock()
+                    return temp
+                }
             }
         }
-        return 28.0 // physically sound average ambient temp
+        
+        cacheLock.lock()
+        let fallback = _cachedAirflowTemp
+        cacheLock.unlock()
+        return fallback
     }
     
-    // Get CPU Core Voltage (DVFS precise model)
+    // Get CPU Core Voltage
     func getCPUVoltage(load: Double) -> Double {
         if let bytes = readKey("VC0C") {
             let rawVal = Double(Int(bytes.0) << 8 | Int(bytes.1))
             if rawVal > 100 && rawVal < 2000 {
-                return rawVal / 1000.0 // mV to V
+                let volt = rawVal / 1000.0
+                cacheLock.lock()
+                _cachedCpuVoltage = volt
+                cacheLock.unlock()
+                return volt
             }
         }
-        // Dynamic voltage scaling (DVFS) estimation
+        
+        // DVFS estimation based on load if hardware fails or main thread returns cached
+        cacheLock.lock()
+        let cached = _cachedCpuVoltage
+        cacheLock.unlock()
+        
+        if cached > 0.1 && Thread.isMainThread { return cached }
+        
         let baseVolts = 0.72
         let scale = 0.43
-        return baseVolts + (load / 100.0) * scale
+        let est = baseVolts + (load / 100.0) * scale
+        
+        cacheLock.lock()
+        _cachedCpuVoltage = est
+        cacheLock.unlock()
+        return est
     }
     
-    // Get GPU Core Voltage (DVFS estimation)
+    // Get GPU Core Voltage
     func getGPUVoltage(load: Double) -> Double {
         if let bytes = readKey("VG0C") {
             let rawVal = Double(Int(bytes.0) << 8 | Int(bytes.1))
             if rawVal > 100 && rawVal < 2000 {
-                return rawVal / 1000.0
+                let volt = rawVal / 1000.0
+                cacheLock.lock()
+                _cachedGpuVoltage = volt
+                cacheLock.unlock()
+                return volt
             }
         }
+        
+        cacheLock.lock()
+        let cached = _cachedGpuVoltage
+        cacheLock.unlock()
+        
+        if cached > 0.1 && Thread.isMainThread { return cached }
+        
         let baseVolts = 0.75
         let scale = 0.30
-        return baseVolts + (load / 100.0) * scale
+        let est = baseVolts + (load / 100.0) * scale
+        
+        cacheLock.lock()
+        _cachedGpuVoltage = est
+        cacheLock.unlock()
+        return est
     }
     
     // Get CPU Power (Watts)
@@ -415,13 +610,27 @@ class SMCController {
             let fracVal = Double(bytes.1) / 256.0
             let watts = sign * (intVal + fracVal)
             if watts >= 0.1 && watts <= 120.0 {
+                cacheLock.lock()
+                _cachedCpuPower = watts
+                cacheLock.unlock()
                 return watts
             }
         }
-        // Fallback: TDP Model
+        
+        cacheLock.lock()
+        let cached = _cachedCpuPower
+        cacheLock.unlock()
+        
+        if cached > 0.1 && Thread.isMainThread { return cached }
+        
         let idlePower = 1.2
         let peakPower = 28.8
-        return idlePower + (load / 100.0) * peakPower
+        let est = idlePower + (load / 100.0) * peakPower
+        
+        cacheLock.lock()
+        _cachedCpuPower = est
+        cacheLock.unlock()
+        return est
     }
     
     // Get GPU Power (Watts)
@@ -432,57 +641,135 @@ class SMCController {
             let fracVal = Double(bytes.1) / 256.0
             let watts = sign * (intVal + fracVal)
             if watts >= 0.1 && watts <= 120.0 {
+                cacheLock.lock()
+                _cachedGpuPower = watts
+                cacheLock.unlock()
                 return watts
             }
         }
-        // Fallback: TDP Model
+        
+        cacheLock.lock()
+        let cached = _cachedGpuPower
+        cacheLock.unlock()
+        
+        if cached > 0.1 && Thread.isMainThread { return cached }
+        
         let idlePower = 0.5
         let peakPower = 14.5
-        return idlePower + (load / 100.0) * peakPower
+        let est = idlePower + (load / 100.0) * peakPower
+        
+        cacheLock.lock()
+        _cachedGpuPower = est
+        cacheLock.unlock()
+        return est
     }
 
-    
     // Get Fan Count
     func getFanCount() -> Int {
         if let bytes = readKey("FNum") {
-            return Int(bytes.0)
+            let count = Int(bytes.0)
+            cacheLock.lock()
+            _cachedFanCount = count
+            cacheLock.unlock()
+            return count
         }
-        return 0
+        
+        cacheLock.lock()
+        let fallback = _cachedFanCount
+        cacheLock.unlock()
+        return fallback > 0 ? fallback : 0
     }
     
-    // Get Fan Actual Speed (RPM) — auto-detects fpe2 vs float32
+    // Get Fan Actual Speed (RPM)
     func getFanSpeed(_ fanIndex: Int) -> Float {
-        return readFanFloat("F\(fanIndex)Ac", defaultVal: 0.0)
+        let key = "F\(fanIndex)Ac"
+        let speed = readFanFloat(key, defaultVal: -1.0)
+        
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        
+        if speed >= 0.0 {
+            if fanIndex >= _cachedFanSpeeds.count {
+                _cachedFanSpeeds.append(speed)
+            } else {
+                _cachedFanSpeeds[fanIndex] = speed
+            }
+            return speed
+        }
+        
+        return fanIndex < _cachedFanSpeeds.count ? _cachedFanSpeeds[fanIndex] : 0.0
     }
     
-    // Get Fan Target Speed — auto-detects fpe2 vs float32
+    // Get Fan Target Speed
     func getFanTargetSpeed(_ fanIndex: Int) -> Float {
-        return readFanFloat("F\(fanIndex)Tg", defaultVal: 0.0)
+        let key = "F\(fanIndex)Tg"
+        let speed = readFanFloat(key, defaultVal: -1.0)
+        
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        
+        if speed >= 0.0 {
+            if fanIndex >= _cachedFanTargets.count {
+                _cachedFanTargets.append(speed)
+            } else {
+                _cachedFanTargets[fanIndex] = speed
+            }
+            return speed
+        }
+        
+        return fanIndex < _cachedFanTargets.count ? _cachedFanTargets[fanIndex] : 1200.0
     }
     
-    // Get Fan Minimum Speed — auto-detects fpe2 vs float32
+    // Get Fan Minimum Speed
     func getFanMinSpeed(_ fanIndex: Int) -> Float {
-        let v = readFanFloat("F\(fanIndex)Mn", defaultVal: 1200.0)
-        return v > 0 ? v : 1200.0
+        let key = "F\(fanIndex)Mn"
+        let speed = readFanFloat(key, defaultVal: -1.0)
+        
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        
+        if speed > 0.0 {
+            if fanIndex >= _cachedFanMins.count {
+                _cachedFanMins.append(speed)
+            } else {
+                _cachedFanMins[fanIndex] = speed
+            }
+            return speed
+        }
+        
+        let fallback = fanIndex < _cachedFanMins.count ? _cachedFanMins[fanIndex] : 1200.0
+        return fallback > 0 ? fallback : 1200.0
     }
     
-    // Get Fan Maximum Speed — auto-detects fpe2 vs float32
+    // Get Fan Maximum Speed
     func getFanMaxSpeed(_ fanIndex: Int) -> Float {
-        let v = readFanFloat("F\(fanIndex)Mx", defaultVal: 6000.0)
-        return v > 0 ? v : 6000.0
+        let key = "F\(fanIndex)Mx"
+        let speed = readFanFloat(key, defaultVal: -1.0)
+        
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        
+        if speed > 0.0 {
+            if fanIndex >= _cachedFanMaxs.count {
+                _cachedFanMaxs.append(speed)
+            } else {
+                _cachedFanMaxs[fanIndex] = speed
+            }
+            return speed
+        }
+        
+        let fallback = fanIndex < _cachedFanMaxs.count ? _cachedFanMaxs[fanIndex] : 6000.0
+        return fallback > 0 ? fallback : 6000.0
     }
     
     // Enable manual fan speed control (Force Bitmask)
-    // fanBitmask: 1 = fan 0 manual, 3 = fan 0 & fan 1 manual
     func setFanManual(_ manual: Bool, fanBitmask: UInt16 = 3) -> Bool {
-        // Apple Silicon uses F0Md, F1Md (1 byte, ui8)
         let isAppleSilicon = readKey("FS! ") == nil
         
         if isAppleSilicon {
             let numFans = getFanCount()
             var success = true
             for i in 0..<numFans {
-                // Check if this fan is included in the bitmask
                 if (fanBitmask & (1 << i)) != 0 {
                     let key = "F\(i)Md"
                     var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -495,7 +782,6 @@ class SMCController {
             }
             return success
         } else {
-            // Intel Macs use FS! (2 bytes)
             let key = "FS! "
             let mask: UInt16 = manual ? fanBitmask : 0
             
@@ -513,7 +799,6 @@ class SMCController {
         let keyStr = "F\(fanIndex)Tg"
         let key = stringToFourCharCode(keyStr)
         
-        // Find expected data size
         var inputInfo = SMCParamStruct()
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
@@ -524,8 +809,6 @@ class SMCController {
                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         
         if dataSize == 4 {
-            // Probably Apple Silicon `flt `
-            // Apple SMC `flt ` format is usually standard IEEE 754 float
             var f = speed
             withUnsafeBytes(of: &f) { buffer in
                 smcBytes.0 = buffer[0]
@@ -534,13 +817,11 @@ class SMCController {
                 smcBytes.3 = buffer[3]
             }
         } else {
-            // Intel `fpe2` format (2 bytes)
             let fpe2Bytes = toFPE2(speed)
             smcBytes.0 = fpe2Bytes.0
             smcBytes.1 = fpe2Bytes.1
         }
         
-        // Write the Key Value
         var inputWrite = SMCParamStruct()
         inputWrite.key = key
         inputWrite.bytes = smcBytes
@@ -548,30 +829,42 @@ class SMCController {
         inputWrite.keyInfo.dataSize = dataSize
         inputWrite.data8 = 6 // kSMCWriteKey
         
-        return callDriver(&inputWrite)
+        let success = callDriver(&inputWrite)
+        if success {
+            cacheLock.lock()
+            if fanIndex < _cachedFanTargets.count {
+                _cachedFanTargets[fanIndex] = speed
+            }
+            cacheLock.unlock()
+        }
+        return success
     }
     
-    // Enable/Disable battery charging or set charging limit
+    // Enable/Disable battery charging limit
     func setBatteryChargeLimit(_ limit: Int, active: Bool) -> Bool {
         let isAppleSilicon = readKey("FS! ") == nil
+        var success = false
         
         if isAppleSilicon {
-            // Apple Silicon (M1/M2/M3) uses CHWA key (1 byte)
-            // 01 = Enable 80% charge limit
-            // 00 = Disable limit (charge to 100%)
             let key = "CHWA"
             var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
             bytes.0 = active ? 1 : 0
-            return writeKey(key, bytes: bytes, size: 1)
+            success = writeKey(key, bytes: bytes, size: 1)
         } else {
-            // Intel Macs use BCLM key (1 byte) representing percentage
             let key = "BCLM"
             var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
             bytes.0 = active ? UInt8(limit) : 100
-            return writeKey(key, bytes: bytes, size: 1)
+            success = writeKey(key, bytes: bytes, size: 1)
         }
+        
+        if success {
+            cacheLock.lock()
+            _cachedBatteryLimit = (limit: limit, active: active)
+            cacheLock.unlock()
+        }
+        return success
     }
     
     // Read current battery charge limit setting
@@ -581,16 +874,27 @@ class SMCController {
         if isAppleSilicon {
             if let bytes = readKey("CHWA") {
                 let enabled = bytes.0 != 0
-                return (limit: 80, active: enabled)
+                let val = (limit: 80, active: enabled)
+                cacheLock.lock()
+                _cachedBatteryLimit = val
+                cacheLock.unlock()
+                return val
             }
-            return (limit: 80, active: false)
         } else {
             if let bytes = readKey("BCLM") {
                 let val = Int(bytes.0)
                 let active = val < 100
-                return (limit: val, active: active)
+                let limitVal = (limit: val, active: active)
+                cacheLock.lock()
+                _cachedBatteryLimit = limitVal
+                cacheLock.unlock()
+                return limitVal
             }
-            return (limit: 80, active: false)
         }
+        
+        cacheLock.lock()
+        let fallback = _cachedBatteryLimit
+        cacheLock.unlock()
+        return fallback
     }
 }

@@ -63,22 +63,52 @@ func main() {
         print(ok ? "OK" : "ERROR")
         
     } else if command == "power" {
-        guard args.count >= 3 else {
-            print("ERROR: Missing arguments for power. Usage: smchelper power <0|1>")
+        guard args.count >= 4 else {
+            print("ERROR: Missing arguments for power. Usage: smchelper power <b|c|a> <0|1|2>")
             exit(1)
         }
-        let rawActive = Int(args[2]) ?? 0
+        let mode = args[2] // "b", "c" or "a"
+        let policy = Int(args[3]) ?? 1
         
-        // Strict boundary validation
-        let active = min(max(rawActive, 0), 1)
+        let flag: String
+        if mode == "b" {
+            flag = "-b"
+        } else if mode == "c" {
+            flag = "-c"
+        } else {
+            flag = "-a"
+        }
         
-        let task = Process()
-        task.launchPath = "/usr/bin/pmset"
-        task.arguments = ["-a", "lowpowermode", String(active)]
+        // policy: 
+        // 0: Eco (lowpowermode = 1, highpower = 0)
+        // 1: Balanced (lowpowermode = 0, highpower = 0)
+        // 2: Turbo (lowpowermode = 0, highpower = 1)
+        let lpm = (policy == 0) ? 1 : 0
+        let hp = (policy == 2) ? 1 : 0
+        
+        // 1. 设置 lowpowermode
+        let task1 = Process()
+        task1.launchPath = "/usr/bin/pmset"
+        task1.arguments = [flag, "lowpowermode", String(lpm)]
+        
+        // 2. 设置 highpower (用 try? 运行，以兼容不支持高功率模式的机型)
+        let task2 = Process()
+        task2.launchPath = "/usr/bin/pmset"
+        task2.arguments = [flag, "highpower", String(hp)]
+        
         do {
-            try task.run()
-            task.waitUntilExit()
-            print("OK")
+            try task1.run()
+            task1.waitUntilExit()
+            let status1 = task1.terminationStatus
+            
+            try? task2.run()
+            task2.waitUntilExit()
+            
+            if status1 == 0 {
+                print("OK")
+            } else {
+                print("ERROR")
+            }
         } catch {
             print("ERROR")
         }

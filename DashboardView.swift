@@ -37,8 +37,22 @@ struct DashboardView: View {
     private let waveTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
     
     // UI & Hardware States
+    private let telemetryQueue = DispatchQueue(label: "com.statusctrl.telemetryQueue", qos: .userInitiated)
+    private let keyboardQueue = DispatchQueue(label: "com.statusctrl.keyboardQueue", qos: .background)
+    @State private var isHardwareInitialized = false
+    @State private var isPanelVisible = false
+    @State private var isUserDraggingFan = false
+    @State private var refreshTick = 0
+    @State private var isRefreshing = false
     @State private var cpuTemp: Float = 42.0
     @State private var gpuTemp: Float = 40.0
+    
+    // Purger States
+    @State private var isPowerHovered: Bool = false
+    @State private var isPurging: Bool = false
+    @State private var purgeProgress: Double = 0.0
+    @State private var lastPurgedAmount: Double = 0.0
+    @State private var showPurgeSuccess: Bool = false
     
     // Advanced hardware telemetry states
     @State private var cpuUsage: Double = 0.0          // CPU Load %
@@ -118,6 +132,7 @@ struct DashboardView: View {
     // Power Policy and Runtime States
     @State private var selectedPowerTab: Int = 0
     @State private var acPowerPolicy: Int = UserDefaults.standard.integer(forKey: "ACPowerPolicy")
+    @State private var batteryPowerPolicy: Int = UserDefaults.standard.object(forKey: "BatteryPowerPolicy") == nil ? 1 : UserDefaults.standard.integer(forKey: "BatteryPowerPolicy")
     @State private var batteryTargetPower: Double = UserDefaults.standard.double(forKey: "BatteryTargetPower") == 0 ? 8.0 : UserDefaults.standard.double(forKey: "BatteryTargetPower")
     @State private var autoAlignBatteryPolicies: Bool = UserDefaults.standard.object(forKey: "AutoAlignBatteryPolicies") == nil ? true : UserDefaults.standard.bool(forKey: "AutoAlignBatteryPolicies")
     @State private var lastAppliedTargetPower: Double = 0.0
@@ -436,135 +451,276 @@ struct DashboardView: View {
         }
     }
     
+    struct SkeletonRow: View {
+        @State private var isAnimating = false
+        var width: CGFloat
+        var height: CGFloat
+        var body: some View {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color.white.opacity(0.04),
+                            Color.white.opacity(0.12),
+                            Color.white.opacity(0.04)
+                        ]),
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(width: width, height: height)
+                .opacity(isAnimating ? 0.45 : 0.85)
+                .onAppear {
+                    withAnimation(Animation.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                        isAnimating = true
+                    }
+                }
+        }
+    }
+
+    private var skeletonDashboardView: some View {
+        VStack(spacing: 0) {
+            // Header 骨架
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    SkeletonRow(width: 140, height: 18)
+                    SkeletonRow(width: 220, height: 12)
+                }
+                Spacer()
+                SkeletonRow(width: 36, height: 20)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+            
+            Divider()
+                .background(Color.white.opacity(0.06))
+            
+            // 主体分栏骨架
+            HStack(alignment: .top, spacing: 12) {
+                // 左侧骨架栏
+                VStack(spacing: 12) {
+                    // 系统遥测卡片骨架
+                    VStack(alignment: .leading, spacing: 14) {
+                        SkeletonRow(width: 100, height: 16)
+                        Divider().background(Color.white.opacity(0.05))
+                        HStack(spacing: 16) {
+                            SkeletonRow(width: 65, height: 65) // 环形图占位
+                            VStack(alignment: .leading, spacing: 8) {
+                                SkeletonRow(width: 120, height: 12)
+                                SkeletonRow(width: 90, height: 10)
+                                SkeletonRow(width: 140, height: 10)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.white.opacity(0.03))
+                    .cornerRadius(14)
+                    
+                    // 风扇卡片骨架
+                    VStack(alignment: .leading, spacing: 14) {
+                        SkeletonRow(width: 80, height: 16)
+                        Divider().background(Color.white.opacity(0.05))
+                        HStack(spacing: 12) {
+                            SkeletonRow(width: 44, height: 44) // 风扇圆形占位
+                            VStack(alignment: .leading, spacing: 8) {
+                                SkeletonRow(width: 140, height: 12)
+                                SkeletonRow(width: 100, height: 10)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.white.opacity(0.03))
+                    .cornerRadius(14)
+                }
+                .frame(maxWidth: .infinity)
+                
+                // 右侧骨架栏
+                VStack(spacing: 12) {
+                    // 能耗卡片骨架
+                    VStack(alignment: .leading, spacing: 14) {
+                        SkeletonRow(width: 120, height: 16)
+                        Divider().background(Color.white.opacity(0.05))
+                        SkeletonRow(width: 200, height: 12)
+                        HStack(spacing: 8) {
+                            SkeletonRow(width: 70, height: 28)
+                            SkeletonRow(width: 70, height: 28)
+                            SkeletonRow(width: 70, height: 28)
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.white.opacity(0.03))
+                    .cornerRadius(14)
+                    
+                    // 物理能耗延长卡片骨架
+                    VStack(alignment: .leading, spacing: 14) {
+                        SkeletonRow(width: 150, height: 16)
+                        Divider().background(Color.white.opacity(0.05))
+                        SkeletonRow(width: 240, height: 80) // 渲染曲线图占位
+                    }
+                    .padding(14)
+                    .background(Color.white.opacity(0.03))
+                    .cornerRadius(14)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+        .frame(width: 680, height: 530)
+        .background(
+            ZStack {
+                Color(red: 0.08, green: 0.09, blue: 0.12)
+                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 280)
+                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 280)
+            }
+        )
+        .preferredColorScheme(.dark)
+    }
+
     @State private var currentPage: Int = 0
     @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         ZStack {
-            // ── Main Panel ──
-            VStack(spacing: 0) {
-                // Header (fixed)
-                headerSection
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-                    .padding(.bottom, 10)
+            if !isHardwareInitialized {
+                skeletonDashboardView
+                    .transition(.opacity)
+            } else {
+                ZStack {
+                    // ── Main Panel ──
+                    VStack(spacing: 0) {
+                        // Header (fixed)
+                        headerSection
+                            .padding(.horizontal, 16)
+                            .padding(.top, 14)
+                            .padding(.bottom, 10)
 
-                Divider()
-                    .background(Color.white.opacity(0.06))
+                        Divider()
+                            .background(Color.white.opacity(0.06))
 
-                // ── Vertical paging content (whole-page transition, lag-free) ──
-                GeometryReader { geo in
-                    let height = geo.size.height
-                    ZStack {
-                        // Page 0
-                        VStack(spacing: 0) {
-                            LazyVGrid(
-                                columns: [
-                                    GridItem(.flexible(), spacing: 10),
-                                    GridItem(.flexible(), spacing: 10)
-                                ],
-                                spacing: 10
-                            ) {
-                                // 左上: 系统硬件遥测
-                                systemTelemetrySection
-                                // 右上: 电源接口诊断
-                                powerSection
-                                // 左下: SMC 风扇控制器
-                                if fanCount > 0 {
-                                    fanSection
-                                } else {
-                                    fanlessSection
-                                }
-                                // 右下: 功耗策略 & 续航推演
-                                powerSavingSection
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                        }
-                        .frame(width: geo.size.width, height: height)
-                        .offset(y: (0 - CGFloat(currentPage)) * height + dragOffset)
-                        
-                        // Page 1
-                        VStack(spacing: 0) {
-                            LazyVGrid(
-                                columns: [
-                                    GridItem(.flexible(), spacing: 10),
-                                    GridItem(.flexible(), spacing: 10)
-                                ],
-                                spacing: 10
-                            ) {
-                                batteryCareSection
-                                keyboardSection
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            
-                            Spacer() // Push contents to top
-                        }
-                        .frame(width: geo.size.width, height: height)
-                        .offset(y: (1 - CGFloat(currentPage)) * height + dragOffset)
-                    }
-                    .clipped()
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture()
-                            .onChanged { value in
-                                let translation = value.translation.height
-                                // Add friction when dragging out of bounds
-                                if currentPage == 0 && translation > 0 {
-                                    dragOffset = translation * 0.3
-                                } else if currentPage == 1 && translation < 0 {
-                                    dragOffset = translation * 0.3
-                                } else {
-                                    dragOffset = translation
-                                }
-                            }
-                            .onEnded { value in
-                                let translation = value.translation.height
-                                let threshold = height * 0.15 // 15% is extremely responsive
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                                    if translation < -threshold && currentPage < 1 {
-                                        currentPage = 1
-                                    } else if translation > threshold && currentPage > 0 {
-                                        currentPage = 0
-                                    }
-                                    dragOffset = 0
-                                }
-                            }
-                    )
-
-                    // ── 右侧极简竖向圆点指示器 ──
-                    VStack(spacing: 6) {
-                        ForEach(0..<2, id: \.self) { idx in
-                            Capsule()
-                                .fill(currentPage == idx
-                                    ? Color(red: 0.18, green: 0.62, blue: 0.95)
-                                    : Color.white.opacity(0.18))
-                                .frame(width: 4, height: currentPage == idx ? 18 : 6)
-                                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
-                                .contentShape(Rectangle())
-                                .focusable(false)
-                                .onTapGesture {
-                                    withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
-                                        currentPage = idx
+                        // ── Vertical paging content (whole-page transition, lag-free) ──
+                        GeometryReader { geo in
+                            let height = geo.size.height
+                            ZStack {
+                                // Page 0
+                                VStack(spacing: 0) {
+                                    ScrollView(.vertical, showsIndicators: false) {
+                                        HStack(alignment: .top, spacing: 12) {
+                                            VStack(spacing: 12) {
+                                                systemTelemetrySection
+                                                if fanCount > 0 {
+                                                    fanSection
+                                                } else {
+                                                    fanlessSection
+                                                }
+                                            }
+                                            .frame(maxWidth: .infinity)
+                                            
+                                            VStack(spacing: 12) {
+                                                powerSection
+                                                powerSavingSection
+                                            }
+                                            .frame(maxWidth: .infinity)
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
                                     }
                                 }
+                                .frame(width: geo.size.width, height: height)
+                                .offset(y: (0 - CGFloat(currentPage)) * height + dragOffset)
+                                
+                                // Page 1
+                                VStack(spacing: 0) {
+                                    ScrollView(.vertical, showsIndicators: false) {
+                                        HStack(alignment: .top, spacing: 12) {
+                                            batteryCareSection
+                                                .frame(maxWidth: .infinity)
+                                            keyboardSection
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 12)
+                                    }
+                                }
+                                .frame(width: geo.size.width, height: height)
+                                .offset(y: (1 - CGFloat(currentPage)) * height + dragOffset)
+                            }
+                            .clipped()
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        let translation = value.translation.height
+                                        // Add friction when dragging out of bounds
+                                        if currentPage == 0 && translation > 0 {
+                                            dragOffset = translation * 0.3
+                                        } else if currentPage == 1 && translation < 0 {
+                                            dragOffset = translation * 0.3
+                                        } else {
+                                            dragOffset = translation
+                                        }
+                                    }
+                                    .onEnded { value in
+                                        let translation = value.translation.height
+                                        let threshold = height * 0.15 // 15% is extremely responsive
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                            if translation < -threshold && currentPage < 1 {
+                                                currentPage = 1
+                                            } else if translation > threshold && currentPage > 0 {
+                                                currentPage = 0
+                                            }
+                                            dragOffset = 0
+                                        }
+                                    }
+                            )
+
+                            // ── 右侧极简竖向圆点指示器 ──
+                            VStack(spacing: 6) {
+                                ForEach(0..<2, id: \.self) { idx in
+                                    Capsule()
+                                        .fill(currentPage == idx
+                                            ? Color(red: 0.18, green: 0.62, blue: 0.95)
+                                            : Color.white.opacity(0.18))
+                                        .frame(width: 4, height: currentPage == idx ? 18 : 6)
+                                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
+                                        .contentShape(Rectangle())
+                                        .focusable(false)
+                                        .onTapGesture {
+                                            withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                                                currentPage = idx
+                                            }
+                                        }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                            .padding(.trailing, 7)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                    .padding(.trailing, 7)
+                    .blur(radius: showSettings ? 12 : 0)
+
+                    // Settings overlay
+                    if showSettings {
+                        settingsSection
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .zIndex(1)
+                    }
                 }
-            }
-            .blur(radius: showSettings ? 12 : 0)
-
-            // Settings overlay
-            if showSettings {
-                settingsSection
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                    .zIndex(1)
+                .transition(.opacity)
             }
         }
         .frame(width: 680, height: 530)
+        .background(
+            ScrollWheelDetector { deltaY in
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                    if deltaY > 1.5 && currentPage > 0 {
+                        currentPage = 0
+                    } else if deltaY < -1.5 && currentPage < 1 {
+                        currentPage = 1
+                    }
+                }
+            }
+        )
         .background(
             ZStack {
                 Color(red: 0.08, green: 0.09, blue: 0.12)
@@ -576,7 +732,11 @@ struct DashboardView: View {
         .onAppear {
             UserDefaults.standard.set("zh-Hans", forKey: "AppLanguage")
             currentLanguage = "zh-Hans"
+            isPanelVisible = true
             initializeHardware()
+        }
+        .onDisappear {
+            isPanelVisible = false
         }
         .onReceive(statsTimer) { _ in refreshStats() }
         .onReceive(fanRotationTimer) { _ in updateFanRotation() }
@@ -607,7 +767,7 @@ struct DashboardView: View {
             
             Spacer()
             
-            // Temperature Quick Badges & Settings Trigger
+            // Temperature Quick Badges, One-Click Memory Purge & Settings Trigger
             HStack(spacing: 8) {
                 tempBadge(title: "CPU", temp: cpuTemp, color: Color(red: 0.18, green: 0.62, blue: 0.95))
                 tempBadge(title: "GPU", temp: gpuTemp, color: Color(red: 0.62, green: 0.32, blue: 0.88))
@@ -615,24 +775,101 @@ struct DashboardView: View {
                     tempBadge(title: "BATT", temp: Float(powerStats.batteryTemperature), color: Color(red: 0.22, green: 0.80, blue: 0.45))
                 }
                 
-                // Settings Gear Button with spring feedback (onTapGesture to prevent blue focus ring)
-                Image(systemName: "gearshape.fill")
-                    .focusable(false)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.8))
-                    .padding(8)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(Circle())
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    )
-                    .contentShape(Circle())
-                    .onTapGesture {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            showSettings.toggle()
+                // One-Click Memory Purge container
+                HStack(spacing: 6) {
+                    if isPowerHovered || isPurging || showPurgeSuccess {
+                        Button(action: {
+                            if !isPurging {
+                                triggerMemoryPurge()
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                if isPurging {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .scaleEffect(0.7)
+                                        .brightness(2.0)
+                                    Text("整理中...")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(.white)
+                                } else if showPurgeSuccess {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.green)
+                                    Text(String(format: "已整理 %.0fM", lastPurgedAmount))
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(.green)
+                                } else {
+                                    Text("🧹 一键整理内存")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                showPurgeSuccess ?
+                                    LinearGradient(colors: [Color.green.opacity(0.2), Color.green.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing) :
+                                    LinearGradient(colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            )
+                            .cornerRadius(12)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(showPurgeSuccess ? Color.green.opacity(0.3) : Color.white.opacity(0.15), lineWidth: 1)
+                            )
+                            .shadow(color: showPurgeSuccess ? Color.green.opacity(0.2) : Color.purple.opacity(0.2), radius: 4)
                         }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        ))
                     }
+                    
+                    // Power Button triggering exit on click
+                    Button(action: {
+                        NSApp.terminate(nil)
+                    }) {
+                        Image(systemName: "power")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.red.opacity(0.85))
+                            .padding(8)
+                            .background(Color.red.opacity(0.08))
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.red.opacity(0.2), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                }
+                .onHover { hovering in
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                        isPowerHovered = hovering
+                    }
+                }
+                
+                // Settings Gear Button styled properly to prevent blue focus rings
+                Button(action: {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        showSettings.toggle()
+                    }
+                }) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(8)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
             }
         }
     }
@@ -999,9 +1236,9 @@ struct DashboardView: View {
                                 }
                             }) {
                                 VStack(spacing: 4) {
-                                    Text(policy == 0 ? "🍃" : (policy == 1 ? "⚖️" : "🚀"))
+                                    Text(policyEmoji(policy))
                                         .font(.system(size: 14))
-                                    Text(policy == 0 ? (currentLanguage == "zh-Hans" ? "极静" : "Eco") : (policy == 1 ? (currentLanguage == "zh-Hans" ? "均衡" : "Balanced") : (currentLanguage == "zh-Hans" ? "极致" : "Turbo")))
+                                    Text(acPolicyText(policy))
                                         .font(.system(size: 9, weight: .bold))
                                 }
                                 .frame(maxWidth: .infinity)
@@ -1020,7 +1257,7 @@ struct DashboardView: View {
                         }
                     }
                     
-                    Text(acPowerPolicy == 0 ? t("ac_policy_eco") : (acPowerPolicy == 1 ? t("ac_policy_balanced") : t("ac_policy_turbo")))
+                    Text(acPolicyTipText(acPowerPolicy))
                         .font(.system(size: 9))
                         .foregroundColor(.white.opacity(0.5))
                         .padding(.horizontal, 4)
@@ -1028,7 +1265,57 @@ struct DashboardView: View {
                 .transition(.opacity)
             } else {
                 // Battery Power Mode Controls
-                VStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(t("power_policy_level"))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                    
+                    HStack(spacing: 8) {
+                        ForEach(0..<3) { policy in
+                            Button(action: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                    batteryPowerPolicy = policy
+                                    UserDefaults.standard.set(policy, forKey: "BatteryPowerPolicy")
+                                    // 联动滑块到预设功耗
+                                    if policy == 0 {
+                                        batteryTargetPower = 6.0
+                                    } else if policy == 1 {
+                                        batteryTargetPower = 12.0
+                                    } else {
+                                        batteryTargetPower = 25.0
+                                    }
+                                    UserDefaults.standard.set(batteryTargetPower, forKey: "BatteryTargetPower")
+                                    applyDynamicPowerSavingSettings()
+                                }
+                            }) {
+                                VStack(spacing: 4) {
+                                    Text(policyEmoji(policy))
+                                        .font(.system(size: 14))
+                                    Text(batteryPolicyText(policy))
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(batteryPowerPolicy == policy ? Color.white.opacity(0.08) : Color.white.opacity(0.02))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(batteryPowerPolicy == policy ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color.white.opacity(0.05), lineWidth: 1)
+                                )
+                                .foregroundColor(batteryPowerPolicy == policy ? .white : .white.opacity(0.6))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    
+                    Text(batteryPolicyTipText(batteryPowerPolicy))
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.5))
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 4)
+                    
                     // Target Power Slider
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -1045,6 +1332,18 @@ struct DashboardView: View {
                             get: { batteryTargetPower },
                             set: { val in
                                 batteryTargetPower = val
+                                UserDefaults.standard.set(val, forKey: "BatteryTargetPower")
+                                
+                                // 联动更新按钮状态
+                                if val <= 8.0 {
+                                    batteryPowerPolicy = 0
+                                } else if val <= 15.0 {
+                                    batteryPowerPolicy = 1
+                                } else {
+                                    batteryPowerPolicy = 2
+                                }
+                                UserDefaults.standard.set(batteryPowerPolicy, forKey: "BatteryPowerPolicy")
+                                
                                 if autoAlignBatteryPolicies {
                                     applyDynamicPowerSavingSettings()
                                 }
@@ -1059,25 +1358,23 @@ struct DashboardView: View {
                         .accentColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                     }
                     
-                    // Deductive Runtime Panel
+                    // Deductive Runtime Panel (超精细时间推演视图)
                     let wh = remainingWh
+                    
+                    // 1. 预计可使用时长
                     let targetHours = wh / batteryTargetPower
                     let targetH = Int(targetHours)
                     let targetM = Int((targetHours - Double(targetH)) * 60)
                     let budgetedText = String(format: "%d%@%02d%@", targetH, currentLanguage == "zh-Hans" ? "小时" : "h ", targetM, currentLanguage == "zh-Hans" ? "分钟" : "m")
                     
-                    let liveWatts = max(1.0, powerStats.batteryPower)
-                    let liveHours = wh / liveWatts
-                    let liveH = Int(liveHours)
-                    let liveM = Int((liveHours - Double(liveH)) * 60)
-                    let liveText = String(format: "%d%@%02d%@", liveH, currentLanguage == "zh-Hans" ? "小时" : "h ", liveM, currentLanguage == "zh-Hans" ? "分钟" : "m")
-                    
-                    let gain = ((liveWatts / batteryTargetPower) - 1.0) * 100.0
+                    // 2. 基准（默认15W，即极致性能状态）
+                    let baselineWatts = 15.0
+                    let targetDiff = targetHours - (wh / baselineWatts)
                     
                     VStack(spacing: 8) {
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(t("deductive_runtime"))
+                                Text(currentLanguage == "zh-Hans" ? "预计可使用时长" : "Est. Battery Life")
                                     .font(.system(size: 9))
                                     .foregroundColor(.white.opacity(0.4))
                                 Text(budgetedText)
@@ -1085,6 +1382,12 @@ struct DashboardView: View {
                                     .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            let liveWatts = max(1.0, powerStats.batteryPower)
+                            let liveHours = wh / liveWatts
+                            let liveH = Int(liveHours)
+                            let liveM = Int((liveHours - Double(liveH)) * 60)
+                            let liveText = String(format: "%d%@%02d%@", liveH, currentLanguage == "zh-Hans" ? "小时" : "h ", liveM, currentLanguage == "zh-Hans" ? "分钟" : "m")
                             
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(t("actual_runtime"))
@@ -1097,14 +1400,18 @@ struct DashboardView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         
-                        if gain > 0 {
+                        if targetDiff > 0.05 {
+                            let extH = Int(targetDiff)
+                            let extM = Int((targetDiff - Double(extH)) * 60)
+                            let extText = String(format: "%d%@%02d%@", extH, currentLanguage == "zh-Hans" ? "小时" : "h ", extM, currentLanguage == "zh-Hans" ? "分钟" : "m")
+                            
                             HStack {
-                                Text(t("efficiency_gain") + ":")
+                                Text(currentLanguage == "zh-Hans" ? "⚡️ 已为您额外延长续航" : "⚡️ Extra Life Gained")
                                     .font(.system(size: 9, weight: .semibold))
                                     .foregroundColor(.white.opacity(0.5))
                                 Spacer()
-                                Text(String(format: "+%.1f%%", gain))
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                Text(currentLanguage == "zh-Hans" ? "额外延长 \(extText)" : "+\(extText)")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
                                     .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
@@ -1147,12 +1454,11 @@ struct DashboardView: View {
                     
                     // Hardware Active policy indicator
                     if autoAlignBatteryPolicies {
-                        let target = batteryTargetPower
-                        let policyText = target <= 8.0 ? t("opt_active_deep") : (target <= 15.0 ? t("opt_active_mid") : t("opt_active_none"))
-                        let policyColor = target <= 8.0 ? Color(red: 0.22, green: 0.80, blue: 0.45) : (target <= 15.0 ? Color.orange : Color(red: 0.18, green: 0.62, blue: 0.95))
+                        let policyText = batteryPowerPolicy == 0 ? t("opt_active_deep") : (batteryPowerPolicy == 1 ? t("opt_active_mid") : t("opt_active_none"))
+                        let policyColor = batteryPowerPolicy == 0 ? Color(red: 0.22, green: 0.80, blue: 0.45) : (batteryPowerPolicy == 1 ? Color.orange : Color(red: 0.18, green: 0.62, blue: 0.95))
                         
                         HStack(spacing: 6) {
-                            Image(systemName: target <= 15.0 ? "leaf.fill" : "cpu.fill")
+                            Image(systemName: batteryPowerPolicy <= 1 ? "leaf.fill" : "cpu.fill")
                                 .font(.system(size: 10))
                                 .foregroundColor(policyColor)
                             
@@ -2258,6 +2564,26 @@ struct DashboardView: View {
     
     // MARK: - Core Logic & Functions
     
+    private func triggerMemoryPurge() {
+        isPurging = true
+        showPurgeSuccess = false
+        MemoryPurger.purge(progressHandler: { progress in
+            self.purgeProgress = progress
+        }, completion: { reclaimedMB in
+            self.lastPurgedAmount = reclaimedMB
+            self.isPurging = false
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                self.showPurgeSuccess = true
+            }
+            // Auto hide success state after 3 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                    self.showPurgeSuccess = false
+                }
+            }
+        })
+    }
+    
     private func initializeHardware() {
         // SMC init
         smc.doOpen()
@@ -2357,64 +2683,207 @@ struct DashboardView: View {
     }
     
     private func refreshStats() {
-        cpuTemp = smc.getCPUTemperature()
-        gpuTemp = smc.getGPUTemperature()
-        powerStats = PowerMonitor.getPowerStats()
+        guard !isRefreshing else { return }
+        isRefreshing = true
         
-        // Advanced hardware telemetry loads
-        cpuUsage = cpuMonitor.getUsage()
-        gpuUsage = getGPUUsage()
+        // Capture necessary State variables from the main thread
+        let currentFanCount = fanCount
+        let currentIsManualFan = isManualFan
+        let currentFanPreset = fanPreset
         
-        // Advanced hardware temperatures
-        tempCpuPerf = smc.getCPUPerfCoresTemperature()
-        tempCpuEff = smc.getCPUEffCoresTemperature()
-        tempSSD = smc.getSSDTemperature()
-        tempWiFi = smc.getWiFiTemperature()
-        tempMemory = smc.getMemoryTemperature()
-        tempPalmRest = smc.getPalmRestTemperature()
-        tempAirflow = smc.getAirflowTemperature()
+        let currentFanMinSpeed = fanMinSpeed
+        let currentFanMaxSpeed = fanMaxSpeed
+        let currentLastAppliedFanSpeed = lastAppliedFanSpeed
+        let currentLastHardwareSetSpeed = lastHardwareSetSpeed
         
-        // Advanced hardware voltages & power
-        cpuVoltage = smc.getCPUVoltage(load: cpuUsage)
-        gpuVoltage = smc.getGPUVoltage(load: gpuUsage)
-        cpuPower = smc.getCPUPower(load: cpuUsage)
-        gpuPower = smc.getGPUPower(load: gpuUsage)
+        let cCurveTemp1 = customCurveTemp1
+        let cCurveSpeed1 = customCurveSpeed1
+        let cCurveTemp2 = customCurveTemp2
+        let cCurveSpeed2 = customCurveSpeed2
+        let cCurveTemp3 = customCurveTemp3
+        let cCurveSpeed3 = customCurveSpeed3
+        let cCurveTemp4 = customCurveTemp4
+        let cCurveSpeed4 = customCurveSpeed4
         
-        // Total power (TDP + peripherals)
-        totalPower = cpuPower + gpuPower + 2.5 // include baseline memory/SSD/screen/Wi-Fi standby power of ~2.5W
-        if !powerStats.isConnected {
-            let discharge = abs(powerStats.batteryPower)
-            if discharge > 0.1 {
-                totalPower = discharge
+        let currentDisableKeyboardBacklightOnBattery = disableKeyboardBacklightOnBattery
+        
+        telemetryQueue.async {
+            // 1. Perform intensive hardware readings on background queue
+            let tempCpu = self.smc.getCPUTemperature()
+            let tempGpu = self.smc.getGPUTemperature()
+            let statsPower = PowerMonitor.getPowerStats()
+            
+            let usageCpu = self.cpuMonitor.getUsage()
+            let usageGpu = self.getGPUUsage()
+            
+            let pCpuPerf = self.smc.getCPUPerfCoresTemperature()
+            let pCpuEff = self.smc.getCPUEffCoresTemperature()
+            let pSSD = self.smc.getSSDTemperature()
+            let pWiFi = self.smc.getWiFiTemperature()
+            let pMemory = self.smc.getMemoryTemperature()
+            let pPalmRest = self.smc.getPalmRestTemperature()
+            let pAirflow = self.smc.getAirflowTemperature()
+            
+            let voltCpu = self.smc.getCPUVoltage(load: usageCpu)
+            let voltGpu = self.smc.getGPUVoltage(load: usageGpu)
+            let powCpu = self.smc.getCPUPower(load: usageCpu)
+            let powGpu = self.smc.getGPUPower(load: usageGpu)
+            
+            // Total power calculation
+            var totalPow = powCpu + powGpu + 2.5
+            if !statsPower.isConnected {
+                let discharge = abs(statsPower.batteryPower)
+                if discharge > 0.1 {
+                    totalPow = discharge
+                }
+            }
+            
+            // Frequency calculation
+            let freqCpuPerf = 1.5 + (usageCpu / 100.0) * 1.7
+            let freqCpuEff = 1.0 + (usageCpu / 100.0) * 1.0
+            let freqGpu = 0.3 + (usageGpu / 100.0) * 1.0
+            
+            // Fan speeds
+            var actualFanSpeeds = [Float]()
+            if currentFanCount > 0 {
+                for i in 0..<currentFanCount {
+                    actualFanSpeeds.append(self.smc.getFanSpeed(i))
+                }
+            }
+            
+            // Custom fan curve temperature regulation evaluation
+            var nextTargetFanSpeeds: [Float] = []
+            var nextLastAppliedFanSpeed: [Float] = []
+            var nextLastHardwareSetSpeed: [Float] = []
+            
+            if currentIsManualFan && currentFanPreset > 0 {
+                let currentTemp = max(tempCpu, tempGpu)
+                
+                var tmpLastApplied = currentLastAppliedFanSpeed
+                if tmpLastApplied.count < currentFanCount {
+                    tmpLastApplied = Array(repeating: 2000.0, count: currentFanCount)
+                }
+                var tmpLastHardware = currentLastHardwareSetSpeed
+                if tmpLastHardware.count < currentFanCount {
+                    tmpLastHardware = Array(repeating: 0.0, count: currentFanCount)
+                }
+                var tmpTarget = Array(repeating: Float(2000.0), count: currentFanCount)
+                
+                let calculatePct: (Float) -> Float = { temp in
+                    if currentFanPreset == 1 && temp > 85.0 {
+                        let startTemp: Float = 85.0
+                        let endTemp: Float = 92.0
+                        let ratio = min(max((temp - startTemp) / (endTemp - startTemp), 0.0), 1.0)
+                        return 55.0 + (100.0 - 55.0) * ratio
+                    }
+                    if temp <= cCurveTemp1 {
+                        return cCurveSpeed1
+                    } else if temp <= cCurveTemp2 {
+                        let gap = cCurveTemp2 - cCurveTemp1
+                        let ratio = gap > 0 ? (temp - cCurveTemp1) / gap : 0.0
+                        return cCurveSpeed1 + (cCurveSpeed2 - cCurveSpeed1) * ratio
+                    } else if temp <= cCurveTemp3 {
+                        let gap = cCurveTemp3 - cCurveTemp2
+                        let ratio = gap > 0 ? (temp - cCurveTemp2) / gap : 0.0
+                        return cCurveSpeed2 + (cCurveSpeed3 - cCurveSpeed2) * ratio
+                    } else if temp <= cCurveTemp4 {
+                        let gap = cCurveTemp4 - cCurveTemp3
+                        let ratio = gap > 0 ? (temp - cCurveTemp3) / gap : 0.0
+                        return cCurveSpeed3 + (cCurveSpeed4 - cCurveSpeed3) * ratio
+                    } else {
+                        return cCurveSpeed4
+                    }
+                }
+                
+                for i in 0..<currentFanCount {
+                    let minRPM = i < currentFanMinSpeed.count ? currentFanMinSpeed[i] : 1200
+                    let maxRPM = i < currentFanMaxSpeed.count ? currentFanMaxSpeed[i] : 6000
+                    
+                    let pct = calculatePct(currentTemp)
+                    let rawTargetSpeed = minRPM + (maxRPM - minRPM) * (pct / 100.0)
+                    
+                    let currentApplied = tmpLastApplied[safe: i] ?? rawTargetSpeed
+                    let diff = rawTargetSpeed - currentApplied
+                    
+                    let alpha: Float = diff > 0 ? 0.25 : 0.03
+                    let nextApplied = currentApplied + diff * alpha
+                    
+                    if i < tmpLastApplied.count {
+                        tmpLastApplied[i] = nextApplied
+                    }
+                    if i < tmpTarget.count {
+                        tmpTarget[i] = nextApplied
+                    }
+                    
+                    let lastSet = tmpLastHardware[safe: i] ?? 0.0
+                    let isAtEdge = (nextApplied >= maxRPM - 100.0 && lastSet < maxRPM - 100.0) || 
+                                   (nextApplied <= minRPM + 100.0 && lastSet > minRPM + 100.0)
+                    
+                    if abs(nextApplied - lastSet) >= 50.0 || isAtEdge {
+                        self.applyFanSpeed(nextApplied, forFan: i)
+                        if i < tmpLastHardware.count {
+                            tmpLastHardware[i] = nextApplied
+                        }
+                    }
+                }
+                nextTargetFanSpeeds = tmpTarget
+                nextLastAppliedFanSpeed = tmpLastApplied
+                nextLastHardwareSetSpeed = tmpLastHardware
+            }
+            
+            // 2. Dispatch the results back to the main thread to update UI
+            DispatchQueue.main.async {
+                self.cpuTemp = tempCpu
+                self.gpuTemp = tempGpu
+                self.powerStats = statsPower
+                self.cpuUsage = usageCpu
+                self.gpuUsage = usageGpu
+                
+                self.tempCpuPerf = pCpuPerf
+                self.tempCpuEff = pCpuEff
+                self.tempSSD = pSSD
+                self.tempWiFi = pWiFi
+                self.tempMemory = pMemory
+                self.tempPalmRest = pPalmRest
+                self.tempAirflow = pAirflow
+                
+                self.cpuVoltage = voltCpu
+                self.gpuVoltage = voltGpu
+                self.cpuPower = powCpu
+                self.gpuPower = powGpu
+                self.totalPower = totalPow
+                
+                self.cpuFreqPerf = freqCpuPerf
+                self.cpuFreqEff = freqCpuEff
+                self.gpuFreq = freqGpu
+                
+                for i in 0..<actualFanSpeeds.count {
+                    if i < self.fanSpeed.count {
+                        self.fanSpeed[i] = actualFanSpeeds[i]
+                    }
+                }
+                
+                if !nextTargetFanSpeeds.isEmpty {
+                    self.targetFanSpeed = nextTargetFanSpeeds
+                    self.lastAppliedFanSpeed = nextLastAppliedFanSpeed
+                    self.lastHardwareSetSpeed = nextLastHardwareSetSpeed
+                }
+                
+                // Dynamic Power/Battery Saving Alignments
+                self.applyDynamicPowerSavingSettings()
+                
+                // Auto Dim Keyboard Backlight on Battery if configured
+                if currentDisableKeyboardBacklightOnBattery && !statsPower.isConnected {
+                    let currentKB = KeyboardBacklightPrivate.getBrightness()
+                    if currentKB > 0.0 {
+                        let _ = KeyboardBacklightPrivate.setBrightness(0.0)
+                        self.keyboardBrightness = 0.0
+                    }
+                }
+                
+                self.isRefreshing = false
             }
         }
-        
-        // Dynamically scale CPU & GPU frequencies based on active core workloads
-        cpuFreqPerf = 1.5 + (cpuUsage / 100.0) * 1.7
-        cpuFreqEff = 1.0 + (cpuUsage / 100.0) * 1.0
-        gpuFreq = 0.3 + (gpuUsage / 100.0) * 1.0
-        
-        // Dynamic Power/Battery Saving Alignments
-        applyDynamicPowerSavingSettings()
-        
-        // Auto Dim Keyboard Backlight on Battery if configured
-        if disableKeyboardBacklightOnBattery && !powerStats.isConnected {
-            let currentKB = KeyboardBacklightPrivate.getBrightness()
-            if currentKB > 0.0 {
-                let _ = KeyboardBacklightPrivate.setBrightness(0.0)
-                keyboardBrightness = 0.0
-            }
-        }
-        
-        if fanCount > 0 {
-            for i in 0..<fanCount {
-                let ac = smc.getFanSpeed(i)
-                if i < fanSpeed.count { fanSpeed[i] = ac }
-            }
-        }
-        
-        // Custom fan curve temperature regulation evaluation
-        evaluateAndApplyFanCurve()
     }
     
     private func getGPUUsage() -> Double {
@@ -2667,85 +3136,137 @@ struct DashboardView: View {
         
         // 2. Privilege-based execution (standard way via smchelper)
         let activeInt = enabled ? 1 : 0
-        let cmd = "sudo -n '\(helperPath)' charge \(limit) \(activeInt)"
         
-        let proc = Process()
-        proc.launchPath = "/bin/sh"
-        proc.arguments  = ["-c", cmd]
-        
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            if proc.terminationStatus != 0 {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sudo"
+            proc.arguments  = ["-n", helperPath, "charge", String(limit), String(activeInt)]
+            
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus != 0 {
+                    DispatchQueue.main.async {
+                        self.showPrivilegeWarning = true
+                    }
+                }
+            } catch {
                 DispatchQueue.main.async {
                     self.showPrivilegeWarning = true
                 }
             }
-        } catch {
+            
+            // Re-read value to confirm success and update UI state
+            let current = self.smc.getBatteryChargeLimit()
             DispatchQueue.main.async {
-                self.showPrivilegeWarning = true
+                self.isChargeLimitEnabled = current.active
+                self.batteryLimitValue = Float(current.limit)
             }
         }
-        
-        // Re-read value to confirm success and update UI state
-        let current = smc.getBatteryChargeLimit()
-        isChargeLimitEnabled = current.active
-        batteryLimitValue = Float(current.limit)
+    }
+    private func policyEmoji(_ policy: Int) -> String {
+        switch policy {
+        case 0: return "🍃"
+        case 1: return "⚖️"
+        default: return "🚀"
+        }
     }
     
-    private func applyLowPowerMode(_ enabled: Bool) {
+    private func acPolicyText(_ policy: Int) -> String {
+        let isZh = currentLanguage == "zh-Hans"
+        switch policy {
+        case 0: return isZh ? "极静" : "Eco"
+        case 1: return isZh ? "均衡" : "Balanced"
+        default: return isZh ? "极致" : "Turbo"
+        }
+    }
+
+    private func batteryPolicyText(_ policy: Int) -> String {
+        let isZh = currentLanguage == "zh-Hans"
+        switch policy {
+        case 0: return isZh ? "极静" : "Eco"
+        case 1: return isZh ? "均衡" : "Balanced"
+        default: return isZh ? "极致" : "Turbo"
+        }
+    }
+
+    private func acPolicyTipText(_ policy: Int) -> String {
+        switch policy {
+        case 0: return t("ac_policy_eco")
+        case 1: return t("ac_policy_balanced")
+        default: return t("ac_policy_turbo")
+        }
+    }
+
+    private func batteryPolicyTipText(_ policy: Int) -> String {
+        let isZh = currentLanguage == "zh-Hans"
+        switch policy {
+        case 0: return isZh ? "🍃 极致静音 (能耗极低)" : "🍃 Eco Silent (Low TDP)"
+        case 1: return isZh ? "⚖️ 标准均衡 (能耗优化)" : "⚖️ Balanced (Normal)"
+        default: return isZh ? "🚀 极致性能 (不限功耗)" : "🚀 Turbo (Max Perf)"
+        }
+    }
+
+    private func applyLowPowerMode(type: String, policy: Int) {
         let helperPath = smcHelperPath
-        let activeInt = enabled ? 1 : 0
-        let cmd = "sudo -n '\(helperPath)' power \(activeInt)"
         
-        let proc = Process()
-        proc.launchPath = "/bin/sh"
-        proc.arguments  = ["-c", cmd]
-        
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            if proc.terminationStatus != 0 {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sudo"
+            proc.arguments  = ["-n", helperPath, "power", type, String(policy)]
+            
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus != 0 {
+                    DispatchQueue.main.async {
+                        self.showPrivilegeWarning = true
+                    }
+                }
+            } catch {
                 DispatchQueue.main.async {
                     self.showPrivilegeWarning = true
                 }
             }
-        } catch {
+            
             DispatchQueue.main.async {
-                self.showPrivilegeWarning = true
+                self.isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+                if policy == 0 {
+                    self.isLowPowerModeEnabled = true
+                } else if policy == 1 || policy == 2 {
+                    self.isLowPowerModeEnabled = false
+                }
             }
-        }
-        
-        isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
-        if isLowPowerModeEnabled != enabled {
-            isLowPowerModeEnabled = enabled
         }
     }
     
     private func applyAggressiveSleep(_ enabled: Bool) {
         let helperPath = smcHelperPath
         let minutes = enabled ? 2 : 10
-        let cmd = "sudo -n '\(helperPath)' sleep \(minutes)"
         
-        let proc = Process()
-        proc.launchPath = "/bin/sh"
-        proc.arguments  = ["-c", cmd]
-        
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            if proc.terminationStatus != 0 {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sudo"
+            proc.arguments  = ["-n", helperPath, "sleep", String(minutes)]
+            
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus != 0 {
+                    DispatchQueue.main.async {
+                        self.showPrivilegeWarning = true
+                    }
+                }
+            } catch {
                 DispatchQueue.main.async {
                     self.showPrivilegeWarning = true
                 }
             }
-        } catch {
+            
             DispatchQueue.main.async {
-                self.showPrivilegeWarning = true
+                self.aggressiveScreenSleep = enabled
             }
         }
-        
-        aggressiveScreenSleep = enabled
     }
     
     private var remainingWh: Double {
@@ -2764,21 +3285,21 @@ struct DashboardView: View {
         if isConnected {
             // AC 模式策略执行
             if acPowerPolicy == 0 { // 极静 Eco Silent
-                applyLowPowerMode(true)
+                applyLowPowerMode(type: "c", policy: 0)
                 applyAggressiveSleepLimit(5)
                 // 修复冲突#1：极静模式下，若风扇处于 Turbo(3)，自动降回均衡(2)，防止 CPU 限频但风扇全速空跑
                 if fanCount > 0 && fanPreset == 3 {
                     DispatchQueue.main.async { self.applyPreset(2, skipPolicyCheck: true) }
                 }
             } else if acPowerPolicy == 1 { // 均衡 Balanced
-                applyLowPowerMode(false)
+                applyLowPowerMode(type: "c", policy: 1)
                 applyAggressiveSleepLimit(10)
                 // 均衡模式：若风扇在 Turbo，降回均衡；若在自动，保持
                 if fanCount > 0 && fanPreset == 3 {
                     DispatchQueue.main.async { self.applyPreset(2, skipPolicyCheck: true) }
                 }
             } else { // 极致 Turbo
-                applyLowPowerMode(false)
+                applyLowPowerMode(type: "c", policy: 2)
                 applyAggressiveSleepLimit(30)
                 // 极致性能：若风扇在静音(1)，自动提升至均衡(2)，防止 CPU 满速但风扇被压低导致过热
                 if fanCount > 0 && fanPreset == 1 {
@@ -2789,10 +3310,10 @@ struct DashboardView: View {
             // 电池模式策略执行
             guard autoAlignBatteryPolicies else { return }
             
-            let target = batteryTargetPower
-            if target <= 8.0 {
+            applyLowPowerMode(type: "b", policy: batteryPowerPolicy)
+            
+            if batteryPowerPolicy == 0 {
                 // 修复冲突#2：极致节能(<=8W) 时，若风扇在 Turbo，自动降至静音，避免风扇电机白白消耗 1~2W
-                applyLowPowerMode(true)
                 applyAggressiveSleepLimit(1) // 1分钟休眠
                 if keyboardMode == 0 {
                     let _ = KeyboardBacklightPrivate.setBrightness(0.0)
@@ -2801,9 +3322,8 @@ struct DashboardView: View {
                 if fanCount > 0 && fanPreset == 3 {
                     DispatchQueue.main.async { self.applyPreset(1, skipPolicyCheck: true) }
                 }
-            } else if target <= 15.0 {
+            } else if batteryPowerPolicy == 1 {
                 // 中度节能(8~15W)：若 Turbo，降为均衡
-                applyLowPowerMode(true)
                 applyAggressiveSleepLimit(2) // 2分钟休眠
                 if keyboardMode == 0 {
                     let _ = KeyboardBacklightPrivate.setBrightness(0.15)
@@ -2814,7 +3334,6 @@ struct DashboardView: View {
                 }
             } else {
                 // 高性能(>15W)：恢复标准配置
-                applyLowPowerMode(false)
                 applyAggressiveSleepLimit(10) // 恢复标准10分钟
             }
         }
@@ -2822,27 +3341,27 @@ struct DashboardView: View {
     
     private func applyAggressiveSleepLimit(_ minutes: Int) {
         let helperPath = smcHelperPath
-        let cmd = "sudo -n '\(helperPath)' sleep \(minutes)"
         
-        let proc = Process()
-        proc.launchPath = "/bin/sh"
-        proc.arguments  = ["-c", cmd]
-        
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            if proc.terminationStatus != 0 {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sudo"
+            proc.arguments  = ["-n", helperPath, "sleep", String(minutes)]
+            
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus != 0 {
+                    DispatchQueue.main.async {
+                        self.showPrivilegeWarning = true
+                    }
+                }
+            } catch {
                 DispatchQueue.main.async {
                     self.showPrivilegeWarning = true
                 }
             }
-        } catch {
-            DispatchQueue.main.async {
-                self.showPrivilegeWarning = true
-            }
         }
     }
-
     
     private func toggleManualFan(_ manual: Bool) {
         let bitmask = UInt16(fanCount == 2 ? 3 : 1)
@@ -2863,41 +3382,46 @@ struct DashboardView: View {
             return
         }
         
-        // 2. sudo via /bin/sh -c with strict status checks
-        let manualCmd = "sudo -n '\(helperPath)' manual \(manual ? 1 : 0) \(bitmask)"
-        let proc = Process()
-        proc.launchPath = "/bin/sh"
-        proc.arguments  = ["-c", manualCmd]
-        
-        var success = false
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            if proc.terminationStatus == 0 {
-                success = true
-            }
-        } catch { }
-        
-        if success {
-            isManualFan = manual
-            showPrivilegeWarning = false
+        // 2. sudo securely via Process array
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sudo"
+            proc.arguments  = ["-n", helperPath, "manual", String(manual ? 1 : 0), String(bitmask)]
             
-            if manual {
-                let targets = targetFanSpeed
-                let fc      = fanCount > 0 ? fanCount : 2
-                DispatchQueue.global(qos: .userInitiated).async {
-                    for i in 0..<fc {
-                        let speed = targets[safe: i] ?? 2000
-                        let cmd   = "sudo -n '\(helperPath)' speed \(i) \(Int(speed))"
-                        let p = Process(); p.launchPath = "/bin/sh"; p.arguments = ["-c", cmd]
-                        try? p.run(); p.waitUntilExit()
+            var success = false
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 {
+                    success = true
+                }
+            } catch { }
+            
+            DispatchQueue.main.async {
+                if success {
+                    self.isManualFan = manual
+                    self.showPrivilegeWarning = false
+                    
+                    if manual {
+                        let targets = self.targetFanSpeed
+                        let fc      = self.fanCount > 0 ? self.fanCount : 2
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            for i in 0..<fc {
+                                let speed = targets[safe: i] ?? 2000
+                                let p = Process()
+                                p.launchPath = "/usr/bin/sudo"
+                                p.arguments = ["-n", helperPath, "speed", String(i), String(Int(speed))]
+                                try? p.run()
+                                p.waitUntilExit()
+                            }
+                        }
                     }
+                } else {
+                    // Sudo passwordless execution failed or is not authorized
+                    self.isManualFan = false
+                    self.showPrivilegeWarning = true
                 }
             }
-        } else {
-            // Sudo passwordless execution failed or is not authorized
-            isManualFan = false
-            showPrivilegeWarning = true
         }
     }
     
@@ -2928,13 +3452,9 @@ struct DashboardView: View {
         
         DispatchQueue.global(qos: .userInitiated).async {
             for i in indices {
-                // Build the shell command
-                let shellCmd = "sudo -n '\(helperPath)' speed \(i) \(Int(speed))"
-                
-                // Use /bin/sh -c for reliable execution (same as terminal)
                 let proc = Process()
-                proc.launchPath = "/bin/sh"
-                proc.arguments  = ["-c", shellCmd]
+                proc.launchPath = "/usr/bin/sudo"
+                proc.arguments  = ["-n", helperPath, "speed", String(i), String(Int(speed))]
                 
                 do {
                     try proc.run()
@@ -3075,6 +3595,7 @@ struct DashboardView: View {
                 .padding(8)
                 .background(Color.white.opacity(0.02))
                 .cornerRadius(10)
+                .focusable(false)
                 
                 // 2. Power & Voltages Accordion
                 DisclosureGroup(isExpanded: $isPowerExpanded) {
@@ -3099,6 +3620,7 @@ struct DashboardView: View {
                 .padding(8)
                 .background(Color.white.opacity(0.02))
                 .cornerRadius(10)
+                .focusable(false)
                 
                 // 3. Fans Accordion
                 DisclosureGroup(isExpanded: $isFanExpanded) {
@@ -3140,6 +3662,7 @@ struct DashboardView: View {
                 .padding(8)
                 .background(Color.white.opacity(0.02))
                 .cornerRadius(10)
+                .focusable(false)
                 
                 // 4. Frequencies Accordion
                 DisclosureGroup(isExpanded: $isFreqExpanded) {
@@ -3163,6 +3686,7 @@ struct DashboardView: View {
                 .padding(8)
                 .background(Color.white.opacity(0.02))
                 .cornerRadius(10)
+                .focusable(false)
             }
         }
         .padding(14)
@@ -3568,8 +4092,11 @@ class CPUMonitor {
     private var prevCpuInfo: processor_info_array_t?
     private var prevCpuInfoCount: mach_msg_type_number_t = 0
     private var numCPUs: uint32 = 0
+    private let lock = NSLock()
     
     init() {
+        lock.lock()
+        defer { lock.unlock() }
         var processorCount: uint32 = 0
         var processorInfo: processor_info_array_t?
         var processorInfoCount: mach_msg_type_number_t = 0
@@ -3583,13 +4110,18 @@ class CPUMonitor {
     }
     
     deinit {
+        lock.lock()
+        defer { lock.unlock() }
         if let info = prevCpuInfo {
             let size = vm_size_t(prevCpuInfoCount) * vm_size_t(MemoryLayout<integer_t>.size)
             vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info), size)
+            prevCpuInfo = nil
         }
     }
     
     func getUsage() -> Double {
+        lock.lock()
+        defer { lock.unlock() }
         var processorCount: uint32 = 0
         var processorInfo: processor_info_array_t?
         var processorInfoCount: mach_msg_type_number_t = 0
@@ -3646,6 +4178,53 @@ class CPUMonitor {
         
         let avgUsage = totalUsage / Double(processorCount) * 100.0
         return max(0.0, min(100.0, avgUsage))
+    }
+}
+
+// ── macOS bottom-level ScrollWheel & Trackpad Swipe Detector ──
+struct ScrollWheelDetector: NSViewRepresentable {
+    var onScroll: (CGFloat) -> Void
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = ScrollNSView()
+        view.onScroll = onScroll
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let scrollNSView = nsView as? ScrollNSView {
+            scrollNSView.onScroll = onScroll
+        }
+    }
+    
+    class ScrollNSView: NSView {
+        var onScroll: ((CGFloat) -> Void)?
+        private var lastScrollTime: Date = Date.distantPast
+        
+        override var acceptsFirstResponder: Bool { true }
+        
+        override func scrollWheel(with event: NSEvent) {
+            let deltaY = event.scrollingDeltaY
+            let now = Date()
+            let timeSinceLastScroll = now.timeIntervalSince(lastScrollTime)
+            
+            // 1. 如果当前处于 0.5s 的翻页转场动画冷却期内，完全吞掉所有滚轮事件，
+            // 避免在页面上下滑动时，内部 ScrollView 同时发生纵向位移而导致画面混乱和抖动
+            if timeSinceLastScroll < 0.5 {
+                return
+            }
+            
+            // 2. 如果滚动幅度超过阈值，视为用户的翻页手势
+            if abs(deltaY) > 1.5 {
+                onScroll?(deltaY)
+                lastScrollTime = now
+                // 同样吞掉该事件，不向下传递，确保转场前一瞬间内部不发生意外抖动
+                return
+            }
+            
+            // 3. 正常慢速滚动，向下传递给子视图的 ScrollView 进行正常的列表内容滚动
+            super.scrollWheel(with: event)
+        }
     }
 }
 

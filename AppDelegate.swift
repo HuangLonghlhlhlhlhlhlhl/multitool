@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover?
     var settingsWindow: NSWindow?
     var aboutWindow: NSWindow?
+    var statusBarCustomView: StatusBarCustomView?
     
     // MARK: - Launch
     
@@ -25,7 +26,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         
         if let button = self.statusBarItem?.button {
-            button.image = makeStatusBarIcon()
+            button.image = nil
+            button.title = ""
+            
+            // 添加高精度绝对居中及 Logo 绘制自定义视图
+            let customView = StatusBarCustomView()
+            customView.logoImage = makeStatusBarIcon()
+            customView.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(customView)
+            
+            NSLayoutConstraint.activate([
+                customView.leadingAnchor.constraint(equalTo: button.leadingAnchor),
+                customView.trailingAnchor.constraint(equalTo: button.trailingAnchor),
+                customView.topAnchor.constraint(equalTo: button.topAnchor),
+                customView.bottomAnchor.constraint(equalTo: button.bottomAnchor)
+            ])
+            self.statusBarCustomView = customView
+            
+            // Configure cell for multi-line layout and auto-wrapping
+            button.cell?.usesSingleLineMode = false
+            button.cell?.wraps = true
+            button.cell?.lineBreakMode = .byClipping
             
             // 同时响应左键（主动作）和右键（菜单）
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -215,6 +236,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     private var telemetryTimer: Timer?
     private let cpuMonitor = CPUMonitor()
+    private let networkMonitor = NetworkMonitor()
+    private let telemetryQueue = DispatchQueue(label: "com.statusctrl.appdelegate.telemetry", qos: .utility)
+    private var isUpdatingTelemetry = false
     
     func startTelemetryTimer() {
         telemetryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -225,34 +249,99 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     private func updateTelemetryText() {
-        guard let button = self.statusBarItem?.button else { return }
+        guard !isUpdatingTelemetry else { return }
+        isUpdatingTelemetry = true
         
-        let cpuTemp = SMCController.shared.getCPUTemperature()
-        let cpuUsage = cpuMonitor.getUsage()
-        
-        let ramTemp = SMCController.shared.getMemoryTemperature()
-        let ramUsage = getRAMUsage()
-        
-        let ssdTemp = SMCController.shared.getSSDTemperature()
-        let ssdUsage = getSSDUsage()
-        
-        // Format: C:45° 5% M:36° 42% S:32° 48%
-        let text = String(format: "C:%.0f° %.0f%% M:%.0f° %.0f%% S:%.0f° %.0f%%",
-                          cpuTemp, cpuUsage,
-                          ramTemp, ramUsage,
-                          ssdTemp, ssdUsage)
-        
-        let font = NSFont.monospacedSystemFont(ofSize: 11.0, weight: .bold)
-        let attribs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.labelColor
-        ]
-        let attributedString = NSAttributedString(string: " " + text, attributes: attribs)
-        
-        DispatchQueue.main.async {
-            button.attributedTitle = attributedString
-            button.imagePosition = .imageLeft
+        telemetryQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            let cpuUsage = self.cpuMonitor.getUsage()
+            let ramUsage = self.getRAMUsage()
+            let ssdUsage = self.getSSDUsage()
+            let (upSpeed, downSpeed) = self.networkMonitor.getSpeed()
+            
+            let cpuTemp = SMCController.shared.getCPUTemperature()
+            let ramTemp = SMCController.shared.getMemoryTemperature()
+            let ssdTemp = SMCController.shared.getSSDTemperature()
+            
+            DispatchQueue.main.async {
+                self.isUpdatingTelemetry = false
+                self.renderTelemetry(
+                    cpuUsage: cpuUsage, cpuTemp: Double(cpuTemp),
+                    ramUsage: ramUsage, ramTemp: Double(ramTemp),
+                    ssdUsage: ssdUsage, ssdTemp: Double(ssdTemp),
+                    upSpeed: upSpeed, downSpeed: downSpeed
+                )
+            }
         }
+    }
+    
+    private func padSpeedRight(_ speedStr: String, toLength length: Int = 7) -> String {
+        let paddingCount = length - speedStr.count
+        if paddingCount > 0 {
+            return speedStr + String(repeating: " ", count: paddingCount)
+        }
+        return String(speedStr.prefix(length))
+    }
+    
+    private func renderTelemetry(
+        cpuUsage: Double, cpuTemp: Double,
+        ramUsage: Double, ramTemp: Double,
+        ssdUsage: Double, ssdTemp: Double,
+        upSpeed: Double, downSpeed: Double
+    ) {
+        guard self.statusBarItem?.button != nil else { return }
+        
+        // 限制最大值为 99%，防止 100% 导致排版位移，同时保证等宽对齐
+        let displayCpu = min(cpuUsage, 99.0)
+        let displayRam = min(ramUsage, 99.0)
+        let displaySsd = min(ssdUsage, 99.0)
+        
+        // 第一行：效率指标 (格式固定为 5 字符，例如 "C: 8%")
+        let cpuUsageStr = String(format: "C:%2.0f%%", displayCpu)
+        let ramUsageStr = String(format: "M:%2.0f%%", displayRam)
+        let ssdUsageStr = String(format: "S:%2.0f%%", displaySsd)
+        
+        // 第二行：温度指标 (前置两个空格以和第一行数字及单位完美上下垂直重合对齐，使用真正的度数符号，例如 "  45°")
+        let cpuTempStr = String(format: "  %2.0f°", cpuTemp)
+        let ramTempStr = String(format: "  %2.0f°", ramTemp)
+        let ssdTempStr = String(format: "  %2.0f°", ssdTemp)
+        
+        // 网速处理：将网速数字与箭头紧贴拼接，然后在右侧补齐空格，保持总长度 7 字符且没有间隙，同时实现箭头左侧完全对齐
+        let upSpeedCompact = formatSpeedCompact(upSpeed)
+        let upSpeedRaw = "⇡" + upSpeedCompact
+        let upSpeedStr = padSpeedRight(upSpeedRaw, toLength: 7)
+        
+        let downSpeedCompact = formatSpeedCompact(downSpeed)
+        let downSpeedRaw = "⇣" + downSpeedCompact
+        let downSpeedStr = padSpeedRight(downSpeedRaw, toLength: 7)
+        
+        // 拼接双行内容，使用 1 个空格分隔 C-M-S，2 个空格分隔 S-网速，以严格符合用户提供的紧凑样式和完美对齐结构
+        let line1 = "\(cpuUsageStr) \(ramUsageStr) \(ssdUsageStr)  \(upSpeedStr)"
+        let line2 = "\(cpuTempStr) \(ramTempStr) \(ssdTempStr)  \(downSpeedStr)"
+        let combinedString = "\(line1)\n\(line2)"
+        
+        // 字体放大 10% (9.0 -> 10.0)，设置自适应紧凑行距以减小两行总高度，从而实现在自定义绘图中的绝对完美居中
+        let font = NSFont.monospacedSystemFont(ofSize: 10.0, weight: .regular)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = -3.2 // 紧密拉近两行行距，防止超出状态栏被裁切
+        paragraphStyle.alignment = .left
+        
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraphStyle
+        ]
+        
+        let attrString = NSAttributedString(string: combinedString, attributes: attributes)
+        
+        // 1. 更新自适应自平衡宽度：左边距 2 + Logo 18 + 间距 4 + 文字宽度 + 右边距 6 = 文字宽度 + 30pt
+        let totalSize = attrString.size()
+        let requiredWidth = ceil(totalSize.width) + 30
+        self.statusBarItem?.length = requiredWidth
+        
+        // 2. 将数据赋给自定义高精度垂直居中视图进行渲染
+        self.statusBarCustomView?.attributedString = attrString
     }
     
     func getRAMUsage() -> Double {
@@ -497,5 +586,134 @@ struct SettingsToggleRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+}
+
+// MARK: - Network Monitor and Helpers
+
+class NetworkMonitor {
+    private var lastBytesIn: UInt64 = 0
+    private var lastBytesOut: UInt64 = 0
+    private var lastTime: Date = Date()
+    
+    init() {
+        let (bytesIn, bytesOut) = getNetworkBytes()
+        self.lastBytesIn = bytesIn
+        self.lastBytesOut = bytesOut
+        self.lastTime = Date()
+    }
+    
+    func getSpeed() -> (uploadSpeed: Double, downloadSpeed: Double) {
+        let (bytesIn, bytesOut) = getNetworkBytes()
+        let now = Date()
+        let timeDelta = now.timeIntervalSince(lastTime)
+        
+        guard timeDelta > 0.1 else {
+            return (0.0, 0.0)
+        }
+        
+        let deltaIn = bytesIn >= lastBytesIn ? (bytesIn - lastBytesIn) : 0
+        let deltaOut = bytesOut >= lastBytesOut ? (bytesOut - lastBytesOut) : 0
+        
+        let downloadSpeed = Double(deltaIn) / timeDelta
+        let uploadSpeed = Double(deltaOut) / timeDelta
+        
+        self.lastBytesIn = bytesIn
+        self.lastBytesOut = bytesOut
+        self.lastTime = now
+        
+        return (uploadSpeed, downloadSpeed)
+    }
+    
+    private func getNetworkBytes() -> (bytesIn: UInt64, bytesOut: UInt64) {
+        var totalBytesIn: UInt64 = 0
+        var totalBytesOut: UInt64 = 0
+        
+        var ptr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ptr) == 0, let firstAddr = ptr else {
+            return (0, 0)
+        }
+        
+        defer {
+            freeifaddrs(ptr)
+        }
+        
+        var tempAddr: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while tempAddr != nil {
+            if let addr = tempAddr?.pointee {
+                if let sa = addr.ifa_addr, sa.pointee.sa_family == UInt8(AF_LINK) {
+                    if let data = addr.ifa_data {
+                        let networkData = data.assumingMemoryBound(to: if_data.self)
+                        totalBytesIn += UInt64(networkData.pointee.ifi_ibytes)
+                        totalBytesOut += UInt64(networkData.pointee.ifi_obytes)
+                    }
+                }
+            }
+            tempAddr = tempAddr?.pointee.ifa_next
+        }
+        
+        return (totalBytesIn, totalBytesOut)
+    }
+}
+
+func formatSpeedCompact(_ bytesPerSecond: Double) -> String {
+    if bytesPerSecond < 1024 {
+        return String(format: "%.0fB", bytesPerSecond)
+    } else if bytesPerSecond < 1024 * 1024 {
+        return String(format: "%.0fK", bytesPerSecond / 1024.0)
+    } else {
+        return String(format: "%.1fM", bytesPerSecond / (1024.0 * 1024.0))
+    }
+}
+
+// MARK: - Custom High-Precision Status Bar View with Logo & Precision Alignment
+class StatusBarCustomView: NSView {
+    var attributedString: NSAttributedString? {
+        didSet {
+            needsDisplay = true
+        }
+    }
+    
+    // 缓存精致的程序 Logo 图像
+    var logoImage: NSImage?
+    
+    // 允许点击穿透，让下方的 NSStatusBarButton 正常接收所有鼠标点击和高亮状态切换
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil
+    }
+    
+    // 每次父视图（即状态栏按钮）被请求重绘时，也强制我们重绘
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        needsDisplay = true
+    }
+    
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        
+        // 1. 在最左侧绘制程序精致渐变圆环 Logo (18x18)
+        if let logo = logoImage {
+            let logoSize: CGFloat = 18.0
+            let logoY = (bounds.height - logoSize) / 2.0
+            let logoRect = NSRect(x: 2.0, y: logoY, width: logoSize, height: logoSize)
+            logo.draw(in: logoRect)
+        }
+        
+        // 2. 绘制右侧双行监控文本，并按用户指示“向下靠下”靠底对齐微调
+        guard let attrStr = attributedString else { return }
+        let totalSize = attrStr.size()
+        
+        // 状态栏高度通常为 22pt，文字总高度约 16.8pt。
+        // 原绝对垂直居中 y 是 (bounds.height - totalSize.height) / 2.0
+        // 按照用户指示“向下靠下显示”，我们在此基础上在 y 轴向下挪动 1.5pt，使其完美贴合且具有阅读沉淀感
+        let y = (bounds.height - totalSize.height) / 2.0 - 1.5
+        
+        // 文字的起始 x 坐标紧接在 Logo 区域右侧 (Logo 的 x 是 2，宽度 18，我们保留 4pt 优雅间距，因此设为 24)
+        let x: CGFloat = 24.0
+        
+        let drawRect = NSRect(x: x, y: y, width: totalSize.width, height: totalSize.height)
+        
+        // 渲染文本
+        attrStr.draw(in: drawRect)
     }
 }
