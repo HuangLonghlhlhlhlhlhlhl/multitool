@@ -31,10 +31,10 @@ git push origin v1.4.0
 
 # 4. 使用 GitHub CLI 自动创建 Release 并上传 DMG
 echo "🎁 [GitHub] 正在通过 GitHub CLI 创建/更新 v1.4.0 发布包，并上传 DMG 附件..."
+/usr/local/bin/gh release delete v1.4.0 -y >/dev/null 2>&1 || true
 /usr/local/bin/gh release create v1.4.0 "/Users/h-l/Desktop/STATUS CTRL-v1.4.0.dmg" \
     --title "STATUS CTRL v1.4.0" \
-    --notes-file CHANGELOG.md \
-    --clobber
+    --notes-file CHANGELOG.md
 
 echo "=================================================="
 echo "🎉 全自动部署与 GitHub Release 发布完美完成！"
