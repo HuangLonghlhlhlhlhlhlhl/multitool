@@ -16,7 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // 1. Popover（左键展开的主面板）
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 380, height: 620)
+        popover.contentSize = NSSize(width: 680, height: 530)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: DashboardView())
         self.popover = popover
@@ -242,7 +242,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                           ramTemp, ramUsage,
                           ssdTemp, ssdUsage)
         
-        let font = NSFont.monospacedSystemFont(ofSize: 7.5, weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: 11.0, weight: .bold)
         let attribs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.labelColor

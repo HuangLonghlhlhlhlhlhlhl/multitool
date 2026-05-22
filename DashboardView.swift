@@ -79,6 +79,8 @@ struct DashboardView: View {
     @State private var isManualFan: Bool = false
     @State private var fanLinked: Bool = true  // true = both fans move together
     @State private var fanRotationAngle: Double = 0.0
+    // 冲突警告：当用户尝试选择与功耗策略不兼容的风扇预设时显示
+    @State private var fanPolicyConflictWarning: Bool = false
     
     // Asymmetric Hysteresis Smoothing
     @State private var lastAppliedFanSpeed: [Float] = [2000.0, 2000.0]
@@ -434,62 +436,140 @@ struct DashboardView: View {
         }
     }
     
+    @State private var currentPage: Int = 0
+    @State private var dragOffset: CGFloat = 0
+
     var body: some View {
         ZStack {
-            // Main Dashboard View Panel
-            VStack(spacing: 16) {
-                // Header Bar
+            // ── Main Panel ──
+            VStack(spacing: 0) {
+                // Header (fixed)
                 headerSection
-                
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 16) {
-                        // System Telemetry Section
-                        systemTelemetrySection
-                        
-                        // Power Monitor Section
-                        powerSection
-                        
-                        // Battery Care & Charge Limit Section
-                        batteryCareSection
-                        
-                        // Power Saving & Battery Saver Section
-                        powerSavingSection
-                        
-                        // Fan Control Section
-                        if fanCount > 0 {
-                            fanSection
-                        } else {
-                            fanlessSection
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+
+                Divider()
+                    .background(Color.white.opacity(0.06))
+
+                // ── Vertical paging content (whole-page transition, lag-free) ──
+                GeometryReader { geo in
+                    let height = geo.size.height
+                    ZStack {
+                        // Page 0
+                        VStack(spacing: 0) {
+                            LazyVGrid(
+                                columns: [
+                                    GridItem(.flexible(), spacing: 10),
+                                    GridItem(.flexible(), spacing: 10)
+                                ],
+                                spacing: 10
+                            ) {
+                                // 左上: 系统硬件遥测
+                                systemTelemetrySection
+                                // 右上: 电源接口诊断
+                                powerSection
+                                // 左下: SMC 风扇控制器
+                                if fanCount > 0 {
+                                    fanSection
+                                } else {
+                                    fanlessSection
+                                }
+                                // 右下: 功耗策略 & 续航推演
+                                powerSavingSection
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
                         }
+                        .frame(width: geo.size.width, height: height)
+                        .offset(y: (0 - CGFloat(currentPage)) * height + dragOffset)
                         
-                        // Keyboard Backlight Section
-                        keyboardSection
-                        
-                        // System info footer
-                        footerSection
+                        // Page 1
+                        VStack(spacing: 0) {
+                            LazyVGrid(
+                                columns: [
+                                    GridItem(.flexible(), spacing: 10),
+                                    GridItem(.flexible(), spacing: 10)
+                                ],
+                                spacing: 10
+                            ) {
+                                batteryCareSection
+                                keyboardSection
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            
+                            Spacer() // Push contents to top
+                        }
+                        .frame(width: geo.size.width, height: height)
+                        .offset(y: (1 - CGFloat(currentPage)) * height + dragOffset)
                     }
-                    .padding(.horizontal, 2)
+                    .clipped()
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                let translation = value.translation.height
+                                // Add friction when dragging out of bounds
+                                if currentPage == 0 && translation > 0 {
+                                    dragOffset = translation * 0.3
+                                } else if currentPage == 1 && translation < 0 {
+                                    dragOffset = translation * 0.3
+                                } else {
+                                    dragOffset = translation
+                                }
+                            }
+                            .onEnded { value in
+                                let translation = value.translation.height
+                                let threshold = height * 0.15 // 15% is extremely responsive
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                    if translation < -threshold && currentPage < 1 {
+                                        currentPage = 1
+                                    } else if translation > threshold && currentPage > 0 {
+                                        currentPage = 0
+                                    }
+                                    dragOffset = 0
+                                }
+                            }
+                    )
+
+                    // ── 右侧极简竖向圆点指示器 ──
+                    VStack(spacing: 6) {
+                        ForEach(0..<2, id: \.self) { idx in
+                            Capsule()
+                                .fill(currentPage == idx
+                                    ? Color(red: 0.18, green: 0.62, blue: 0.95)
+                                    : Color.white.opacity(0.18))
+                                .frame(width: 4, height: currentPage == idx ? 18 : 6)
+                                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
+                                .contentShape(Rectangle())
+                                .focusable(false)
+                                .onTapGesture {
+                                    withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                                        currentPage = idx
+                                    }
+                                }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.trailing, 7)
                 }
             }
-            .padding(18)
             .blur(radius: showSettings ? 12 : 0)
-            
-            // Slide-Over Settings Panel Overlay (With elegant transitions)
+
+            // Settings overlay
             if showSettings {
                 settingsSection
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                     .zIndex(1)
             }
         }
-        .frame(width: 380, height: 620)
+        .frame(width: 680, height: 530)
         .background(
             ZStack {
-                // High-end Dark Morandi Gradient Background
                 Color(red: 0.08, green: 0.09, blue: 0.12)
-                
-                // Abstract Glowing Orbs (Premium visual depth)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 200)
-                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 200)
+                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 280)
+                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 280)
             }
         )
         .preferredColorScheme(.dark)
@@ -498,19 +578,13 @@ struct DashboardView: View {
             currentLanguage = "zh-Hans"
             initializeHardware()
         }
-        .onReceive(statsTimer) { _ in
-            refreshStats()
-        }
-        .onReceive(fanRotationTimer) { _ in
-            updateFanRotation()
-        }
-        .onReceive(waveTimer) { _ in
-            updateWaveAnimation()
-        }
+        .onReceive(statsTimer) { _ in refreshStats() }
+        .onReceive(fanRotationTimer) { _ in updateFanRotation() }
+        .onReceive(waveTimer) { _ in updateWaveAnimation() }
     }
-    
+
     // MARK: - Sub-Sections
-    
+
     // 1. Header View
     private var headerSection: some View {
         HStack {
@@ -541,24 +615,24 @@ struct DashboardView: View {
                     tempBadge(title: "BATT", temp: Float(powerStats.batteryTemperature), color: Color(red: 0.22, green: 0.80, blue: 0.45))
                 }
                 
-                // Settings Gear Button with spring feedback
-                Button(action: {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        showSettings.toggle()
+                // Settings Gear Button with spring feedback (onTapGesture to prevent blue focus ring)
+                Image(systemName: "gearshape.fill")
+                    .focusable(false)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.8))
+                    .padding(8)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                    )
+                    .contentShape(Circle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            showSettings.toggle()
+                        }
                     }
-                }) {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.8))
-                        .padding(8)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -1299,6 +1373,24 @@ struct DashboardView: View {
                         .shadow(color: Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.4), radius: 3)
                     }.buttonStyle(.plain)
                 }
+                .frame(maxWidth: .infinity)
+                .transition(.opacity)
+            }
+            
+            // 冲突警告：功耗策略与风扇预设不兼容
+            if fanPolicyConflictWarning {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color(red: 0.95, green: 0.30, blue: 0.18))
+                    Text(currentLanguage == "zh-Hans" ? "⚠️ 极致性能模式下禁止使用静音风扇，此组合可能导致处理器过热" : "⚠️ Cannot use Silent fan preset with Turbo power policy. Risk: CPU overheating.")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Color(red: 0.95, green: 0.30, blue: 0.18))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(Color(red: 0.95, green: 0.30, blue: 0.18).opacity(0.1))
+                .cornerRadius(6)
                 .frame(maxWidth: .infinity)
                 .transition(.opacity)
             }
@@ -2142,12 +2234,12 @@ struct DashboardView: View {
             }
         }
         .padding(18)
-        .frame(width: 380, height: 620)
+        .frame(width: 680, height: 530)
         .background(
             ZStack {
                 Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.14), .clear], center: .topTrailing, startRadius: 0, endRadius: 200)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.09), .clear], center: .bottomLeading, startRadius: 0, endRadius: 200)
+                RadialGradient(colors: [Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.14), .clear], center: .topTrailing, startRadius: 0, endRadius: 280)
+                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.09), .clear], center: .bottomLeading, startRadius: 0, endRadius: 280)
             }
         )
         .preferredColorScheme(.dark)
@@ -2402,7 +2494,16 @@ struct DashboardView: View {
         }
     }
     
-    private func applyPreset(_ preset: Int) {
+    // skipPolicyCheck: true 时跳过兼容性检验（仅供内部联动调用）
+    private func applyPreset(_ preset: Int, skipPolicyCheck: Bool = false) {
+        // 修复冲突#1：用户手动选择预设时，检验与当前功耗策略是否兼容
+        // 规则：极致性能(AC Turbo) 模式下，禁止选择「静音优先」风扇
+        if !skipPolicyCheck && preset == 1 && powerStats.isConnected && acPowerPolicy == 2 {
+            // 不允许在极致性能策略下使用静音风扇——显示冲突提示
+            fanPolicyConflictWarning = true
+            return
+        }
+        fanPolicyConflictWarning = false
         fanPreset = preset
         UserDefaults.standard.set(preset, forKey: "FanPresetMode")
         
@@ -2662,15 +2763,27 @@ struct DashboardView: View {
         
         if isConnected {
             // AC 模式策略执行
-            if acPowerPolicy == 0 { // Eco Silent
+            if acPowerPolicy == 0 { // 极静 Eco Silent
                 applyLowPowerMode(true)
                 applyAggressiveSleepLimit(5)
-            } else if acPowerPolicy == 1 { // Balanced
+                // 修复冲突#1：极静模式下，若风扇处于 Turbo(3)，自动降回均衡(2)，防止 CPU 限频但风扇全速空跑
+                if fanCount > 0 && fanPreset == 3 {
+                    DispatchQueue.main.async { self.applyPreset(2, skipPolicyCheck: true) }
+                }
+            } else if acPowerPolicy == 1 { // 均衡 Balanced
                 applyLowPowerMode(false)
                 applyAggressiveSleepLimit(10)
-            } else { // Turbo
+                // 均衡模式：若风扇在 Turbo，降回均衡；若在自动，保持
+                if fanCount > 0 && fanPreset == 3 {
+                    DispatchQueue.main.async { self.applyPreset(2, skipPolicyCheck: true) }
+                }
+            } else { // 极致 Turbo
                 applyLowPowerMode(false)
                 applyAggressiveSleepLimit(30)
+                // 极致性能：若风扇在静音(1)，自动提升至均衡(2)，防止 CPU 满速但风扇被压低导致过热
+                if fanCount > 0 && fanPreset == 1 {
+                    DispatchQueue.main.async { self.applyPreset(2, skipPolicyCheck: true) }
+                }
             }
         } else {
             // 电池模式策略执行
@@ -2678,23 +2791,29 @@ struct DashboardView: View {
             
             let target = batteryTargetPower
             if target <= 8.0 {
-                // 极致节能
+                // 修复冲突#2：极致节能(<=8W) 时，若风扇在 Turbo，自动降至静音，避免风扇电机白白消耗 1~2W
                 applyLowPowerMode(true)
                 applyAggressiveSleepLimit(1) // 1分钟休眠
                 if keyboardMode == 0 {
                     let _ = KeyboardBacklightPrivate.setBrightness(0.0)
                     keyboardBrightness = 0.0
                 }
+                if fanCount > 0 && fanPreset == 3 {
+                    DispatchQueue.main.async { self.applyPreset(1, skipPolicyCheck: true) }
+                }
             } else if target <= 15.0 {
-                // 中度节能
+                // 中度节能(8~15W)：若 Turbo，降为均衡
                 applyLowPowerMode(true)
                 applyAggressiveSleepLimit(2) // 2分钟休眠
                 if keyboardMode == 0 {
                     let _ = KeyboardBacklightPrivate.setBrightness(0.15)
                     keyboardBrightness = 0.15
                 }
+                if fanCount > 0 && fanPreset == 3 {
+                    DispatchQueue.main.async { self.applyPreset(2, skipPolicyCheck: true) }
+                }
             } else {
-                // 高性能
+                // 高性能(>15W)：恢复标准配置
                 applyLowPowerMode(false)
                 applyAggressiveSleepLimit(10) // 恢复标准10分钟
             }
