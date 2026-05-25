@@ -46,6 +46,7 @@
 
 ### 🔧 其他改进
 
+- 修复了主面板打开时因为 `isHardwareInitialized` 未被置为 `true`，导致界面永久卡在骨架图加载（横杠转圈）状态的 Bug。
 - 修复风扇手动滑块拖动时因后台轮询覆盖 `targetFanSpeed` 引发的「回弹感」——引入 `isUserDraggingFan` 标志位，拖动期间暂停后台写入。
 - 优化 `DragGesture` 翻页阻尼，15% 阈值响应极度灵敏，不影响面板内 `ScrollView` 的正常滚动。
 - 修复 Settings 齿轮按钮默认焦点环残留问题。

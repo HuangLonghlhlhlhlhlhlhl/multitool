@@ -2680,6 +2680,11 @@ struct DashboardView: View {
         
         // Launch behavior sync
         launchAtLogin = LaunchAtLoginHelper.isEnabled
+        
+        // Mark hardware as initialized to transition from skeleton view to main panel
+        withAnimation(.easeIn(duration: 0.3)) {
+            isHardwareInitialized = true
+        }
     }
     
     private func refreshStats() {
