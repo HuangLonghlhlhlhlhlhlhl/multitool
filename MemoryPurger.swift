@@ -7,6 +7,76 @@ public class MemoryPurger {
     /// - Parameters:
     ///   - progressHandler: Called on main thread with progress from 0.0 to 1.0.
     ///   - completion: Called on main thread with the reclaimed memory in Megabytes.
+    /// Safely terminates non-essential high-memory system helper / daemon / updater processes owned by the user.
+    private static func terminateSystemProcesses() {
+        print("[MemoryPurger] Initiating deep process cleanup...")
+        
+        let safeToKillSystemProcesses: Set<String> = [
+            "mdworker", "mdworker_shared", "mds", "mds_stores", "mds_helper", "mdworker_shared_sentry",
+            "com.apple.WebKit.WebContent", "com.apple.WebKit.Networking", "com.apple.WebKit.GPU",
+            "suggestd", "siriknowledged", "AssistantSiri", "Siri",
+            "quicklookd", "QuickLookUIService", "cloudphotosd", "photoanalysisd",
+            "photolibraryd", "reversetemplated", "newsd", "mapspushd",
+            "fmfd", "findmydeviced", "sharedfilelistd", "cloudd",
+            "com.apple.appkit.xpc.openAndSavePanelService", "WiFiAgent",
+            "UsageTrackingAgent", "UniversalReceiver", "sharingd", "rapportd",
+            "homed", "remotepairingdeviced", "corespeechd", "spindump",
+            "AppleIDAuthAgent", "BiomeAgent", "SafariCloudHistoryPushAgent",
+            "SafariHistoryService", "com.apple.Safari.History",
+            "GoogleSoftwareUpdateAgent", "Microsoft Update Assistant", "Adobe IPC Broker", "Creative Cloud Helper"
+        ]
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "ps -cax -o pid,comm,rss"]
+        
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            print("[MemoryPurger] Failed to run ps -cax for process cleanup: \(error)")
+            return
+        }
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return }
+        
+        let lines = output.components(separatedBy: .newlines)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed.hasPrefix("PID") { continue }
+            
+            let components = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+            guard components.count >= 3 else { continue }
+            
+            let pidString = components[0]
+            let rssString = components[components.count - 1]
+            let name = components[1..<(components.count - 1)].joined(separator: " ")
+            
+            guard let pid = Int32(pidString), let rssKB = Double(rssString) else { continue }
+            
+            // Only target listed safe system processes with memory usage above 5MB
+            let memoryMB = rssKB / 1024.0
+            if safeToKillSystemProcesses.contains(name) && memoryMB >= 5.0 {
+                // Ensure we don't kill our own app or its status bar helper
+                if name.contains("HelperStatusBar") || name.contains("Antigravity") || pid == getpid() {
+                    continue
+                }
+                
+                print("[MemoryPurger] Deep Cleaning Process: \(name) (PID: \(pid), Memory: \(String(format: "%.1f", memoryMB)) MB)")
+                kill(pid, SIGKILL)
+            }
+        }
+        print("[MemoryPurger] Deep process cleanup finished.")
+    }
+
+    /// Purge memory asynchronously on a background thread.
+    /// - Parameters:
+    ///   - progressHandler: Called on main thread with progress from 0.0 to 1.0.
+    ///   - completion: Called on main thread with the reclaimed memory in Megabytes.
     public static func purge(progressHandler: @escaping (Double) -> Void, completion: @escaping (Double) -> Void) {
         print("[MemoryPurger] Starting memory purge sequence...")
         
@@ -15,42 +85,53 @@ public class MemoryPurger {
             let beforeFree = getFreeMemoryBytes()
             print("[MemoryPurger] Free memory before purge: \(beforeFree / 1024 / 1024) MB")
             
-            // 2. Perform balloon allocation to trigger VM compression/cleanup
-            // We allocate in 256MB blocks up to 1.5GB (6 blocks) or until memory limits are reached.
-            let blockSize = 256 * 1024 * 1024 // 256 MB
-            let numBlocks = 6
+            DispatchQueue.main.async {
+                progressHandler(0.05)
+            }
+            
+            // 2. Perform deep process cleanup
+            terminateSystemProcesses()
+            
+            DispatchQueue.main.async {
+                progressHandler(0.2)
+            }
+            
+            // 3. Perform balloon allocation to trigger VM compression/cleanup
+            let totalPhysicalMemory = ProcessInfo.processInfo.physicalMemory
+            let blockSize = 512 * 1024 * 1024 // 512 MB
+            let numBlocks = Int((totalPhysicalMemory / 2) / UInt64(blockSize))
+            let safeNumBlocks = max(4, min(numBlocks, 32)) // minimum 2GB, maximum 16GB
             var allocatedBlocks: [UnsafeMutableRawPointer] = []
             
-            for i in 0..<numBlocks {
-                let progress = Double(i) / Double(numBlocks) * 0.8
+            print("[MemoryPurger] Total physical RAM: \(totalPhysicalMemory / 1024 / 1024) MB. Target balloon size: \(safeNumBlocks * 512) MB (\(safeNumBlocks) blocks)")
+            
+            for i in 0..<safeNumBlocks {
+                let progress = 0.2 + (Double(i) / Double(safeNumBlocks)) * 0.6
                 DispatchQueue.main.async {
                     progressHandler(progress)
                 }
                 
-                // Allocate block
                 if let ptr = malloc(blockSize) {
-                    // Touch each page (every 4096 bytes) to force physical allocation
                     let pageSize = 4096
                     for offset in stride(from: 0, to: blockSize, by: pageSize) {
                         let pagePtr = ptr.advanced(by: offset).assumingMemoryBound(to: UInt8.self)
                         pagePtr.pointee = 0
                     }
                     allocatedBlocks.append(ptr)
-                    print("[MemoryPurger] Allocated block \(i + 1) of \(numBlocks) (total physical: \((i + 1) * 256) MB)")
+                    print("[MemoryPurger] Allocated block \(i + 1) of \(safeNumBlocks) (total physical: \((i + 1) * 512) MB)")
                 } else {
                     print("[MemoryPurger] Allocation failed on block \(i + 1) (oom/limits)")
                     break
                 }
                 
-                // Allow VM system to process pages
-                Thread.sleep(forTimeInterval: 0.15)
+                Thread.sleep(forTimeInterval: 0.1)
             }
             
             DispatchQueue.main.async {
                 progressHandler(0.85)
             }
             
-            // 3. Trigger /usr/sbin/purge to sweep all caches as fallback
+            // 4. Trigger /usr/sbin/purge to sweep all caches as fallback
             print("[MemoryPurger] Executing /usr/sbin/purge...")
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/sbin/purge")
@@ -63,10 +144,10 @@ public class MemoryPurger {
             }
             
             DispatchQueue.main.async {
-                progressHandler(0.95)
+                progressHandler(0.92)
             }
             
-            // 4. Release all physical balloon blocks to give memory back to OS
+            // 5. Release all physical balloon blocks to give memory back to OS
             print("[MemoryPurger] Releasing allocated balloon blocks...")
             for ptr in allocatedBlocks {
                 free(ptr)
@@ -76,7 +157,11 @@ public class MemoryPurger {
             // Short rest to let macOS stabilize stats
             Thread.sleep(forTimeInterval: 0.3)
             
-            // 5. Calculate reclaimed memory
+            DispatchQueue.main.async {
+                progressHandler(0.98)
+            }
+            
+            // 6. Calculate reclaimed memory
             let afterFree = getFreeMemoryBytes()
             print("[MemoryPurger] Free memory after purge: \(afterFree / 1024 / 1024) MB")
             
@@ -113,23 +198,40 @@ public class MemoryPurger {
     
     public struct ProcessInfoItem: Identifiable, Hashable {
         public let id: UUID
+        public let pids: [Int32]
         public let name: String
         public let memoryMB: Double
         public let unit: String
+        public let cpuPercent: Double
         
-        public init(id: UUID = UUID(), name: String, memoryMB: Double, unit: String) {
+        public init(id: UUID = UUID(), pids: [Int32], name: String, memoryMB: Double, unit: String, cpuPercent: Double) {
             self.id = id
+            self.pids = pids
             self.name = name
             self.memoryMB = memoryMB
             self.unit = unit
+            self.cpuPercent = cpuPercent
         }
     }
     
-    /// Retrieve the currently active user application processes and their aggregated memory usage (RSS).
+    /// Safely terminates the specified process PIDs.
+    public static func terminateProcess(pids: [Int32]) {
+        print("[MemoryPurger] Request to terminate PIDs: \(pids)")
+        let selfPid = getpid()
+        for pid in pids {
+            if pid != selfPid {
+                print("[MemoryPurger] Terminating PID \(pid)...")
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+    
+    /// Retrieve the currently active user application processes and their aggregated memory usage (RSS) & CPU usage.
     public static func getActiveProcessMemoryList() -> [ProcessInfoItem] {
+        // Secure subprocess execution: execute /bin/ps directly with arguments, avoiding shell injection risks
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "ps -cax -o comm,rss"]
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-cax", "-o", "pid,comm,rss,%cpu"]
         
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -149,6 +251,8 @@ public class MemoryPurger {
         
         let lines = output.components(separatedBy: .newlines)
         var processMemoryMap: [String: Double] = [:]
+        var processCpuMap: [String: Double] = [:]
+        var processPidsMap: [String: [Int32]] = [:]
         
         let blacklist: Set<String> = [
             "kernel_task", "launchd", "trustd", "syslogd", "logd", "kextd", "configd", "powerd", 
@@ -175,23 +279,24 @@ public class MemoryPurger {
         
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == "COMM                RSS" || trimmed.hasPrefix("COMM") {
+            if trimmed.isEmpty || trimmed.hasPrefix("PID") {
                 continue
             }
             
-            // The last component is RSS (in KB)
-            guard let lastSpaceIndex = trimmed.range(of: " ", options: .backwards) else {
+            let components = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+            guard components.count >= 4 else {
                 continue
             }
             
-            let namePart = trimmed[..<lastSpaceIndex.lowerBound].trimmingCharacters(in: .whitespaces)
-            let rssPart = trimmed[lastSpaceIndex.upperBound...].trimmingCharacters(in: .whitespaces)
+            let pidString = components[0]
+            let cpuString = components[components.count - 1]
+            let rssString = components[components.count - 2]
+            let name = components[1..<(components.count - 2)].joined(separator: " ")
             
-            guard let rssKB = Double(rssPart) else {
+            guard let pid = Int32(pidString), let rssKB = Double(rssString), let cpuPercent = Double(cpuString) else {
                 continue
             }
             
-            let name = namePart
             if blacklist.contains(name) {
                 continue
             }
@@ -221,18 +326,27 @@ public class MemoryPurger {
                 normalizedName = "Finder"
             } else if name.contains("Lemon") {
                 normalizedName = "Tencent Lemon"
+            } else if name.contains("Trae") {
+                normalizedName = "Trae"
+            } else if name.contains("WorkBuddy") {
+                normalizedName = "WorkBuddy"
             }
             
             processMemoryMap[normalizedName, default: 0.0] += rssKB
+            processCpuMap[normalizedName, default: 0.0] += cpuPercent
+            processPidsMap[normalizedName, default: []].append(pid)
         }
         
         var result: [ProcessInfoItem] = []
         for (name, rssKB) in processMemoryMap {
             let memoryMB = rssKB / 1024.0
+            let cpuPercent = processCpuMap[name] ?? 0.0
+            let pids = processPidsMap[name] ?? []
+            
             if memoryMB >= 5.0 { // only show apps using >= 5MB
                 let unit = memoryMB >= 1024.0 ? "GB" : "MB"
                 let displayVal = memoryMB >= 1024.0 ? memoryMB / 1024.0 : memoryMB
-                result.append(ProcessInfoItem(name: name, memoryMB: displayVal, unit: unit))
+                result.append(ProcessInfoItem(pids: pids, name: name, memoryMB: displayVal, unit: unit, cpuPercent: cpuPercent))
             }
         }
         

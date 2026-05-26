@@ -93,7 +93,7 @@ class SMCController {
     }
     
     func doOpen() {
-        let service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("AppleSMC"))
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
         if service != 0 {
             let result = IOServiceOpen(service, mach_task_self_, 0, &connection)
             if result == kIOReturnSuccess {
@@ -140,19 +140,21 @@ class SMCController {
         return false
     }
     
-    private func callDriver(_ input: inout SMCParamStruct, selector: UInt8 = 2) -> Bool {
+    private func callDriver(_ input: inout SMCParamStruct, selector: UInt8 = 2) -> (success: Bool, lockContention: Bool) {
         if Thread.isMainThread {
             // Main UI thread: non-blocking try-lock to protect UI responsiveness
             guard lock.try() else {
-                return false // Lock is held by background thread, instantly bail to fallback cache
+                return (false, true) // Lock is held by background thread, instantly bail to fallback cache
             }
             defer { lock.unlock() }
-            return runDriverCall(&input, selector: selector)
+            let ok = runDriverCall(&input, selector: selector)
+            return (ok, false)
         } else {
             // Background thread: synchronous lock, perfectly safe to wait here
             lock.lock()
             defer { lock.unlock() }
-            return runDriverCall(&input, selector: selector)
+            let ok = runDriverCall(&input, selector: selector)
+            return (ok, false)
         }
     }
     
@@ -204,8 +206,11 @@ class SMCController {
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
         
-        guard callDriver(&inputInfo) else {
-            markKeyFailed(keyStr)
+        let resInfo = callDriver(&inputInfo)
+        guard resInfo.success else {
+            if !resInfo.lockContention {
+                markKeyFailed(keyStr)
+            }
             return nil
         }
         
@@ -215,8 +220,11 @@ class SMCController {
         inputRead.keyInfo = inputInfo.keyInfo
         inputRead.data8 = 5 // kSMCReadKey
         
-        guard callDriver(&inputRead) else {
-            markKeyFailed(keyStr)
+        let resRead = callDriver(&inputRead)
+        guard resRead.success else {
+            if !resRead.lockContention {
+                markKeyFailed(keyStr)
+            }
             return nil
         }
         return inputRead.bytes
@@ -231,7 +239,8 @@ class SMCController {
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
         
-        guard callDriver(&inputInfo) else { return false }
+        let resInfo = callDriver(&inputInfo)
+        guard resInfo.success else { return false }
         
         // 2. Write the Key Value
         var inputWrite = SMCParamStruct()
@@ -241,19 +250,20 @@ class SMCController {
         inputWrite.keyInfo.dataSize = size
         inputWrite.data8 = 6 // kSMCWriteKey
         
-        return callDriver(&inputWrite)
+        let resWrite = callDriver(&inputWrite)
+        return resWrite.success
     }
     
     // Fan speed conversions
     // fpe2 type: big-endian unsigned 16-bit, 2 fraction bits
     // Correct: (byte0 << 8 | byte1) >> 2
     private func fromFPE2(_ bytes: (UInt8, UInt8)) -> Float {
-        let raw = (Int(bytes.0) << 8 | Int(bytes.1)) >> 2
-        return Float(raw)
+        let raw = Int(bytes.0) << 8 | Int(bytes.1)
+        return Float(raw) / 4.0
     }
     
     private func toFPE2(_ speed: Float) -> (UInt8, UInt8) {
-        let raw = Int(speed) << 2  // shift up by 2 fraction bits
+        let raw = min(65535, max(0, Int(round(speed * 4.0))))
         let byte0 = UInt8((raw >> 8) & 0xFF)
         let byte1 = UInt8(raw & 0xFF)
         return (byte0, byte1)
@@ -268,8 +278,11 @@ class SMCController {
         var inputInfo = SMCParamStruct()
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
-        guard callDriver(&inputInfo) else {
-            markKeyFailed(keyStr)
+        let resInfo = callDriver(&inputInfo)
+        guard resInfo.success else {
+            if !resInfo.lockContention {
+                markKeyFailed(keyStr)
+            }
             return defaultVal
         }
         
@@ -277,8 +290,11 @@ class SMCController {
         inputRead.key = key
         inputRead.keyInfo = inputInfo.keyInfo
         inputRead.data8 = 5 // kSMCReadKey
-        guard callDriver(&inputRead) else {
-            markKeyFailed(keyStr)
+        let resRead = callDriver(&inputRead)
+        guard resRead.success else {
+            if !resRead.lockContention {
+                markKeyFailed(keyStr)
+            }
             return defaultVal
         }
         
@@ -301,10 +317,8 @@ class SMCController {
     // Temperature conversion
     // sp78 type: signed 7.8 fixed point (1 bit sign, 7 bit integer, 8 bit fraction)
     private func fromSP78(_ bytes: (UInt8, UInt8)) -> Float {
-        let sign: Float = (bytes.0 & 0x80 == 0) ? 1.0 : -1.0
-        let intVal = Float(bytes.0 & 0x7F)
-        let fracVal = Float(bytes.1) / 256.0
-        return sign * (intVal + fracVal)
+        let rawVal = Int16(bitPattern: (UInt16(bytes.0) << 8) | UInt16(bytes.1))
+        return Float(rawVal) / 256.0
     }
     
     // PUBLIC API WITH SOLID CACHING INTEGRATION
@@ -802,7 +816,8 @@ class SMCController {
         var inputInfo = SMCParamStruct()
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
-        guard callDriver(&inputInfo) else { return false }
+        let resInfo = callDriver(&inputInfo)
+        guard resInfo.success else { return false }
         
         let dataSize = inputInfo.keyInfo.dataSize
         var smcBytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -829,7 +844,8 @@ class SMCController {
         inputWrite.keyInfo.dataSize = dataSize
         inputWrite.data8 = 6 // kSMCWriteKey
         
-        let success = callDriver(&inputWrite)
+        let resWrite = callDriver(&inputWrite)
+        let success = resWrite.success
         if success {
             cacheLock.lock()
             if fanIndex < _cachedFanTargets.count {

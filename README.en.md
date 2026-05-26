@@ -161,11 +161,22 @@ Prerequisite: Xcode Command Line Tools (`xcode-select --install`)
 
 ---
 
-## 🤝 Support & Sponsorship
+## 🌟 About the Project
 
-If you find STATUS CTRL useful, feel free to sponsor the project via Alipay or WeChat Pay!  
-Open App → Settings → Sponsor & Support to scan the QR codes.
+**STATUS CTRL** is a macOS status bar hardware monitoring and fan speed control tool that the author **uses heavily every single day** in their daily work and development.
+
+The original motivation for developing this project was that existing tools on the market were either too resource-intensive, had noticeable UI polling lag (especially with hardware I/O blocking the main thread), or lacked comprehensive feature integration (such as power saving policies, deep memory cleaning, physical device privacy controls, and a secure scrambled keyboard). To solve this, the author carefully designed and completely refactored the underlying mechanics, utilizing non-blocking `tryLock` and multi-level memory caching to achieve **0ms UI lock contention** on the main thread, resulting in a truly seamless and lightweight experience.
+
+After long-term personal use and experiencing firsthand the **incredible smoothness and convenience** it offers, the author decided to open-source and release it to the community! This is **by no means just a simple learning or personal study project**, but rather a highly polished, production-ready utility forged through daily real-world use, balancing premium aesthetics with peak performance.
+
+### 💖 Follow, Star & Share Your Ideas
+
+Your support is the author's ultimate motivation to keep iterating and optimizing! If you find STATUS CTRL helpful:
+1. 🌟 Give this repository a **Star** to help others discover it!
+2. 📢 Follow the author's updates, and feel free to submit an Issue if you run into any trouble.
+3. 💡 **Inspire the Author**: If you have any cool, innovative, or highly practical features or ideas, please share them in the Issues or Discussions! The author will actively review and implement them.
+4. ☕ Feel free to sponsor the project via WeChat/Alipay to buy the author a cup of coffee!
 
 ---
 
-*Developed by HL · 2026 · For learning and personal use only*
+*Developed by HL · 2026 · Ultra-smooth, the ultimate geek productivity utility*

@@ -36,10 +36,26 @@ class PowerMonitor {
         var designCapacity: Double = 0.0  // mAh
     }
     
+    private static func doubleValue(for key: String, in dict: [String: Any]) -> Double? {
+        if let val = dict[key] as? Double {
+            return val
+        }
+        if let val = dict[key] as? Int {
+            return Double(val)
+        }
+        if let val = dict[key] as? Int64 {
+            return Double(val)
+        }
+        if let nsNum = dict[key] as? NSNumber {
+            return nsNum.doubleValue
+        }
+        return nil
+    }
+
     static func getPowerStats() -> PowerStats {
         var stats = PowerStats()
         
-        let service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("AppleSmartBattery"))
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
         guard service != 0 else {
             // Safe fallbacks for Desktop Macs or VMs with no internal battery
             stats.isConnected = true
@@ -59,10 +75,10 @@ class PowerMonitor {
         
         if result == kIOReturnSuccess, let dict = props?.takeRetainedValue() as? [String: Any] {
             // 1. Basic battery voltage & current
-            if let voltage = dict["Voltage"] as? Double {
+            if let voltage = doubleValue(for: "Voltage", in: dict) {
                 stats.batteryVoltage = voltage / 1000.0 // mV to V
             }
-            if let amperage = dict["Amperage"] as? Double {
+            if let amperage = doubleValue(for: "Amperage", in: dict) {
                 stats.batteryCurrent = amperage / 1000.0 // mA to A
                 stats.batteryPower = abs(stats.batteryVoltage * stats.batteryCurrent)
             }
@@ -71,7 +87,9 @@ class PowerMonitor {
             }
             
             // State of Charge: Precise Calculation
-            if let charge = dict["CurrentCapacity"] as? Double, let maxCap = dict["MaxCapacity"] as? Double, maxCap > 0 {
+            let charge = doubleValue(for: "CurrentCapacity", in: dict) ?? 0.0
+            let maxCap = doubleValue(for: "MaxCapacity", in: dict) ?? 0.0
+            if maxCap > 0 {
                 if maxCap <= 100.0 {
                     stats.stateOfCharge = Int(charge)
                 } else {
@@ -84,19 +102,25 @@ class PowerMonitor {
             }
             
             // 2. TRUE Battery Health Calculation (Current Actual Capacity vs Design Capacity)
-            let rawMax = dict["AppleRawMaxCapacity"] as? Double ?? dict["NominalChargeCapacity"] as? Double ?? 0.0
-            let designCap = dict["DesignCapacity"] as? Double ?? 0.0
+            let rawMax = doubleValue(for: "AppleRawMaxCapacity", in: dict) 
+                       ?? doubleValue(for: "NominalChargeCapacity", in: dict) 
+                       ?? 0.0
+            let designCap = doubleValue(for: "DesignCapacity", in: dict) ?? 0.0
             
             if rawMax > 0 && designCap > 0 {
                 stats.batteryHealthPercent = Int(round((rawMax / designCap) * 100.0))
                 stats.batteryHealthPercent = max(0, min(100, stats.batteryHealthPercent))
             } else {
-                stats.batteryHealthPercent = 100
+                if let maxCapPercent = dict["MaxCapacityPercent"] as? Int {
+                    stats.batteryHealthPercent = maxCapPercent
+                } else if let maxCapPercent = dict["MaximumCapacityPercent"] as? Int {
+                    stats.batteryHealthPercent = maxCapPercent
+                } else {
+                    stats.batteryHealthPercent = 100
+                }
             }
             
-            if let charge = dict["CurrentCapacity"] as? Double {
-                stats.currentCapacity = charge
-            }
+            stats.currentCapacity = charge
             stats.maxCapacity = rawMax
             stats.designCapacity = designCap
             
@@ -106,7 +130,7 @@ class PowerMonitor {
             }
             
             // Expanded Battery stats (Temperature, Runtimes)
-            if let temp = dict["Temperature"] as? Double {
+            if let temp = doubleValue(for: "Temperature", in: dict) {
                 stats.batteryTemperature = temp / 100.0
             }
             if let timeRem = dict["TimeRemaining"] as? Int {
@@ -180,19 +204,19 @@ class PowerMonitor {
     }
     
     private static func parseAdapterDict(_ dict: [String: Any], stats: inout PowerStats) {
-        if let adv = dict["AdapterVoltage"] as? Double {
+        if let adv = doubleValue(for: "AdapterVoltage", in: dict) {
             stats.adapterVoltage = adv / 1000.0 // mV to V
-        } else if let adv = dict["Voltage"] as? Double {
+        } else if let adv = doubleValue(for: "Voltage", in: dict) {
             stats.adapterVoltage = adv / 1000.0
         }
         
-        if let adc = dict["Current"] as? Double {
+        if let adc = doubleValue(for: "Current", in: dict) {
             stats.adapterCurrent = adc / 1000.0 // mA to A
-        } else if let adc = dict["Amperage"] as? Double {
+        } else if let adc = doubleValue(for: "Amperage", in: dict) {
             stats.adapterCurrent = adc / 1000.0
         }
         
-        if let adw = dict["Watts"] as? Double {
+        if let adw = doubleValue(for: "Watts", in: dict) {
             stats.adapterPower = adw // in Watts
         }
         

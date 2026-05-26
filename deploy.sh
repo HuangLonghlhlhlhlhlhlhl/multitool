@@ -20,7 +20,7 @@ echo "=================================================="
 echo "📦 [Git] 正在暂存本地更改并提交..."
 git add AppDelegate.swift DashboardView.swift Makefile PowerMonitor.swift \
     SMCController.swift smchelper.swift MemoryPurger.swift \
-    README.md CHANGELOG.md deploy.sh release_notes_v${VERSION}.md
+    README.md README.en.md CHANGELOG.md deploy.sh release_notes_v${VERSION}.md
 git commit -m "feat: 🏎️ STATUS CTRL v${VERSION} — 性能大重构 · 能耗控制 · 内存清理 · 温度矩阵" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
 
 # 2. 推送至 GitHub main 分支

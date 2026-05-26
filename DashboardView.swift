@@ -90,6 +90,8 @@ struct DashboardView: View {
     @State private var activeProcesses: [MemoryPurger.ProcessInfoItem] = []
     @State private var currentRAMUsagePercent: Double = 0.0
     @State private var scrambledKeys: [String] = []
+    @State private var scrambledSymbols: [String] = []
+    @State private var isSymbolMode: Bool = false
     @State private var securePasswordInput: String = ""
     @State private var isPasswordVisible: Bool = false
     
@@ -599,8 +601,7 @@ struct DashboardView: View {
         .preferredColorScheme(.dark)
     }
 
-    @State private var currentPage: Int = 0
-    @State private var dragOffset: CGFloat = 0
+
 
     var body: some View {
         ZStack {
@@ -687,17 +688,6 @@ struct DashboardView: View {
         }
         .frame(width: 680, height: 530)
         .background(
-            ScrollWheelDetector { deltaY in
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
-                    if deltaY > 1.5 && currentPage > 0 {
-                        currentPage = 0
-                    } else if deltaY < -1.5 && currentPage < 1 {
-                        currentPage = 1
-                    }
-                }
-            }
-        )
-        .background(
             ZStack {
                 Color(red: 0.08, green: 0.09, blue: 0.12)
                 RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 280)
@@ -720,101 +710,28 @@ struct DashboardView: View {
     }
 
     private var originalDashboardView: some View {
-        GeometryReader { geo in
-            let height = geo.size.height
-            ZStack {
-                // Page 0
-                VStack(spacing: 0) {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(spacing: 12) {
-                                systemTelemetrySection
-                                if fanCount > 0 {
-                                    fanSection
-                                } else {
-                                    fanlessSection
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            
-                            VStack(spacing: 12) {
-                                powerSection
-                                powerSavingSection
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+        ScrollView(.vertical, showsIndicators: true) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(spacing: 12) {
+                    systemTelemetrySection
+                    if fanCount > 0 {
+                        fanSection
+                    } else {
+                        fanlessSection
                     }
+                    batteryCareSection
                 }
-                .frame(width: geo.size.width, height: height)
-                .offset(y: (0 - CGFloat(currentPage)) * height + dragOffset)
+                .frame(maxWidth: .infinity)
                 
-                // Page 1
-                VStack(spacing: 0) {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 12) {
-                            batteryCareSection
-                                .frame(maxWidth: .infinity)
-                            keyboardSection
-                                .frame(maxWidth: .infinity)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                    }
+                VStack(spacing: 12) {
+                    powerSection
+                    powerSavingSection
+                    keyboardSection
                 }
-                .frame(width: geo.size.width, height: height)
-                .offset(y: (1 - CGFloat(currentPage)) * height + dragOffset)
+                .frame(maxWidth: .infinity)
             }
-            .clipped()
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        let translation = value.translation.height
-                        // Add friction when dragging out of bounds
-                        if currentPage == 0 && translation > 0 {
-                            dragOffset = translation * 0.3
-                        } else if currentPage == 1 && translation < 0 {
-                            dragOffset = translation * 0.3
-                        } else {
-                            dragOffset = translation
-                        }
-                    }
-                    .onEnded { value in
-                        let translation = value.translation.height
-                        let threshold = height * 0.15 // 15% is extremely responsive
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                            if translation < -threshold && currentPage < 1 {
-                                currentPage = 1
-                            } else if translation > threshold && currentPage > 0 {
-                                currentPage = 0
-                            }
-                            dragOffset = 0
-                        }
-                    }
-            )
-
-            // ── 右侧极简竖向圆点指示器 ──
-            VStack(spacing: 6) {
-                ForEach(0..<2, id: \.self) { idx in
-                    Capsule()
-                        .fill(currentPage == idx
-                            ? Color(red: 0.18, green: 0.62, blue: 0.95)
-                            : Color.white.opacity(0.18))
-                        .frame(width: 4, height: currentPage == idx ? 18 : 6)
-                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
-                        .contentShape(Rectangle())
-                        .focusable(false)
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
-                                currentPage = idx
-                            }
-                        }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            .padding(.trailing, 7)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
     }
     
@@ -847,6 +764,9 @@ struct DashboardView: View {
     private func reshuffleKeyboard() {
         let baseKeys = (0...9).map { String($0) } + ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
         scrambledKeys = baseKeys.shuffled()
+        
+        let baseSymbols = ["~", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "_", "=", "+", "[", "]", "{", "}", ";", ":", "'", "\"", "\\", "|", ",", ".", "<", ">", "/", "?", "`", "¥", "€", "£", "§"]
+        scrambledSymbols = baseSymbols.shuffled()
     }
     
     private var passwordStrengthLabel: String {
@@ -1014,15 +934,38 @@ struct DashboardView: View {
                         .cornerRadius(12)
                     } else {
                         // Display List
-                        ForEach(activeProcesses) { proc in
+                        let enumerated = Array(activeProcesses.enumerated())
+                        ForEach(enumerated, id: \.element.id) { index, proc in
+                            let rank = index + 1
                             HStack(spacing: 12) {
+                                // Rank Badge
+                                ZStack {
+                                    Circle()
+                                        .fill(rank == 1 
+                                            ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
+                                            : (rank == 2 
+                                                ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
+                                                : (rank == 3 
+                                                    ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
+                                                    : LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+                                                )
+                                            )
+                                        )
+                                        .frame(width: 24, height: 24)
+                                        .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? Color.white.opacity(0.2) : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
+                                    
+                                    Text("\(rank)")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .white.opacity(0.6))
+                                }
+                                
                                 // Mini icon mockup
                                 ZStack {
                                     RoundedRectangle(cornerRadius: 6)
-                                        .fill(LinearGradient(colors: [Color.white.opacity(0.1), Color.white.opacity(0.05)], startPoint: .top, endPoint: .bottom))
+                                        .fill(LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
                                         .frame(width: 28, height: 28)
                                     
-                                    Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : "app.dashed")))
+                                    Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
                                         .font(.system(size: 12))
                                         .foregroundColor(.white.opacity(0.8))
                                 }
@@ -1030,25 +973,67 @@ struct DashboardView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(proc.name)
                                         .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(.white)
                                         .lineLimit(1)
                                     
-                                    // Simulated scale indicator
-                                    GeometryReader { innerGeo in
-                                        let maxMem = activeProcesses.first?.memoryMB ?? 1000.0
-                                        let width = CGFloat(proc.memoryMB / maxMem) * innerGeo.size.width
+                                    // RAM and CPU pill badges
+                                    HStack(spacing: 8) {
+                                        // RAM usage
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "memorychip")
+                                                .font(.system(size: 9))
+                                            Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
+                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        }
+                                        .foregroundColor(.cyan)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.cyan.opacity(0.1))
+                                        .cornerRadius(4)
                                         
-                                        RoundedRectangle(cornerRadius: 2)
-                                            .fill(LinearGradient(colors: [.cyan.opacity(0.6), .purple.opacity(0.6)], startPoint: .leading, endPoint: .trailing))
-                                            .frame(width: max(width, 4.0), height: 4)
+                                        // CPU usage
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "cpu")
+                                                .font(.system(size: 9))
+                                            Text(String(format: "%.1f%%", proc.cpuPercent))
+                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        }
+                                        .foregroundColor(.purple)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.purple.opacity(0.1))
+                                        .cornerRadius(4)
                                     }
-                                    .frame(height: 4)
                                 }
                                 
                                 Spacer()
                                 
-                                Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
-                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.9))
+                                // Terminate Process Button
+                                Button(action: {
+                                    MemoryPurger.terminateProcess(pids: proc.pids)
+                                    // Instantly refresh list
+                                    DispatchQueue.global(qos: .userInitiated).async {
+                                        let updated = MemoryPurger.getActiveProcessMemoryList()
+                                        DispatchQueue.main.async {
+                                            withAnimation(.easeInOut(duration: 0.3)) {
+                                                self.activeProcesses = updated
+                                            }
+                                        }
+                                    }
+                                }) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.red.opacity(0.15))
+                                            .frame(width: 22, height: 22)
+                                        
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.red.opacity(0.9))
+                                    }
+                                }
+                                .buttonStyle(TerminateButtonStyle())
+                                .focusable(false)
+                                .help("停止运行程序")
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
@@ -1150,18 +1135,34 @@ struct DashboardView: View {
                     Text("物理防窥乱码键盘")
                         .font(.system(size: 13, weight: .bold))
                     Spacer()
-                    Button(action: {
-                        reshuffleKeyboard()
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 10))
-                            Text("重洗")
-                                .font(.system(size: 10))
+                    
+                    HStack(spacing: 8) {
+                        Button(action: {
+                            isSymbolMode.toggle()
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: isSymbolMode ? "abc" : "character.textbox")
+                                    .font(.system(size: 10))
+                                Text(isSymbolMode ? "字母" : "符号")
+                                    .font(.system(size: 10))
+                            }
+                            .foregroundColor(.purple)
                         }
-                        .foregroundColor(.cyan)
+                        .buttonStyle(.plain)
+                        
+                        Button(action: {
+                            reshuffleKeyboard()
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.system(size: 10))
+                                Text("重洗")
+                                    .font(.system(size: 10))
+                            }
+                            .foregroundColor(.cyan)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 4)
                 
@@ -1229,7 +1230,8 @@ struct DashboardView: View {
                 
                 // Shuffled keys grid (6x6)
                 VStack(spacing: 6) {
-                    if scrambledKeys.isEmpty {
+                    let keysToUse = isSymbolMode ? scrambledSymbols : scrambledKeys
+                    if keysToUse.isEmpty {
                         ProgressView()
                     } else {
                         let rows = Array(0..<6)
@@ -1237,8 +1239,8 @@ struct DashboardView: View {
                             HStack(spacing: 6) {
                                 ForEach(0..<6) { c in
                                     let idx = r * 6 + c
-                                    if idx < scrambledKeys.count {
-                                        let key = scrambledKeys[idx]
+                                    if idx < keysToUse.count {
+                                        let key = keysToUse[idx]
                                         Button(action: {
                                             if securePasswordInput.count < 16 {
                                                 securePasswordInput.append(key)
@@ -1322,55 +1324,48 @@ struct DashboardView: View {
                 
                 // One-Click Memory Purge container
                 HStack(spacing: 6) {
-                    if isPowerHovered || isPurging || showPurgeSuccess {
-                        Button(action: {
-                            if !isPurging {
-                                triggerMemoryPurge()
-                            }
-                        }) {
-                            HStack(spacing: 6) {
-                                if isPurging {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                        .scaleEffect(0.7)
-                                        .brightness(2.0)
-                                    Text("整理中...")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(.white)
-                                } else if showPurgeSuccess {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(.green)
-                                    Text(String(format: "已整理 %.0fM", lastPurgedAmount))
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(.green)
-                                } else {
-                                    Text("🧹 一键整理内存")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(.white)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                showPurgeSuccess ?
-                                    LinearGradient(colors: [Color.green.opacity(0.2), Color.green.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing) :
-                                    LinearGradient(colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                            )
-                            .cornerRadius(12)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(showPurgeSuccess ? Color.green.opacity(0.3) : Color.white.opacity(0.15), lineWidth: 1)
-                            )
-                            .shadow(color: showPurgeSuccess ? Color.green.opacity(0.2) : Color.purple.opacity(0.2), radius: 4)
+                    Button(action: {
+                        if !isPurging {
+                            triggerMemoryPurge()
                         }
-                        .buttonStyle(.plain)
-                        .focusable(false)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)
-                        ))
+                    }) {
+                        HStack(spacing: 6) {
+                            if isPurging {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .scaleEffect(0.7)
+                                    .brightness(2.0)
+                                Text("整理中...")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.white)
+                            } else if showPurgeSuccess {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.green)
+                                Text(String(format: "已整理 %.0fM", lastPurgedAmount))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.green)
+                            } else {
+                                Text("🧹 一键整理内存")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            showPurgeSuccess ?
+                                LinearGradient(colors: [Color.green.opacity(0.2), Color.green.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing) :
+                                LinearGradient(colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        )
+                        .cornerRadius(12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(showPurgeSuccess ? Color.green.opacity(0.3) : Color.white.opacity(0.15), lineWidth: 1)
+                        )
+                        .shadow(color: showPurgeSuccess ? Color.green.opacity(0.2) : Color.purple.opacity(0.2), radius: 4)
                     }
+                    .buttonStyle(.plain)
                     
                     // Power Button triggering exit on click
                     Button(action: {
@@ -4737,52 +4732,7 @@ class CPUMonitor {
     }
 }
 
-// ── macOS bottom-level ScrollWheel & Trackpad Swipe Detector ──
-struct ScrollWheelDetector: NSViewRepresentable {
-    var onScroll: (CGFloat) -> Void
-    
-    func makeNSView(context: Context) -> NSView {
-        let view = ScrollNSView()
-        view.onScroll = onScroll
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSView, context: Context) {
-        if let scrollNSView = nsView as? ScrollNSView {
-            scrollNSView.onScroll = onScroll
-        }
-    }
-    
-    class ScrollNSView: NSView {
-        var onScroll: ((CGFloat) -> Void)?
-        private var lastScrollTime: Date = Date.distantPast
-        
-        override var acceptsFirstResponder: Bool { true }
-        
-        override func scrollWheel(with event: NSEvent) {
-            let deltaY = event.scrollingDeltaY
-            let now = Date()
-            let timeSinceLastScroll = now.timeIntervalSince(lastScrollTime)
-            
-            // 1. 如果当前处于 0.5s 的翻页转场动画冷却期内，完全吞掉所有滚轮事件，
-            // 避免在页面上下滑动时，内部 ScrollView 同时发生纵向位移而导致画面混乱和抖动
-            if timeSinceLastScroll < 0.5 {
-                return
-            }
-            
-            // 2. 如果滚动幅度超过阈值，视为用户的翻页手势
-            if abs(deltaY) > 1.5 {
-                onScroll?(deltaY)
-                lastScrollTime = now
-                // 同样吞掉该事件，不向下传递，确保转场前一瞬间内部不发生意外抖动
-                return
-            }
-            
-            // 3. 正常慢速滚动，向下传递给子视图的 ScrollView 进行正常的列表内容滚动
-            super.scrollWheel(with: event)
-        }
-    }
-}
+
 
 // MARK: - Bento Privacy Switch Card
 struct PrivacySwitchCard: View {
@@ -4846,6 +4796,15 @@ struct ScrambledKeyButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.92 : 1.0)
             .brightness(configuration.isPressed ? -0.1 : 0.0)
             .animation(.spring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
+    }
+}
+
+struct TerminateButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
     }
 }
 
