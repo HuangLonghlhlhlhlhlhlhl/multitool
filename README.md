@@ -12,6 +12,8 @@
 ![大小](https://img.shields.io/badge/体积-约%206MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
+[English](README.en.md) | [简体中文](README.md)
+
 </div>
 
 ---

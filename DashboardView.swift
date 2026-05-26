@@ -280,7 +280,10 @@ struct DashboardView: View {
             "fan_load_text": "风扇负荷",
             "cpu_freq_perf": "CPU 性能核频率",
             "cpu_freq_eff": "CPU 能效核频率",
-            "gpu_freq_label": "GPU 工作频率"
+            "gpu_freq_label": "GPU 工作频率",
+            "left_fan": "左风扇",
+            "right_fan": "右风扇",
+            "fan_linked": "（联动）"
         ],
         "en": [
             "title": "STATUS CTRL",
@@ -407,7 +410,10 @@ struct DashboardView: View {
             "fan_load_text": "Fan Workload",
             "cpu_freq_perf": "CPU Perf Core Freq",
             "cpu_freq_eff": "CPU Eff Core Freq",
-            "gpu_freq_label": "GPU Clock Speed"
+            "gpu_freq_label": "GPU Clock Speed",
+            "left_fan": "Left Fan",
+            "right_fan": "Right Fan",
+            "fan_linked": " (Linked)"
         ]
     ]
     
@@ -1532,7 +1538,7 @@ struct DashboardView: View {
             HStack(spacing: 10) {
                 ForEach(0..<displayCount, id: \.self) { i in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(i == 0 ? "左风扇" : "右风扇")
+                        Text(i == 0 ? t("left_fan") : t("right_fan"))
                             .font(.system(size: 10, weight: .medium))
                             .foregroundColor(.white.opacity(0.4))
                         Text("\(Int(i < fanSpeed.count ? fanSpeed[i] : 0)) RPM")
@@ -1978,7 +1984,7 @@ struct DashboardView: View {
         let valColor = i == 0 ? Color(red: 0.95, green: 0.60, blue: 0.18)
                                : Color(red: 0.62, green: 0.32, blue: 0.88)
         // Compute label here for the header — this updates when the view re-renders
-        let label    = (i == 0 ? "左风扇" : "右风扇") + (fanLinked && fanCount == 2 ? "（联动）" : "")
+        let label    = (i == 0 ? t("left_fan") : t("right_fan")) + (fanLinked && fanCount == 2 ? t("fan_linked") : "")
 
         return VStack(spacing: 5) {
             HStack {
