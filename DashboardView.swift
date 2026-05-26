@@ -84,6 +84,21 @@ struct DashboardView: View {
     // Core CPU Monitor Instance
     private let cpuMonitor = CPUMonitor()
     
+    // Modern UI Tabs and Advanced States
+    @Namespace private var tabNamespace
+    @State private var selectedTab: Int = 0 // 0: 清理释放, 1: 系统功能, 2: 隐私守护
+    @State private var activeProcesses: [MemoryPurger.ProcessInfoItem] = []
+    @State private var currentRAMUsagePercent: Double = 0.0
+    @State private var scrambledKeys: [String] = []
+    @State private var securePasswordInput: String = ""
+    @State private var isPasswordVisible: Bool = false
+    
+    // Privacy Switches
+    @AppStorage("cameraPrivacyEnabled") private var cameraPrivacy: Bool = true
+    @AppStorage("micPrivacyEnabled") private var micPrivacy: Bool = true
+    @AppStorage("screenPrivacyEnabled") private var screenPrivacy: Bool = true
+    @AppStorage("autoActionPrivacyEnabled") private var autoActionPrivacy: Bool = true
+    
     // Fan states — per-fan independent control
     @State private var fanCount: Int = 0
     @State private var fanSpeed: [Float] = [0.0, 0.0]          // actual RPM per fan
@@ -605,102 +620,57 @@ struct DashboardView: View {
                         Divider()
                             .background(Color.white.opacity(0.06))
 
-                        // ── Vertical paging content (whole-page transition, lag-free) ──
-                        GeometryReader { geo in
-                            let height = geo.size.height
-                            ZStack {
-                                // Page 0
-                                VStack(spacing: 0) {
-                                    ScrollView(.vertical, showsIndicators: false) {
-                                        HStack(alignment: .top, spacing: 12) {
-                                            VStack(spacing: 12) {
-                                                systemTelemetrySection
-                                                if fanCount > 0 {
-                                                    fanSection
-                                                } else {
-                                                    fanlessSection
-                                                }
-                                            }
-                                            .frame(maxWidth: .infinity)
-                                            
-                                            VStack(spacing: 12) {
-                                                powerSection
-                                                powerSavingSection
-                                            }
-                                            .frame(maxWidth: .infinity)
+                        // Segmented Tab Switched at the top (with namespaces and nice segmented buttons)
+                        HStack(spacing: 0) {
+                            ForEach(0..<3) { idx in
+                                Button(action: {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                        selectedTab = idx
+                                    }
+                                }) {
+                                    VStack(spacing: 6) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: idx == 0 ? "trash.fill" : (idx == 1 ? "gauge.with.needle.fill" : "lock.shield.fill"))
+                                                .font(.system(size: 11))
+                                            Text(idx == 0 ? "清理释放" : (idx == 1 ? "系统功能" : "隐私守护"))
+                                                .font(.system(size: 12, weight: .semibold))
                                         }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 12)
+                                        .foregroundColor(selectedTab == idx ? .white : .white.opacity(0.4))
+                                        
+                                        // Active indicator line
+                                        ZStack {
+                                            Capsule()
+                                                .fill(Color.clear)
+                                                .frame(height: 3)
+                                            if selectedTab == idx {
+                                                Capsule()
+                                                    .fill(LinearGradient(colors: [.cyan, .purple], startPoint: .leading, endPoint: .trailing))
+                                                    .frame(height: 3)
+                                                    .matchedGeometryEffect(id: "activeTabLine", in: tabNamespace)
+                                            }
+                                        }
                                     }
                                 }
-                                .frame(width: geo.size.width, height: height)
-                                .offset(y: (0 - CGFloat(currentPage)) * height + dragOffset)
-                                
-                                // Page 1
-                                VStack(spacing: 0) {
-                                    ScrollView(.vertical, showsIndicators: false) {
-                                        HStack(alignment: .top, spacing: 12) {
-                                            batteryCareSection
-                                                .frame(maxWidth: .infinity)
-                                            keyboardSection
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 12)
-                                    }
-                                }
-                                .frame(width: geo.size.width, height: height)
-                                .offset(y: (1 - CGFloat(currentPage)) * height + dragOffset)
+                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
                             }
-                            .clipped()
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        let translation = value.translation.height
-                                        // Add friction when dragging out of bounds
-                                        if currentPage == 0 && translation > 0 {
-                                            dragOffset = translation * 0.3
-                                        } else if currentPage == 1 && translation < 0 {
-                                            dragOffset = translation * 0.3
-                                        } else {
-                                            dragOffset = translation
-                                        }
-                                    }
-                                    .onEnded { value in
-                                        let translation = value.translation.height
-                                        let threshold = height * 0.15 // 15% is extremely responsive
-                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                                            if translation < -threshold && currentPage < 1 {
-                                                currentPage = 1
-                                            } else if translation > threshold && currentPage > 0 {
-                                                currentPage = 0
-                                            }
-                                            dragOffset = 0
-                                        }
-                                    }
-                            )
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 6)
 
-                            // ── 右侧极简竖向圆点指示器 ──
-                            VStack(spacing: 6) {
-                                ForEach(0..<2, id: \.self) { idx in
-                                    Capsule()
-                                        .fill(currentPage == idx
-                                            ? Color(red: 0.18, green: 0.62, blue: 0.95)
-                                            : Color.white.opacity(0.18))
-                                        .frame(width: 4, height: currentPage == idx ? 18 : 6)
-                                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
-                                        .contentShape(Rectangle())
-                                        .focusable(false)
-                                        .onTapGesture {
-                                            withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
-                                                currentPage = idx
-                                            }
-                                        }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-                            .padding(.trailing, 7)
+                        Divider()
+                            .background(Color.white.opacity(0.06))
+
+                        if selectedTab == 0 {
+                            memoryCleanPageView
+                                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity)))
+                        } else if selectedTab == 1 {
+                            originalDashboardView
+                                .transition(.opacity)
+                        } else {
+                            privacyGuardPageView
+                                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
                         }
                     }
                     .blur(radius: showSettings ? 12 : 0)
@@ -747,6 +717,575 @@ struct DashboardView: View {
         .onReceive(statsTimer) { _ in refreshStats() }
         .onReceive(fanRotationTimer) { _ in updateFanRotation() }
         .onReceive(waveTimer) { _ in updateWaveAnimation() }
+    }
+
+    private var originalDashboardView: some View {
+        GeometryReader { geo in
+            let height = geo.size.height
+            ZStack {
+                // Page 0
+                VStack(spacing: 0) {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(spacing: 12) {
+                                systemTelemetrySection
+                                if fanCount > 0 {
+                                    fanSection
+                                } else {
+                                    fanlessSection
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            
+                            VStack(spacing: 12) {
+                                powerSection
+                                powerSavingSection
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                }
+                .frame(width: geo.size.width, height: height)
+                .offset(y: (0 - CGFloat(currentPage)) * height + dragOffset)
+                
+                // Page 1
+                VStack(spacing: 0) {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 12) {
+                            batteryCareSection
+                                .frame(maxWidth: .infinity)
+                            keyboardSection
+                                .frame(maxWidth: .infinity)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                    }
+                }
+                .frame(width: geo.size.width, height: height)
+                .offset(y: (1 - CGFloat(currentPage)) * height + dragOffset)
+            }
+            .clipped()
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        let translation = value.translation.height
+                        // Add friction when dragging out of bounds
+                        if currentPage == 0 && translation > 0 {
+                            dragOffset = translation * 0.3
+                        } else if currentPage == 1 && translation < 0 {
+                            dragOffset = translation * 0.3
+                        } else {
+                            dragOffset = translation
+                        }
+                    }
+                    .onEnded { value in
+                        let translation = value.translation.height
+                        let threshold = height * 0.15 // 15% is extremely responsive
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                            if translation < -threshold && currentPage < 1 {
+                                currentPage = 1
+                            } else if translation > threshold && currentPage > 0 {
+                                currentPage = 0
+                            }
+                            dragOffset = 0
+                        }
+                    }
+            )
+
+            // ── 右侧极简竖向圆点指示器 ──
+            VStack(spacing: 6) {
+                ForEach(0..<2, id: \.self) { idx in
+                    Capsule()
+                        .fill(currentPage == idx
+                            ? Color(red: 0.18, green: 0.62, blue: 0.95)
+                            : Color.white.opacity(0.18))
+                        .frame(width: 4, height: currentPage == idx ? 18 : 6)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPage)
+                        .contentShape(Rectangle())
+                        .focusable(false)
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) {
+                                currentPage = idx
+                            }
+                        }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .padding(.trailing, 7)
+        }
+    }
+    
+    private func getRAMUsage() -> Double {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard kerr == KERN_SUCCESS else { return 0.0 }
+        
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        
+        let activePages = Double(stats.active_count)
+        let wirePages = Double(stats.wire_count)
+        let compressedPages = Double(stats.compressor_page_count)
+        let freePages = Double(stats.free_count)
+        let inactivePages = Double(stats.inactive_count)
+        
+        let usedPages = activePages + wirePages + compressedPages
+        let totalPages = usedPages + freePages + inactivePages
+        
+        guard totalPages > 0 else { return 0.0 }
+        return (usedPages / totalPages) * 100.0
+    }
+    
+    private func reshuffleKeyboard() {
+        let baseKeys = (0...9).map { String($0) } + ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
+        scrambledKeys = baseKeys.shuffled()
+    }
+    
+    private var passwordStrengthLabel: String {
+        let len = securePasswordInput.count
+        if len == 0 { return "" }
+        
+        let hasNumber = securePasswordInput.contains(where: { $0.isNumber })
+        let hasLetter = securePasswordInput.contains(where: { $0.isLetter })
+        
+        if len >= 10 && hasNumber && hasLetter {
+            return "强"
+        } else if len >= 6 {
+            return "中"
+        } else {
+            return "弱"
+        }
+    }
+    
+    private var passwordStrengthColor: Color {
+        let label = passwordStrengthLabel
+        if label == "强" {
+            return Color.green
+        } else if label == "中" {
+            return Color.orange
+        } else {
+            return Color.red
+        }
+    }
+    
+    private var memoryCleanPageView: some View {
+        HStack(spacing: 16) {
+            // Left Column: Circular gauge and Clean trigger
+            VStack(spacing: 16) {
+                VStack(spacing: 12) {
+                    Text("内存状态")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(0.5))
+                    
+                    // Circular Gauge
+                    ZStack {
+                        // Background track
+                        Circle()
+                            .stroke(Color.white.opacity(0.06), lineWidth: 14)
+                            .frame(width: 140, height: 140)
+                        
+                        // Active track (gradient)
+                        Circle()
+                            .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
+                            .stroke(
+                                LinearGradient(
+                                    colors: [Color(red: 0.00, green: 0.95, blue: 1.00), Color(red: 0.62, green: 0.00, blue: 1.00)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                style: StrokeStyle(lineWidth: 14, lineCap: .round)
+                            )
+                            .frame(width: 140, height: 140)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentRAMUsagePercent)
+                        
+                        // Shadow glow
+                        Circle()
+                            .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
+                            .stroke(Color.cyan.opacity(0.3), style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                            .frame(width: 140, height: 140)
+                            .rotationEffect(.degrees(-90))
+                            .blur(radius: 6)
+                        
+                        // Center text
+                        VStack(spacing: 2) {
+                            Text(String(format: "%.0f%%", currentRAMUsagePercent))
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                            Text("已用空间")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                    }
+                    .frame(width: 150, height: 150)
+                    .padding(.vertical, 8)
+                    
+                    // Diagnosis message
+                    Text(currentRAMUsagePercent > 75.0 ? "系统内存吃紧，请及时清理" : (currentRAMUsagePercent > 50.0 ? "运行状态良好，继续保持" : "内存非常充足，感觉棒极了"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(currentRAMUsagePercent > 75.0 ? Color(red: 1.0, green: 0.35, blue: 0.35) : (currentRAMUsagePercent > 50.0 ? Color.cyan : Color(red: 0.22, green: 0.80, blue: 0.45)))
+                        .multilineTextAlignment(.center)
+                        .frame(height: 24)
+                }
+                .padding(16)
+                .background(Color.white.opacity(0.03))
+                .cornerRadius(14)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+                
+                // Clean Button
+                Button(action: {
+                    triggerMemoryPurge()
+                }) {
+                    HStack(spacing: 8) {
+                        if isPurging {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.8)
+                                .brightness(2.0)
+                            Text("深度释放中...")
+                                .font(.system(size: 13, weight: .bold))
+                        } else {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 13))
+                            Text(showPurgeSuccess ? String(format: "已整理 %.0f MB", lastPurgedAmount) : "一键释放物理内存")
+                                .font(.system(size: 13, weight: .bold))
+                        }
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .background(
+                        LinearGradient(
+                            colors: isPurging
+                                ? [Color.gray.opacity(0.3), Color.gray.opacity(0.3)]
+                                : (showPurgeSuccess ? [Color(red: 0.22, green: 0.80, blue: 0.45), Color(red: 0.15, green: 0.60, blue: 0.35)] : [Color(red: 0.18, green: 0.62, blue: 0.95), Color(red: 0.62, green: 0.32, blue: 0.88)]),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(10)
+                    .shadow(color: (isPurging ? Color.clear : (showPurgeSuccess ? Color.green.opacity(0.3) : Color.blue.opacity(0.3))), radius: 6, x: 0, y: 3)
+                }
+                .disabled(isPurging)
+                .buttonStyle(.plain)
+            }
+            .frame(width: 200)
+            
+            // Right Column: Process usage list
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "app.badge.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.cyan)
+                    Text("活跃应用内存占用排行")
+                        .font(.system(size: 13, weight: .bold))
+                    Spacer()
+                    Text("前 7 位活跃应用")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                .padding(.horizontal, 4)
+                
+                VStack(spacing: 8) {
+                    if activeProcesses.isEmpty {
+                        // Loading / Empty state
+                        VStack(spacing: 12) {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.regular)
+                            Text("正在分析系统活跃应用...")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.5))
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.white.opacity(0.02))
+                        .cornerRadius(12)
+                    } else {
+                        // Display List
+                        ForEach(activeProcesses) { proc in
+                            HStack(spacing: 12) {
+                                // Mini icon mockup
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(LinearGradient(colors: [Color.white.opacity(0.1), Color.white.opacity(0.05)], startPoint: .top, endPoint: .bottom))
+                                        .frame(width: 28, height: 28)
+                                    
+                                    Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : "app.dashed")))
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.white.opacity(0.8))
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(proc.name)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .lineLimit(1)
+                                    
+                                    // Simulated scale indicator
+                                    GeometryReader { innerGeo in
+                                        let maxMem = activeProcesses.first?.memoryMB ?? 1000.0
+                                        let width = CGFloat(proc.memoryMB / maxMem) * innerGeo.size.width
+                                        
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(LinearGradient(colors: [.cyan.opacity(0.6), .purple.opacity(0.6)], startPoint: .leading, endPoint: .trailing))
+                                            .frame(width: max(width, 4.0), height: 4)
+                                    }
+                                    .frame(height: 4)
+                                }
+                                
+                                Spacer()
+                                
+                                Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
+                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.9))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.white.opacity(0.02))
+                            .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                            )
+                        }
+                        
+                        Spacer()
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+    
+    private var privacyGuardPageView: some View {
+        HStack(spacing: 16) {
+            // Left Column: Bento Grid of 4 Privacy Switches
+            VStack(spacing: 12) {
+                Text("实时设备隐私保护")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white.opacity(0.5))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 4)
+                
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    PrivacySwitchCard(
+                        title: "摄像头保护",
+                        subtitle: cameraPrivacy ? "实时防偷窥监控" : "监控已暂停",
+                        icon: "video.fill",
+                        color: Color.green,
+                        isEnabled: $cameraPrivacy
+                    )
+                    
+                    PrivacySwitchCard(
+                        title: "麦克风防窃听",
+                        subtitle: micPrivacy ? "声敏防护运行中" : "监控已暂停",
+                        icon: "mic.fill",
+                        color: Color.cyan,
+                        isEnabled: $micPrivacy
+                    )
+                    
+                    PrivacySwitchCard(
+                        title: "屏幕隐私防窥",
+                        subtitle: screenPrivacy ? "防截屏监控运行" : "监控已暂停",
+                        icon: "macwindow",
+                        color: Color.purple,
+                        isEnabled: $screenPrivacy
+                    )
+                    
+                    PrivacySwitchCard(
+                        title: "自动操作卫士",
+                        subtitle: autoActionPrivacy ? "高危操作阻断已启" : "监控已暂停",
+                        icon: "hand.raised.fill",
+                        color: Color.pink,
+                        isEnabled: $autoActionPrivacy
+                    )
+                }
+                
+                // Banner Card
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.shield.fill")
+                            .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                        Text("全景安全隐私防护")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    Text("隐私守护模块可在系统级防护任何未授权的应用悄悄调用您的麦克风、摄像头或屏幕，提供一键阻断与防截图安全过滤。")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.5))
+                        .lineLimit(4)
+                }
+                .padding(12)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                )
+                
+                Spacer()
+            }
+            .frame(width: 320)
+            
+            // Right Column: Secure Anti-Keylogger Scrambled Keyboard
+            VStack(spacing: 10) {
+                HStack {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 14))
+                        .foregroundColor(.purple)
+                    Text("物理防窥乱码键盘")
+                        .font(.system(size: 13, weight: .bold))
+                    Spacer()
+                    Button(action: {
+                        reshuffleKeyboard()
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10))
+                            Text("重洗")
+                                .font(.system(size: 10))
+                        }
+                        .foregroundColor(.cyan)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 4)
+                
+                // Password display area with clean controls
+                HStack(spacing: 8) {
+                    if isPasswordVisible {
+                        Text(securePasswordInput.isEmpty ? "输入安全密码..." : securePasswordInput)
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundColor(securePasswordInput.isEmpty ? .white.opacity(0.3) : .white)
+                    } else {
+                        Text(securePasswordInput.isEmpty ? "输入安全密码..." : String(repeating: "•", count: securePasswordInput.count))
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundColor(securePasswordInput.isEmpty ? .white.opacity(0.3) : .white)
+                    }
+                    
+                    Spacer()
+                    
+                    if !securePasswordInput.isEmpty {
+                        // Strength indicator
+                        Text(passwordStrengthLabel)
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(passwordStrengthColor.opacity(0.2))
+                            .foregroundColor(passwordStrengthColor)
+                            .cornerRadius(4)
+                        
+                        // Clear button
+                        Button(action: { securePasswordInput = "" }) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        // Visibility toggle
+                        Button(action: { isPasswordVisible.toggle() }) {
+                            Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        // Copy button
+                        Button(action: {
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(securePasswordInput, forType: .string)
+                        }) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 11))
+                                .foregroundColor(.cyan)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 36)
+                .background(Color.black.opacity(0.4))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                )
+                
+                // Shuffled keys grid (6x6)
+                VStack(spacing: 6) {
+                    if scrambledKeys.isEmpty {
+                        ProgressView()
+                    } else {
+                        let rows = Array(0..<6)
+                        ForEach(rows, id: \.self) { r in
+                            HStack(spacing: 6) {
+                                ForEach(0..<6) { c in
+                                    let idx = r * 6 + c
+                                    if idx < scrambledKeys.count {
+                                        let key = scrambledKeys[idx]
+                                        Button(action: {
+                                            if securePasswordInput.count < 16 {
+                                                securePasswordInput.append(key)
+                                            }
+                                        }) {
+                                            Text(key)
+                                                .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                .background(Color.white.opacity(0.04))
+                                                .cornerRadius(6)
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 6)
+                                                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                                                )
+                                        }
+                                        .buttonStyle(ScrambledKeyButtonStyle())
+                                    }
+                                }
+                            }
+                            .frame(height: 34)
+                        }
+                    }
+                }
+                .padding(8)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                )
+                
+                Text("乱码键盘可在点击输入时抵御截屏、按键木马与物理视线偷窥。")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.4))
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .onAppear {
+            if scrambledKeys.isEmpty {
+                reshuffleKeyboard()
+            }
+        }
     }
 
     // MARK: - Sub-Sections
@@ -2727,6 +3266,9 @@ struct DashboardView: View {
             let usageCpu = self.cpuMonitor.getUsage()
             let usageGpu = self.getGPUUsage()
             
+            let processes = MemoryPurger.getActiveProcessMemoryList()
+            let ramPercent = self.getRAMUsage()
+            
             let pCpuPerf = self.smc.getCPUPerfCoresTemperature()
             let pCpuEff = self.smc.getCPUEffCoresTemperature()
             let pSSD = self.smc.getSSDTemperature()
@@ -2849,6 +3391,9 @@ struct DashboardView: View {
                 self.powerStats = statsPower
                 self.cpuUsage = usageCpu
                 self.gpuUsage = usageGpu
+                
+                self.activeProcesses = processes
+                self.currentRAMUsagePercent = ramPercent
                 
                 self.tempCpuPerf = pCpuPerf
                 self.tempCpuEff = pCpuEff
@@ -4236,6 +4781,71 @@ struct ScrollWheelDetector: NSViewRepresentable {
             // 3. 正常慢速滚动，向下传递给子视图的 ScrollView 进行正常的列表内容滚动
             super.scrollWheel(with: event)
         }
+    }
+}
+
+// MARK: - Bento Privacy Switch Card
+struct PrivacySwitchCard: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+    let color: Color
+    @Binding var isEnabled: Bool
+    
+    var body: some View {
+        Button(action: {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                isEnabled.toggle()
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    ZStack {
+                        Circle()
+                            .fill(isEnabled ? color.opacity(0.15) : Color.white.opacity(0.05))
+                            .frame(width: 24, height: 24)
+                        
+                        Image(systemName: icon)
+                            .font(.system(size: 11))
+                            .foregroundColor(isEnabled ? color : .white.opacity(0.4))
+                    }
+                    
+                    Spacer()
+                    
+                    Circle()
+                        .fill(isEnabled ? Color.green : Color.white.opacity(0.2))
+                        .frame(width: 6, height: 6)
+                }
+                
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                
+                Text(subtitle)
+                    .font(.system(size: 8))
+                    .foregroundColor(.white.opacity(isEnabled ? 0.6 : 0.3))
+                    .lineLimit(1)
+            }
+            .padding(10)
+            .background(isEnabled ? Color.white.opacity(0.04) : Color.white.opacity(0.02))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isEnabled ? color.opacity(0.4) : Color.white.opacity(0.05), lineWidth: 1)
+            )
+            .shadow(color: isEnabled ? color.opacity(0.1) : Color.clear, radius: 4)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Tactical Button Style
+struct ScrambledKeyButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1.0)
+            .brightness(configuration.isPressed ? -0.1 : 0.0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: configuration.isPressed)
     }
 }
 

@@ -40,11 +40,11 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 | 🔗 Sync / Standalone | Toggle dual fans to work together in sync or control them separately. |
 | ⌨️ Keyboard Backlight | Brightness slider with static, breathing, and wave effect animations. |
 | ⚡ Power Policy Tuning | Silent, Balanced, and Turbo presets. Separate policies for AC power and battery power. |
-| 📊 Est. Runtime Board | Deductive remaining runtime based on current discharge rate and custom power limit. |
-| 🧹 One-Click RAM Clean | Force reclaiming inactive physical memory, displaying exact freed megabytes (MB). |
-| 🖥️ Advanced Telemetry | Deep metrics including temperature matrix, core voltages, frequencies, and fan load. |
+| 📊 Est. Runtime Budgeting | Deductive remaining runtime based on current discharge rate and custom power limit. |
+| 🧹 Deep RAM Clean | **[NEW]** Multi-column Memory Page with a dynamic water-level ring, live scanning of top 7 active user processes, and deep memory purge feedback. |
+| 🛡️ Device Privacy Guard | **[NEW]** 4-way privacy switches (Camera, Mic, Screen, Auto Action) alongside a randomized scrambled keylogger-proof on-screen keyboard. |
+| ⚙️ Customize Status Bar | **[NEW]** Dedicated settings tab with interactive macOS menu bar mockup preview to show/hide 8 status indicators with perfect alignment. |
 | 🖱️ Context Menu | Right-click the status bar icon for Settings, About, and Quit. |
-| ⚙️ Settings Panel | Language toggle (Chinese/English), Launch at Login, and Sponsorship support. |
 
 ---
 
@@ -80,6 +80,26 @@ v1.5.0 introduces a brand new independent dual-path energy management system:
 - **🔋 Battery Power**: Three standalone presets + "Target System Power Limit" slider.
 - **Runtime Budgeting**: Dynamically estimates and compares "Limit Budgeted Runtime" vs "Live Estimated Runtime".
 - **Auto-Align Settings**: Automatically matches fan curve presets, keyboard backlight, and screen sleep timeout with the current performance level.
+
+---
+
+## 🛡️ Device Security & Memory Purging (New in v1.5.0)
+
+STATUS CTRL v1.5.0 introduces three major advanced upgrades focusing on device privacy protection and system resource optimization:
+
+### 1. 🧹 Deep Memory Clean (Memory Purge detail)
+- **Visual Ring Monitoring**: An intuitive neon percentage ring dynamically reflecting the physical RAM load.
+- **Active Process Ranking**: A background queue runs a non-blocking `ps` command to scan and aggregate the Resident Set Size (RSS) of active user-space processes (such as Google Chrome, WeChat, VS Code, Finder, etc.), cleanly presenting the top 7 memory-consuming applications in descending order with GB/MB units.
+- **Deep Reclaiming Sequence**: Combines Mach core memory pressure allocation with a cache-sweeping sequence. Displays a smooth countdown percent indicator during the purge and instantly reports the exact volume of memory reclaimed (e.g., "Reclaimed 1240 MB").
+
+### 2. 🛡️ Privacy Guard & Secure Scrambled Keyboard
+- **Real-Time Privacy Controls**: Includes 4 indicator cards for Camera, Microphone, Screen Recording, and High-Risk Auto-Action monitoring, complete with smooth breathing backlights and micro-animations when enabled.
+- **Secure Scrambled Keyboard**: Designed to counter screen-recording spyware, keyloggers, and physical shoulder surfing. A fully randomized on-screen input matrix (combining 0-9 and A-Z) shuffles dynamically using `.shuffled()` every time the guard opens or when refreshed. Features eye-toggle masking, strength analysis, and secure one-click clipboard copying.
+
+### 3. ⚙️ Customize Status Bar Tab (StatusBar Customize Panel)
+- Introduces a dedicated **"Status Bar"** tab in the Settings window, featuring a pixel-perfect, high-fidelity macOS menu bar mockup preview.
+- **Dynamic Grid Selectors**: Customize and toggle exactly what appears in the top-right status area: `Logo` (gradual gradient icon), `CPU %`, `RAM %`, `Disk %`, `CPU Temp`, `Fan Speed`, `Net Speed`, `GPU %`.
+- **Align and Auto-Resize**: Adjusting selections dynamically reshapes the status bar's length and shifts columns with pixel-perfect top-and-bottom text alignment.
 
 ---
 

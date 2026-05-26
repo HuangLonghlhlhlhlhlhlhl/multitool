@@ -15,6 +15,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         print("[App] Launching status bar helper app...")
         NSApp.setActivationPolicy(.accessory)
         
+        UserDefaults.standard.register(defaults: [
+            "showStatusBarLogo": true,
+            "showStatusBarCPUUsage": true,
+            "showStatusBarRAMUsage": true,
+            "showStatusBarSSDUsage": true,
+            "showStatusBarCPUTemp": true,
+            "showStatusBarFanSpeed": true,
+            "showStatusBarNetSpeed": true,
+            "showStatusBarGPUUsage": true,
+            "enableStatusBar": true,
+            "showStatusBarOnOpen": false
+        ])
+        
         // 1. Popover（左键展开的主面板）
         let popover = NSPopover()
         popover.contentSize = NSSize(width: 680, height: 530)
@@ -201,7 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let win = NSWindow(contentViewController: hostingController)
         win.title = "设置"
         win.styleMask = [.titled, .closable, .miniaturizable]
-        win.setContentSize(NSSize(width: 440, height: 380))
+        win.setContentSize(NSSize(width: 440, height: 470))
         win.center()
         win.isReleasedWhenClosed = false
         win.makeKeyAndOrderFront(nil)
@@ -248,7 +261,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateTelemetryText()
     }
     
-    private func updateTelemetryText() {
+    private func getGPUUsage() -> Double {
+        var usage: Double = 0.0
+        let match = IOServiceMatching("IOAccelerator")
+        var iterator: io_iterator_t = 0
+        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator)
+        if kr == KERN_SUCCESS {
+            var service = IOIteratorNext(iterator)
+            while service != 0 {
+                var serviceProps: Unmanaged<CFMutableDictionary>?
+                let propResult = IORegistryEntryCreateCFProperties(service, &serviceProps, kCFAllocatorDefault, 0)
+                if propResult == KERN_SUCCESS, let props = serviceProps?.takeRetainedValue() as? [String: Any] {
+                    if let stats = props["PerformanceStatistics"] as? [String: Any] {
+                        if let deviceCoreUtilization = stats["Device Utilization %"] as? Int {
+                            usage = max(usage, Double(deviceCoreUtilization))
+                        } else if let coreUsage = stats["GPU Core Utilization"] as? Int {
+                            usage = max(usage, Double(coreUsage))
+                        }
+                    }
+                }
+                IOObjectRelease(service)
+                service = IOIteratorNext(iterator)
+            }
+            IOObjectRelease(iterator)
+        }
+        return usage
+    }
+
+    func updateTelemetryText() {
         guard !isUpdatingTelemetry else { return }
         isUpdatingTelemetry = true
         
@@ -258,11 +298,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let cpuUsage = self.cpuMonitor.getUsage()
             let ramUsage = self.getRAMUsage()
             let ssdUsage = self.getSSDUsage()
+            let gpuUsage = self.getGPUUsage()
             let (upSpeed, downSpeed) = self.networkMonitor.getSpeed()
             
             let cpuTemp = SMCController.shared.getCPUTemperature()
             let ramTemp = SMCController.shared.getMemoryTemperature()
             let ssdTemp = SMCController.shared.getSSDTemperature()
+            let gpuTemp = SMCController.shared.getGPUTemperature()
+            
+            let fanCount = SMCController.shared.getFanCount()
+            var fanSpeeds: [Float] = []
+            if fanCount > 0 {
+                for i in 0..<fanCount {
+                    fanSpeeds.append(SMCController.shared.getFanSpeed(i))
+                }
+            }
             
             DispatchQueue.main.async {
                 self.isUpdatingTelemetry = false
@@ -270,6 +320,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     cpuUsage: cpuUsage, cpuTemp: Double(cpuTemp),
                     ramUsage: ramUsage, ramTemp: Double(ramTemp),
                     ssdUsage: ssdUsage, ssdTemp: Double(ssdTemp),
+                    gpuUsage: gpuUsage, gpuTemp: Double(gpuTemp),
+                    fanCount: fanCount, fanSpeed: fanSpeeds,
                     upSpeed: upSpeed, downSpeed: downSpeed
                 )
             }
@@ -288,43 +340,96 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         cpuUsage: Double, cpuTemp: Double,
         ramUsage: Double, ramTemp: Double,
         ssdUsage: Double, ssdTemp: Double,
+        gpuUsage: Double, gpuTemp: Double,
+        fanCount: Int, fanSpeed: [Float],
         upSpeed: Double, downSpeed: Double
     ) {
         guard self.statusBarItem?.button != nil else { return }
         
-        // 限制最大值为 99%，防止 100% 导致排版位移，同时保证等宽对齐
+        let enableBar = UserDefaults.standard.object(forKey: "enableStatusBar") as? Bool ?? true
+        
+        if #available(macOS 10.12, *) {
+            self.statusBarItem?.isVisible = enableBar
+        }
+        
+        guard enableBar else { return }
+        
+        let showLogo = UserDefaults.standard.object(forKey: "showStatusBarLogo") as? Bool ?? true
+        let showCPU = UserDefaults.standard.object(forKey: "showStatusBarCPUUsage") as? Bool ?? true
+        let showRAM = UserDefaults.standard.object(forKey: "showStatusBarRAMUsage") as? Bool ?? true
+        let showSSD = UserDefaults.standard.object(forKey: "showStatusBarSSDUsage") as? Bool ?? true
+        let showCPUTemp = UserDefaults.standard.object(forKey: "showStatusBarCPUTemp") as? Bool ?? true
+        let showFan = UserDefaults.standard.object(forKey: "showStatusBarFanSpeed") as? Bool ?? true
+        let showNet = UserDefaults.standard.object(forKey: "showStatusBarNetSpeed") as? Bool ?? true
+        let showGPU = UserDefaults.standard.object(forKey: "showStatusBarGPUUsage") as? Bool ?? true
+        
         let displayCpu = min(cpuUsage, 99.0)
         let displayRam = min(ramUsage, 99.0)
         let displaySsd = min(ssdUsage, 99.0)
+        let displayGpu = min(gpuUsage, 99.0)
         
-        // 第一行：效率指标 (格式固定为 5 字符，例如 "C: 8%")
-        let cpuUsageStr = String(format: "C:%2.0f%%", displayCpu)
-        let ramUsageStr = String(format: "M:%2.0f%%", displayRam)
-        let ssdUsageStr = String(format: "S:%2.0f%%", displaySsd)
+        var columns: [(top: String, bottom: String)] = []
         
-        // 第二行：温度指标 (前置两个空格以和第一行数字及单位完美上下垂直重合对齐，使用真正的度数符号，例如 "  45°")
-        let cpuTempStr = String(format: "  %2.0f°", cpuTemp)
-        let ramTempStr = String(format: "  %2.0f°", ramTemp)
-        let ssdTempStr = String(format: "  %2.0f°", ssdTemp)
+        // 1. CPU Slot
+        if showCPU || showCPUTemp {
+            let topStr = showCPU ? String(format: "C:%2.0f%%", displayCpu) : "     "
+            let bottomStr = showCPUTemp ? String(format: "  %2.0f°", cpuTemp) : "     "
+            columns.append((topStr, bottomStr))
+        }
         
-        // 网速处理：将网速数字与箭头紧贴拼接，然后在右侧补齐空格，保持总长度 7 字符且没有间隙，同时实现箭头左侧完全对齐
-        let upSpeedCompact = formatSpeedCompact(upSpeed)
-        let upSpeedRaw = "⇡" + upSpeedCompact
-        let upSpeedStr = padSpeedRight(upSpeedRaw, toLength: 7)
+        // 2. RAM Slot
+        if showRAM {
+            let topStr = String(format: "M:%2.0f%%", displayRam)
+            let bottomStr = String(format: "  %2.0f°", ramTemp)
+            columns.append((topStr, bottomStr))
+        }
         
-        let downSpeedCompact = formatSpeedCompact(downSpeed)
-        let downSpeedRaw = "⇣" + downSpeedCompact
-        let downSpeedStr = padSpeedRight(downSpeedRaw, toLength: 7)
+        // 3. SSD Slot
+        if showSSD {
+            let topStr = String(format: "S:%2.0f%%", displaySsd)
+            let bottomStr = String(format: "  %2.0f°", ssdTemp)
+            columns.append((topStr, bottomStr))
+        }
         
-        // 拼接双行内容，使用 1 个空格分隔 C-M-S，2 个空格分隔 S-网速，以严格符合用户提供的紧凑样式和完美对齐结构
-        let line1 = "\(cpuUsageStr) \(ramUsageStr) \(ssdUsageStr)  \(upSpeedStr)"
-        let line2 = "\(cpuTempStr) \(ramTempStr) \(ssdTempStr)  \(downSpeedStr)"
+        // 4. GPU Slot
+        if showGPU {
+            let topStr = String(format: "G:%2.0f%%", displayGpu)
+            let bottomStr = String(format: "  %2.0f°", gpuTemp)
+            columns.append((topStr, bottomStr))
+        }
+        
+        // 5. Fan Slot
+        if showFan && fanCount > 0 {
+            let speed = fanSpeed.first ?? 0.0
+            let topStr = String(format: "F:%4.0f", speed)
+            let bottomStr = "   RPM"
+            columns.append((topStr, bottomStr))
+        }
+        
+        // 6. Network Slot
+        if showNet {
+            let upSpeedCompact = formatSpeedCompact(upSpeed)
+            let upSpeedRaw = "⇡" + upSpeedCompact
+            let topStr = padSpeedRight(upSpeedRaw, toLength: 7)
+            
+            let downSpeedCompact = formatSpeedCompact(downSpeed)
+            let downSpeedRaw = "⇣" + downSpeedCompact
+            let bottomStr = padSpeedRight(downSpeedRaw, toLength: 7)
+            
+            columns.append((topStr, bottomStr))
+        }
+        
+        if columns.isEmpty {
+            columns.append(("CTRL ", "STAT "))
+        }
+        
+        let line1 = columns.map { $0.top }.joined(separator: " ")
+        let line2 = columns.map { $0.bottom }.joined(separator: " ")
         let combinedString = "\(line1)\n\(line2)"
         
-        // 字体放大 10% (9.0 -> 10.0)，设置自适应紧凑行距以减小两行总高度，从而实现在自定义绘图中的绝对完美居中
         let font = NSFont.monospacedSystemFont(ofSize: 10.0, weight: .regular)
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = -3.2 // 紧密拉近两行行距，防止超出状态栏被裁切
+        paragraphStyle.lineSpacing = -3.2
         paragraphStyle.alignment = .left
         
         let attributes: [NSAttributedString.Key: Any] = [
@@ -335,12 +440,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let attrString = NSAttributedString(string: combinedString, attributes: attributes)
         
-        // 1. 更新自适应自平衡宽度：左边距 2 + Logo 18 + 间距 4 + 文字宽度 + 右边距 6 = 文字宽度 + 30pt
         let totalSize = attrString.size()
-        let requiredWidth = ceil(totalSize.width) + 30
+        let requiredWidth = ceil(totalSize.width) + (showLogo ? 30 : 10)
         self.statusBarItem?.length = requiredWidth
         
-        // 2. 将数据赋给自定义高精度垂直居中视图进行渲染
         self.statusBarCustomView?.attributedString = attrString
     }
     
@@ -387,6 +490,108 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Settings View
 
+struct SettingsMiniToggle: View {
+    let label: String
+    @Binding var isOn: Bool
+    let onChange: () -> Void
+    
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Text(label)
+                .font(.system(size: 12))
+        }
+        .toggleStyle(.checkbox)
+        .onChange(of: isOn) { _ in
+            onChange()
+        }
+    }
+}
+
+struct StatusBarMockupView: View {
+    let showLogo: Bool
+    let showCPU: Bool
+    let showRAM: Bool
+    let showSSD: Bool
+    let showGPU: Bool
+    let showFan: Bool
+    let showNet: Bool
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Spacer()
+            // Right-aligned status bar items
+            HStack(spacing: 6) {
+                if showLogo {
+                    // Small gradient ring
+                    Circle()
+                        .stroke(
+                            LinearGradient(colors: [.cyan, .purple, .pink], startPoint: .topLeading, endPoint: .bottomTrailing),
+                            lineWidth: 1.2
+                        )
+                        .frame(width: 12, height: 12)
+                }
+                
+                HStack(spacing: 5) {
+                    if showCPU {
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text("C: 8%").font(.system(size: 7, design: .monospaced))
+                            Text("  45°").font(.system(size: 7, design: .monospaced))
+                        }
+                    }
+                    if showRAM {
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text("M:38%").font(.system(size: 7, design: .monospaced))
+                            Text("  42°").font(.system(size: 7, design: .monospaced))
+                        }
+                    }
+                    if showSSD {
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text("S:45%").font(.system(size: 7, design: .monospaced))
+                            Text("  35°").font(.system(size: 7, design: .monospaced))
+                        }
+                    }
+                    if showGPU {
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text("G:15%").font(.system(size: 7, design: .monospaced))
+                            Text("  48°").font(.system(size: 7, design: .monospaced))
+                        }
+                    }
+                    if showFan {
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text("F:1200").font(.system(size: 7, design: .monospaced))
+                            Text("   RPM").font(.system(size: 7, design: .monospaced))
+                        }
+                    }
+                    if showNet {
+                        VStack(alignment: .leading, spacing: -2) {
+                            Text("⇡128K").font(.system(size: 7, design: .monospaced))
+                            Text("⇣1.2M").font(.system(size: 7, design: .monospaced))
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Color.black.opacity(0.4))
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            )
+        }
+        .padding(8)
+        .frame(height: 38)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(LinearGradient(colors: [Color(red: 0.1, green: 0.12, blue: 0.2), Color(red: 0.15, green: 0.1, blue: 0.25)], startPoint: .top, endPoint: .bottom))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+        )
+    }
+}
+
 struct SettingsView: View {
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("refreshInterval") private var refreshInterval: Double = 1.5
@@ -395,59 +600,181 @@ struct SettingsView: View {
     @AppStorage("showBattery") private var showBattery: Bool = true
     @AppStorage("showFan") private var showFan: Bool = true
     
+    // Status Bar customization bindings
+    @AppStorage("enableStatusBar") private var enableStatusBar: Bool = true
+    @AppStorage("showStatusBarOnOpen") private var showStatusBarOnOpen: Bool = false
+    @AppStorage("showStatusBarLogo") private var showStatusBarLogo: Bool = true
+    @AppStorage("showStatusBarCPUUsage") private var showStatusBarCPUUsage: Bool = true
+    @AppStorage("showStatusBarRAMUsage") private var showStatusBarRAMUsage: Bool = true
+    @AppStorage("showStatusBarSSDUsage") private var showStatusBarSSDUsage: Bool = true
+    @AppStorage("showStatusBarCPUTemp") private var showStatusBarCPUTemp: Bool = true
+    @AppStorage("showStatusBarFanSpeed") private var showStatusBarFanSpeed: Bool = true
+    @AppStorage("showStatusBarNetSpeed") private var showStatusBarNetSpeed: Bool = true
+    @AppStorage("showStatusBarGPUUsage") private var showStatusBarGPUUsage: Bool = true
+    
+    @State private var activeTab: Int = 0 // 0: 通用, 1: 状态栏
+    
+    private func triggerUpdate() {
+        DispatchQueue.main.async {
+            if let delegate = NSApp.delegate as? AppDelegate {
+                delegate.updateTelemetryText()
+            }
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 0) {
-            // 标题栏
-            HStack {
-                Image(systemName: "gearshape.2.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(
-                        LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)
-                    )
-                Text("设置")
-                    .font(.system(size: 18, weight: .semibold))
+            // Segmented Tab bar
+            HStack(spacing: 16) {
+                Button(action: { activeTab = 0 }) {
+                    VStack(spacing: 4) {
+                        Text("通用")
+                            .font(.system(size: 13, weight: activeTab == 0 ? .semibold : .regular))
+                            .foregroundColor(activeTab == 0 ? .accentColor : .secondary)
+                        Capsule()
+                            .fill(activeTab == 0 ? Color.accentColor : Color.clear)
+                            .frame(width: 28, height: 2.5)
+                    }
+                }
+                .buttonStyle(.plain)
+                
+                Button(action: { activeTab = 1 }) {
+                    VStack(spacing: 4) {
+                        Text("状态栏")
+                            .font(.system(size: 13, weight: activeTab == 1 ? .semibold : .regular))
+                            .foregroundColor(activeTab == 1 ? .accentColor : .secondary)
+                        Capsule()
+                            .fill(activeTab == 1 ? Color.accentColor : Color.clear)
+                            .frame(width: 40, height: 2.5)
+                    }
+                }
+                .buttonStyle(.plain)
+                
                 Spacer()
+                
+                Image(systemName: activeTab == 0 ? "gearshape.fill" : "menubar.rectangle")
+                    .font(.system(size: 16))
+                    .foregroundColor(.secondary)
             }
             .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
             
             Divider()
             
-            ScrollView {
-                VStack(spacing: 12) {
-                    
-                    // 显示内容
-                    SettingsSection(title: "面板显示项目") {
-                        SettingsToggleRow(label: "显示 CPU 温度", icon: "thermometer", isOn: $showCPUTemp)
-                        Divider().padding(.leading, 36)
-                        SettingsToggleRow(label: "显示 GPU 温度", icon: "cpu", isOn: $showGPUTemp)
-                        Divider().padding(.leading, 36)
-                        SettingsToggleRow(label: "显示电池信息", icon: "battery.100", isOn: $showBattery)
-                        Divider().padding(.leading, 36)
-                        SettingsToggleRow(label: "显示风扇转速", icon: "fan", isOn: $showFan)
-                    }
-                    
-                    // 刷新频率
-                    SettingsSection(title: "性能") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Image(systemName: "clock")
-                                    .foregroundColor(.secondary)
-                                    .frame(width: 20)
-                                Text("刷新间隔")
-                                Spacer()
-                                Text(String(format: "%.1f 秒", refreshInterval))
-                                    .foregroundColor(.secondary)
-                                    .font(.system(size: 12, design: .monospaced))
-                            }
-                            Slider(value: $refreshInterval, in: 0.5...5.0, step: 0.5)
-                                .padding(.leading, 28)
+            if activeTab == 0 {
+                // 通用 Tab Content
+                ScrollView {
+                    VStack(spacing: 12) {
+                        SettingsSection(title: "基础设置") {
+                            SettingsToggleRow(label: "开机时自动启动", icon: "play.circle", isOn: $launchAtLogin)
                         }
-                        .padding(.vertical, 4)
+                        
+                        SettingsSection(title: "面板显示项目") {
+                            SettingsToggleRow(label: "显示 CPU 温度", icon: "thermometer", isOn: $showCPUTemp)
+                            Divider().padding(.leading, 36)
+                            SettingsToggleRow(label: "显示 GPU 温度", icon: "cpu", isOn: $showGPUTemp)
+                            Divider().padding(.leading, 36)
+                            SettingsToggleRow(label: "显示电池信息", icon: "battery.100", isOn: $showBattery)
+                            Divider().padding(.leading, 36)
+                            SettingsToggleRow(label: "显示风扇转速", icon: "fan", isOn: $showFan)
+                        }
+                        
+                        SettingsSection(title: "性能") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Image(systemName: "clock")
+                                        .foregroundColor(.secondary)
+                                        .frame(width: 20)
+                                    Text("刷新间隔")
+                                    Spacer()
+                                    Text(String(format: "%.1f 秒", refreshInterval))
+                                        .foregroundColor(.secondary)
+                                        .font(.system(size: 12, design: .monospaced))
+                                }
+                                Slider(value: $refreshInterval, in: 0.5...5.0, step: 0.5)
+                                    .padding(.leading, 28)
+                            }
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 16)
+                        }
                     }
+                    .padding(16)
                 }
-                .padding(16)
+            } else {
+                // 状态栏 Tab Content
+                ScrollView {
+                    VStack(spacing: 16) {
+                        // High fidelity macOS mock menu bar preview
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("菜单栏预览 (Mockup Preview)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 4)
+                            
+                            StatusBarMockupView(
+                                showLogo: showStatusBarLogo,
+                                showCPU: showStatusBarCPUUsage,
+                                showRAM: showStatusBarRAMUsage,
+                                showSSD: showStatusBarSSDUsage,
+                                showGPU: showStatusBarGPUUsage,
+                                showFan: showStatusBarFanSpeed,
+                                showNet: showStatusBarNetSpeed
+                            )
+                        }
+                        
+                        SettingsSection(title: "状态栏控制") {
+                            SettingsToggleRow(label: "启用系统右上角状态栏", icon: "menubar.rectangle", isOn: $enableStatusBar)
+                                .onChange(of: enableStatusBar) { _ in triggerUpdate() }
+                            Divider().padding(.leading, 36)
+                            SettingsToggleRow(label: "打开主界面时自动显示状态栏", icon: "eye", isOn: $showStatusBarOnOpen)
+                                .onChange(of: showStatusBarOnOpen) { _ in triggerUpdate() }
+                        }
+                        
+                        SettingsSection(title: "状态栏展示信息定制 (Bento Checkboxes)") {
+                            VStack(spacing: 0) {
+                                HStack {
+                                    SettingsMiniToggle(label: "渐变 Logo", isOn: $showStatusBarLogo, onChange: triggerUpdate)
+                                    Spacer()
+                                    SettingsMiniToggle(label: "CPU 占用", isOn: $showStatusBarCPUUsage, onChange: triggerUpdate)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                
+                                Divider().padding(.horizontal, 16)
+                                
+                                HStack {
+                                    SettingsMiniToggle(label: "内存 占用", isOn: $showStatusBarRAMUsage, onChange: triggerUpdate)
+                                    Spacer()
+                                    SettingsMiniToggle(label: "磁盘 占用", isOn: $showStatusBarSSDUsage, onChange: triggerUpdate)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                
+                                Divider().padding(.horizontal, 16)
+                                
+                                HStack {
+                                    SettingsMiniToggle(label: "CPU 温度", isOn: $showStatusBarCPUTemp, onChange: triggerUpdate)
+                                    Spacer()
+                                    SettingsMiniToggle(label: "GPU 占用", isOn: $showStatusBarGPUUsage, onChange: triggerUpdate)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                
+                                Divider().padding(.horizontal, 16)
+                                
+                                HStack {
+                                    SettingsMiniToggle(label: "风扇 转速", isOn: $showStatusBarFanSpeed, onChange: triggerUpdate)
+                                    Spacer()
+                                    SettingsMiniToggle(label: "上传/下载网速", isOn: $showStatusBarNetSpeed, onChange: triggerUpdate)
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
             }
             
             Divider()
@@ -463,7 +790,7 @@ struct SettingsView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
         }
-        .frame(width: 440, height: 380)
+        .frame(width: 440, height: 470)
         .background(Color(NSColor.windowBackgroundColor))
     }
 }
@@ -692,7 +1019,8 @@ class StatusBarCustomView: NSView {
         super.draw(dirtyRect)
         
         // 1. 在最左侧绘制程序精致渐变圆环 Logo (18x18)
-        if let logo = logoImage {
+        let showLogo = UserDefaults.standard.object(forKey: "showStatusBarLogo") as? Bool ?? true
+        if showLogo, let logo = logoImage {
             let logoSize: CGFloat = 18.0
             let logoY = (bounds.height - logoSize) / 2.0
             let logoRect = NSRect(x: 2.0, y: logoY, width: logoSize, height: logoSize)
@@ -708,8 +1036,8 @@ class StatusBarCustomView: NSView {
         // 按照用户指示“向下靠下显示”，我们在此基础上在 y 轴向下挪动 1.5pt，使其完美贴合且具有阅读沉淀感
         let y = (bounds.height - totalSize.height) / 2.0 - 1.5
         
-        // 文字的起始 x 坐标紧接在 Logo 区域右侧 (Logo 的 x 是 2，宽度 18，我们保留 4pt 优雅间距，因此设为 24)
-        let x: CGFloat = 24.0
+        // 文字的起始 x 坐标紧接在 Logo 区域右侧
+        let x: CGFloat = showLogo ? 24.0 : 4.0
         
         let drawRect = NSRect(x: x, y: y, width: totalSize.width, height: totalSize.height)
         
