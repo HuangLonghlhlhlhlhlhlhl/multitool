@@ -38,6 +38,7 @@ struct DashboardView: View {
     private let telemetryQueue = DispatchQueue(label: "com.statusctrl.telemetryQueue", qos: .userInitiated)
     private let keyboardQueue = DispatchQueue(label: "com.statusctrl.keyboardQueue", qos: .background)
     @State private var isHardwareInitialized = false
+    @State private var isSilicon = false
     @State private var isPanelVisible = false
     @State private var isUserDraggingFan = false
     @State private var refreshTick = 0
@@ -1603,7 +1604,6 @@ struct DashboardView: View {
             }
             
             // Slider / Custom details
-            let isSilicon = smc.readKey("FS! ") == nil
             
             if isChargeLimitEnabled {
                 VStack(spacing: 10) {
@@ -3067,66 +3067,121 @@ struct DashboardView: View {
     }
     
     private func initializeHardware() {
-        // SMC init
-        smc.doOpen()
-        
-        fanCount = smc.getFanCount()
-        if fanCount > 0 {
-            // Initialize per-fan arrays
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            // SMC init
+            self.smc.doOpen()
+            
+            let tempFanCount = self.smc.getFanCount()
             var mins: [Float] = []
             var maxs: [Float] = []
             var speeds: [Float] = []
             var targets: [Float] = []
+            var tempIsManualFan = false
             
-            for i in 0..<fanCount {
-                let rawMin = smc.getFanMinSpeed(i)
-                let rawMax = smc.getFanMaxSpeed(i)
-                let lo = min(rawMin, rawMax - 50)
-                let hi = max(rawMax, rawMin + 50)
-                let ac  = smc.getFanSpeed(i)
-                let tg  = smc.getFanTargetSpeed(i)
-                mins.append(lo)
-                maxs.append(hi)
-                speeds.append(ac)
-                targets.append(max(lo, min(tg > 0 ? tg : lo, hi)))
+            if tempFanCount > 0 {
+                for i in 0..<tempFanCount {
+                    let rawMin = self.smc.getFanMinSpeed(i)
+                    let rawMax = self.smc.getFanMaxSpeed(i)
+                    let lo = min(rawMin, rawMax - 50)
+                    let hi = max(rawMax, rawMin + 50)
+                    let ac  = self.smc.getFanSpeed(i)
+                    let tg  = self.smc.getFanTargetSpeed(i)
+                    mins.append(lo)
+                    maxs.append(hi)
+                    speeds.append(ac)
+                    targets.append(max(lo, min(tg > 0 ? tg : lo, hi)))
+                }
+                
+                // Detect manual mode (F0Md for Apple Silicon, FS! for Intel)
+                if let f0md = self.smc.readKey("F0Md") {
+                    tempIsManualFan = (f0md.0 != 0)
+                } else if let fs = self.smc.readKey("FS! ") {
+                    tempIsManualFan = (fs.0 > 0 || fs.1 > 0)
+                }
             }
-            fanMinSpeed    = mins
-            fanMaxSpeed    = maxs
-            fanSpeed       = speeds
-            targetFanSpeed = targets
-            lastAppliedFanSpeed = targets
-            lastHardwareSetSpeed = Array(repeating: 0.0, count: fanCount)
             
-            // Detect manual mode (F0Md for Apple Silicon, FS! for Intel)
-            if let f0md = smc.readKey("F0Md") {
-                isManualFan = (f0md.0 != 0)
-            } else if let fs = smc.readKey("FS! ") {
-                isManualFan = (fs.0 > 0 || fs.1 > 0)
+            let tempIsSilicon = (self.smc.readKey("FS! ") == nil)
+            
+            // Keyboard init
+            let currentB = KeyboardBacklightPrivate.getBrightness()
+            
+            // Power monitor init
+            let tempPowerStats = PowerMonitor.getPowerStats()
+            let tempCpuTemp = self.smc.getCPUTemperature()
+            let tempGpuTemp = self.smc.getGPUTemperature()
+            let tempSelectedPowerTab = tempPowerStats.isConnected ? 0 : 1
+            
+            // Power Optimization Init
+            let tempIsLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            let tempDisableKBOnBattery = UserDefaults.standard.bool(forKey: "DisableKeyboardBacklightOnBattery")
+            
+            // Battery care settings init
+            let batteryCareLimit = self.smc.getBatteryChargeLimit()
+            
+            // Custom fan curve init
+            let cCurveTemp1 = UserDefaults.standard.object(forKey: "CustomCurveTemp1") != nil ? UserDefaults.standard.float(forKey: "CustomCurveTemp1") : 40.0
+            let cCurveSpeed1 = UserDefaults.standard.object(forKey: "CustomCurveSpeed1") != nil ? UserDefaults.standard.float(forKey: "CustomCurveSpeed1") : 20.0
+            let cCurveTemp2 = UserDefaults.standard.object(forKey: "CustomCurveTemp2") != nil ? UserDefaults.standard.float(forKey: "CustomCurveTemp2") : 55.0
+            let cCurveSpeed2 = UserDefaults.standard.object(forKey: "CustomCurveSpeed2") != nil ? UserDefaults.standard.float(forKey: "CustomCurveSpeed2") : 45.0
+            let cCurveTemp3 = UserDefaults.standard.object(forKey: "CustomCurveTemp3") != nil ? UserDefaults.standard.float(forKey: "CustomCurveTemp3") : 70.0
+            let cCurveSpeed3 = UserDefaults.standard.object(forKey: "CustomCurveSpeed3") != nil ? UserDefaults.standard.float(forKey: "CustomCurveSpeed3") : 75.0
+            let cCurveTemp4 = UserDefaults.standard.object(forKey: "CustomCurveTemp4") != nil ? UserDefaults.standard.float(forKey: "CustomCurveTemp4") : 85.0
+            let cCurveSpeed4 = UserDefaults.standard.object(forKey: "CustomCurveSpeed4") != nil ? UserDefaults.standard.float(forKey: "CustomCurveSpeed4") : 100.0
+            
+            // Launch behavior sync
+            let tempLaunchAtLogin = LaunchAtLoginHelper.isEnabled
+            
+            DispatchQueue.main.async {
+                self.fanCount = tempFanCount
+                if tempFanCount > 0 {
+                    self.fanMinSpeed = mins
+                    self.fanMaxSpeed = maxs
+                    self.fanSpeed = speeds
+                    self.targetFanSpeed = targets
+                    self.lastAppliedFanSpeed = targets
+                    self.lastHardwareSetSpeed = Array(repeating: 0.0, count: tempFanCount)
+                    self.isManualFan = tempIsManualFan
+                }
+                
+                self.isSilicon = tempIsSilicon
+                self.keyboardBrightness = currentB
+                self.powerStats = tempPowerStats
+                self.cpuTemp = tempCpuTemp
+                self.gpuTemp = tempGpuTemp
+                self.selectedPowerTab = tempSelectedPowerTab
+                self.isLowPowerModeEnabled = tempIsLowPowerMode
+                self.disableKeyboardBacklightOnBattery = tempDisableKBOnBattery
+                
+                self.isChargeLimitEnabled = batteryCareLimit.active
+                self.batteryLimitValue = Float(batteryCareLimit.limit)
+                
+                self.customCurveTemp1 = cCurveTemp1
+                self.customCurveSpeed1 = cCurveSpeed1
+                self.customCurveTemp2 = cCurveTemp2
+                self.customCurveSpeed2 = cCurveSpeed2
+                self.customCurveTemp3 = cCurveTemp3
+                self.customCurveSpeed3 = cCurveSpeed3
+                self.customCurveTemp4 = cCurveTemp4
+                self.customCurveSpeed4 = cCurveSpeed4
+                
+                self.launchAtLogin = tempLaunchAtLogin
+                
+                if self.keyboardMode > 0 {
+                    self.toggleKeyboardAnimation(mode: self.keyboardMode)
+                }
+                
+                self.applyDynamicPowerSavingSettings()
+                self.evaluateAndApplyFanCurve()
+                
+                // Mark hardware as initialized to transition from skeleton view to main panel
+                withAnimation(.easeIn(duration: 0.3)) {
+                    self.isHardwareInitialized = true
+                }
             }
-        }
-        
-        // Keyboard init
-        let currentB = KeyboardBacklightPrivate.getBrightness()
-        keyboardBrightness = currentB
-        
-        if keyboardMode > 0 {
-            toggleKeyboardAnimation(mode: keyboardMode)
-        }
-        
-        // Power monitor init
-        powerStats = PowerMonitor.getPowerStats()
-        cpuTemp = smc.getCPUTemperature()
-        gpuTemp = smc.getGPUTemperature()
-        selectedPowerTab = powerStats.isConnected ? 0 : 1
-        
-        // Power Optimization Init
-        isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
-        disableKeyboardBacklightOnBattery = UserDefaults.standard.bool(forKey: "DisableKeyboardBacklightOnBattery")
-        applyDynamicPowerSavingSettings()
-        
-        DispatchQueue.global(qos: .background).async {
+            
+            // Background pmset check
             let task = Process()
-            task.launchPath = "/usr/bin/pmset"
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
             task.arguments = ["-g", "custom"]
             let pipe = Pipe()
             task.standardOutput = pipe
@@ -3151,21 +3206,6 @@ struct DashboardView: View {
                     }
                 }
             } catch {}
-        }
-        
-        // Battery care settings init
-        loadBatteryCareSettings()
-        
-        // Custom fan curve init
-        loadCustomCurveSettings()
-        evaluateAndApplyFanCurve()
-        
-        // Launch behavior sync
-        launchAtLogin = LaunchAtLoginHelper.isEnabled
-        
-        // Mark hardware as initialized to transition from skeleton view to main panel
-        withAnimation(.easeIn(duration: 0.3)) {
-            isHardwareInitialized = true
         }
     }
     
@@ -3194,6 +3234,7 @@ struct DashboardView: View {
         let cCurveSpeed4 = customCurveSpeed4
         
         let currentDisableKeyboardBacklightOnBattery = disableKeyboardBacklightOnBattery
+        let currentTab = selectedTab
         
         telemetryQueue.async {
             // 1. Perform intensive hardware readings on background queue
@@ -3204,7 +3245,8 @@ struct DashboardView: View {
             let usageCpu = self.cpuMonitor.getUsage()
             let usageGpu = self.getGPUUsage()
             
-            let processes = MemoryPurger.getActiveProcessMemoryList()
+            // Only group and fetch active process memory list if on tab 0 (Memory)
+            let processes = currentTab == 0 ? MemoryPurger.getActiveProcessMemoryList() : []
             let ramPercent = self.getRAMUsage()
             
             let pCpuPerf = self.smc.getCPUPerfCoresTemperature()
@@ -3322,6 +3364,16 @@ struct DashboardView: View {
                 nextLastHardwareSetSpeed = tmpLastHardware
             }
             
+            // Auto Dim Keyboard Backlight on Battery (CoreBrightness XPC in background)
+            var didAutoDimKeyboard = false
+            if currentDisableKeyboardBacklightOnBattery && !statsPower.isConnected {
+                let currentKB = KeyboardBacklightPrivate.getBrightness()
+                if currentKB > 0.0 {
+                    let _ = KeyboardBacklightPrivate.setBrightness(0.0)
+                    didAutoDimKeyboard = true
+                }
+            }
+            
             // 2. Dispatch the results back to the main thread to update UI
             DispatchQueue.main.async {
                 self.cpuTemp = tempCpu
@@ -3330,7 +3382,9 @@ struct DashboardView: View {
                 self.cpuUsage = usageCpu
                 self.gpuUsage = usageGpu
                 
-                self.activeProcesses = processes
+                if currentTab == 0 {
+                    self.activeProcesses = processes
+                }
                 self.currentRAMUsagePercent = ramPercent
                 
                 self.tempCpuPerf = pCpuPerf
@@ -3366,13 +3420,8 @@ struct DashboardView: View {
                 // Dynamic Power/Battery Saving Alignments
                 self.applyDynamicPowerSavingSettings()
                 
-                // Auto Dim Keyboard Backlight on Battery if configured
-                if currentDisableKeyboardBacklightOnBattery && !statsPower.isConnected {
-                    let currentKB = KeyboardBacklightPrivate.getBrightness()
-                    if currentKB > 0.0 {
-                        let _ = KeyboardBacklightPrivate.setBrightness(0.0)
-                        self.keyboardBrightness = 0.0
-                    }
+                if didAutoDimKeyboard {
+                    self.keyboardBrightness = 0.0
                 }
                 
                 self.isRefreshing = false
@@ -4968,16 +5017,14 @@ struct DieBlock: View {
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.5))
                         
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 1)
-                                    .fill(Color.white.opacity(0.1))
-                                RoundedRectangle(cornerRadius: 1)
-                                    .fill(heatColor)
-                                    .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, usage / 100.0))))
-                            }
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(Color.white.opacity(0.1))
+                                .frame(width: 24, height: 1.5)
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(heatColor)
+                                .frame(width: 24.0 * CGFloat(min(1.0, max(0.0, usage / 100.0))), height: 1.5)
                         }
-                        .frame(width: 24, height: 1.5)
                     }
                 }
             }
@@ -5086,70 +5133,81 @@ struct KeyboardBacklightVisualizerView: View {
     let keyboardMode: Int
     let breathingSpeed: Double
     
-    @State private var wavePhase: Double = 0.0
-    private let waveTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    @State private var animateKeys = false
     
     var body: some View {
         VStack(spacing: 4) {
             // Upper row of 10 keys
             HStack(spacing: 4) {
                 ForEach(0..<10) { i in
-                    let offset = Double(i) * 0.35
-                    let intensity: Double = {
-                        if keyboardMode == 2 {
-                            return pow(sin(wavePhase * 0.5 - offset), 2.0)
-                        } else {
-                            return pow(sin(wavePhase * 0.5), 2.0)
-                        }
-                    }()
-                    
+                    let offset = Double(i) * 0.15
                     RoundedRectangle(cornerRadius: 2)
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15 + 0.85 * intensity),
-                                    Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15 + 0.85 * intensity)
+                                    Color(red: 0.62, green: 0.32, blue: 0.88),
+                                    Color(red: 0.18, green: 0.62, blue: 0.95)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
                         )
                         .frame(width: 16, height: 11)
-                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(intensity * 0.5), radius: 2)
+                        .opacity(keyboardMode > 0 ? (animateKeys ? 1.0 : 0.15) : 0.15)
+                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(keyboardMode > 0 ? (animateKeys ? 0.5 : 0.08) : 0.0), radius: 2)
+                        .animation(
+                            keyboardMode == 2
+                                ? Animation.easeInOut(duration: max(0.4, breathingSpeed / 2.0))
+                                    .repeatForever(autoreverses: true)
+                                    .delay(offset)
+                                : Animation.easeInOut(duration: max(0.4, breathingSpeed / 2.0))
+                                    .repeatForever(autoreverses: true),
+                            value: animateKeys
+                        )
                 }
             }
             
             // Lower row of 10 keys
             HStack(spacing: 4) {
                 ForEach(0..<10) { i in
-                    let offset = Double(i) * 0.35 + 0.17
-                    let intensity: Double = {
-                        if keyboardMode == 2 {
-                            return pow(sin(wavePhase * 0.5 - offset), 2.0)
-                        } else {
-                            return pow(sin(wavePhase * 0.5), 2.0)
-                        }
-                    }()
-                    
+                    let offset = Double(i) * 0.15 + 0.075
                     RoundedRectangle(cornerRadius: 2)
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15 + 0.85 * intensity),
-                                    Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15 + 0.85 * intensity)
+                                    Color(red: 0.62, green: 0.32, blue: 0.88),
+                                    Color(red: 0.18, green: 0.62, blue: 0.95)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
                         )
                         .frame(width: 16, height: 11)
-                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(intensity * 0.5), radius: 2)
+                        .opacity(keyboardMode > 0 ? (animateKeys ? 1.0 : 0.15) : 0.15)
+                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(keyboardMode > 0 ? (animateKeys ? 0.5 : 0.08) : 0.0), radius: 2)
+                        .animation(
+                            keyboardMode == 2
+                                ? Animation.easeInOut(duration: max(0.4, breathingSpeed / 2.0))
+                                    .repeatForever(autoreverses: true)
+                                    .delay(offset)
+                                : Animation.easeInOut(duration: max(0.4, breathingSpeed / 2.0))
+                                    .repeatForever(autoreverses: true),
+                            value: animateKeys
+                        )
                 }
             }
         }
-        .onReceive(waveTimer) { _ in
-            if keyboardMode > 0 {
-                wavePhase += (2.0 * .pi) / (breathingSpeed * 20.0)
+        .onAppear {
+            withAnimation {
+                animateKeys = true
+            }
+        }
+        .onChange(of: keyboardMode) { _ in
+            animateKeys = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                withAnimation {
+                    animateKeys = true
+                }
             }
         }
     }

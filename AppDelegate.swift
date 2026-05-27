@@ -290,6 +290,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func updateTelemetryText() {
         guard !isUpdatingTelemetry else { return }
+        
+        let enableBar = UserDefaults.standard.object(forKey: "enableStatusBar") as? Bool ?? true
+        guard enableBar else {
+            DispatchQueue.main.async { [weak self] in
+                if #available(macOS 10.12, *) {
+                    self?.statusBarItem?.isVisible = false
+                }
+            }
+            return
+        }
+        
         isUpdatingTelemetry = true
         
         telemetryQueue.async { [weak self] in
