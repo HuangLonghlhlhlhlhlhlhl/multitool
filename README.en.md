@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.5.1-orange)
+![Version](https://img.shields.io/badge/Version-1.6.0-orange)
 ![Size](https://img.shields.io/badge/Size-~6MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -20,7 +20,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.5.1.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.6.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, then drag **`STATUS CTRL.app`** into the **`Applications`** folder.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
@@ -44,6 +44,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 | 🧹 Deep RAM Clean | **[NEW]** Multi-column Memory Page with a dynamic water-level ring, live scanning of top 7 active user processes, and deep memory purge feedback. |
 | 🛡️ Device Privacy Guard | **[NEW]** 4-way privacy switches (Camera, Mic, Screen, Auto Action) alongside a randomized scrambled keylogger-proof on-screen keyboard. |
 | ⚙️ Customize Status Bar | **[NEW]** Dedicated settings tab with interactive macOS menu bar mockup preview to show/hide 8 status indicators with perfect alignment. |
+| 🔄 Auto-Updater & Upgrade | **[NEW]** Integrates GitHub Releases API to automatically check for updates. Supports background download, live progress bar, automatic mounting/opening of `.dmg` installers, version skipping, and a neon notification dot. |
 | 🖱️ Context Menu | Right-click the status bar icon for Settings, About, and Quit. |
 
 ---
@@ -74,7 +75,7 @@ Manual fan speed control requires writing to SMC registers, which requires root 
 
 ## ⚡ Power Saving & Policies
 
-v1.5.1 introduces a brand new independent dual-path energy management system:
+v1.6.0 introduces a brand new smart auto-updater and Celsius formatting refactoring:
 
 - **🔌 AC Power**: 🚀 Turbo / ⚖️ Balanced / 🍃 Eco Silent performance presets.
 - **🔋 Battery Power**: Three standalone presets + "Target System Power Limit" slider.
@@ -83,9 +84,9 @@ v1.5.1 introduces a brand new independent dual-path energy management system:
 
 ---
 
-## 🛡️ Device Security & Memory Purging (New in v1.5.1)
+## 🛡️ Device Security, Auto-Updater & Memory Purging (New in v1.6.0)
 
-STATUS CTRL v1.5.1 introduces three major advanced upgrades focusing on device privacy protection and system resource optimization:
+STATUS CTRL v1.6.0 introduces four major advanced upgrades focusing on device privacy protection and system resource optimization:
 
 ### 1. 🧹 Deep Memory Clean (Memory Purge detail)
 - **Visual Ring Monitoring**: An intuitive neon percentage ring dynamically reflecting the physical RAM load.
@@ -101,6 +102,12 @@ STATUS CTRL v1.5.1 introduces three major advanced upgrades focusing on device p
 - **Dynamic Grid Selectors**: Customize and toggle exactly what appears in the top-right status area: `Logo` (gradual gradient icon), `CPU %`, `RAM %`, `Disk %`, `CPU Temp`, `Fan Speed`, `Net Speed`, `GPU %`.
 - **Align and Auto-Resize**: Adjusting selections dynamically reshapes the status bar's length and shifts columns with pixel-perfect top-and-bottom text alignment.
 
+### 4. 🔄 Smart Auto-Updater & Celsius Refactoring
+- **Releases API Integration**: "Check for Updates" button seamlessly connects to GitHub Releases API.
+- **Notification Dot**: A glowing red indicator overlays the Dashboard's settings gear and settings buttons when an update is available and not ignored.
+- **Background Download & Auto-Mount**: Clicking "Online Update" initiates a non-blocking background download with a live percentage bar. Once finished, it automatically mounts and opens the downloaded `.dmg` file.
+- **Celsius Refactoring**: All raw `°` temperature markings have been restructured into the international standard `°C`. The format has been meticulously padded (e.g. `  45°` ➡️ ` 45°C`) to preserve a fixed character length of **5**, guaranteeing strict monospaced vertical grid alignment.
+
 ---
 
 ## 🌡️ Temperature Sensors
@@ -112,9 +119,9 @@ STATUS CTRL v1.5.1 introduces three major advanced upgrades focusing on device p
 
 ---
 
-## 🏎️ Performance Architecture (v1.5.1)
+## 🏎️ Performance Architecture & Standardization (v1.6.0)
 
-Underwent a systemic rewrite to achieve 0ms main thread lag:
+Underwent a systemic rewrite and standardization to achieve 0ms main thread lag:
 
 - **0ms Main Thread Wait**: All hardware SMC I/O runs asynchronously on background queues.
 - **Non-Blocking `tryLock`**: The UI never freezes by immediately returning cached values when the SMC bus is locked.

@@ -12,6 +12,7 @@ private extension Array {
 }
 
 struct DashboardView: View {
+    @ObservedObject private var updateManager = UpdateManager.shared
     
     // Core Managers
     private let smc = SMCController()
@@ -1387,25 +1388,35 @@ struct DashboardView: View {
                     }
                 }
                 
-                // Settings Gear Button styled properly to prevent blue focus rings
-                Button(action: {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        showSettings.toggle()
+                // Settings Gear Button — opens the full AppDelegate Settings window
+                ZStack(alignment: .topTrailing) {
+                    Button(action: {
+                        if let delegate = NSApp.delegate as? AppDelegate {
+                            delegate.openSettingsWindow()
+                        }
+                    }) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.8))
+                            .padding(8)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                            )
                     }
-                }) {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.8))
-                        .padding(8)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                        )
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    
+                    if updateManager.shouldShowRedDot {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .offset(x: 2, y: -2)
+                            .shadow(color: Color.red.opacity(0.5), radius: 2)
+                    }
                 }
-                .buttonStyle(.plain)
-                .focusable(false)
             }
         }
     }
@@ -4117,7 +4128,7 @@ struct DashboardView: View {
                         progress: cpuUsage,
                         color: Color(red: 0.62, green: 0.32, blue: 0.88),
                         title: "CPU",
-                        valueText: String(format: "%.0f°", cpuTemp),
+                        valueText: String(format: "%.0f°C", cpuTemp),
                         subValueText: String(format: "%.2f GHz", cpuFreqPerf)
                     )
                     
@@ -4126,7 +4137,7 @@ struct DashboardView: View {
                         progress: gpuUsage,
                         color: Color(red: 0.22, green: 0.80, blue: 0.45),
                         title: "GPU",
-                        valueText: String(format: "%.0f°", gpuTemp),
+                        valueText: String(format: "%.0f°C", gpuTemp),
                         subValueText: String(format: "%.2f GHz", gpuFreq)
                     )
                     
@@ -5000,7 +5011,7 @@ struct DieBlock: View {
                 HStack(spacing: 2) {
                     Image(systemName: "thermometer")
                         .font(.system(size: 6.5))
-                    Text(String(format: "%.1f°", temp))
+                    Text(String(format: "%.1f°C", temp))
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                 }
                 .foregroundColor(heatColor)

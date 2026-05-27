@@ -67,6 +67,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
         }
         
+        // 触发静默检查更新
+        _ = UpdateManager.shared
+        
         // 启动高密度状态栏遥测定时器
         startTelemetryTimer()
     }
@@ -172,7 +175,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         
         // 设置
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettingsWindow), keyEquivalent: ",")
         settingsItem.target = self
         settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(settingsItem)
@@ -203,7 +206,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         togglePopover(nil)
     }
     
-    @objc private func openSettings() {
+    @objc func openSettingsWindow() {
         if let win = settingsWindow, win.isVisible {
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -384,28 +387,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // 1. CPU Slot
         if showCPU || showCPUTemp {
             let topStr = showCPU ? String(format: "C:%2.0f%%", displayCpu) : "     "
-            let bottomStr = showCPUTemp ? String(format: "  %2.0f°", cpuTemp) : "     "
+            let bottomStr = showCPUTemp ? String(format: " %2.0f°C", cpuTemp) : "      "
             columns.append((topStr, bottomStr))
         }
         
         // 2. RAM Slot
         if showRAM {
             let topStr = String(format: "M:%2.0f%%", displayRam)
-            let bottomStr = String(format: "  %2.0f°", ramTemp)
+            let bottomStr = String(format: " %2.0f°C", ramTemp)
             columns.append((topStr, bottomStr))
         }
         
         // 3. SSD Slot
         if showSSD {
             let topStr = String(format: "S:%2.0f%%", displaySsd)
-            let bottomStr = String(format: "  %2.0f°", ssdTemp)
+            let bottomStr = String(format: " %2.0f°C", ssdTemp)
             columns.append((topStr, bottomStr))
         }
         
         // 4. GPU Slot
         if showGPU {
             let topStr = String(format: "G:%2.0f%%", displayGpu)
-            let bottomStr = String(format: "  %2.0f°", gpuTemp)
+            let bottomStr = String(format: " %2.0f°C", gpuTemp)
             columns.append((topStr, bottomStr))
         }
         
@@ -546,25 +549,25 @@ struct StatusBarMockupView: View {
                     if showCPU {
                         VStack(alignment: .leading, spacing: -2) {
                             Text("C: 8%").font(.system(size: 7, design: .monospaced))
-                            Text("  45°").font(.system(size: 7, design: .monospaced))
+                            Text(" 45°C").font(.system(size: 7, design: .monospaced))
                         }
                     }
                     if showRAM {
                         VStack(alignment: .leading, spacing: -2) {
                             Text("M:38%").font(.system(size: 7, design: .monospaced))
-                            Text("  42°").font(.system(size: 7, design: .monospaced))
+                            Text(" 42°C").font(.system(size: 7, design: .monospaced))
                         }
                     }
                     if showSSD {
                         VStack(alignment: .leading, spacing: -2) {
                             Text("S:45%").font(.system(size: 7, design: .monospaced))
-                            Text("  35°").font(.system(size: 7, design: .monospaced))
+                            Text(" 35°C").font(.system(size: 7, design: .monospaced))
                         }
                     }
                     if showGPU {
                         VStack(alignment: .leading, spacing: -2) {
                             Text("G:15%").font(.system(size: 7, design: .monospaced))
-                            Text("  48°").font(.system(size: 7, design: .monospaced))
+                            Text(" 48°C").font(.system(size: 7, design: .monospaced))
                         }
                     }
                     if showFan {
@@ -624,6 +627,8 @@ struct SettingsView: View {
     @AppStorage("showStatusBarGPUUsage") private var showStatusBarGPUUsage: Bool = true
     
     @State private var activeTab: Int = 0 // 0: 通用, 1: 状态栏
+    
+    @ObservedObject private var updateManager = UpdateManager.shared
     
     private func triggerUpdate() {
         DispatchQueue.main.async {
@@ -707,6 +712,144 @@ struct SettingsView: View {
                                     .padding(.leading, 28)
                             }
                             .padding(.vertical, 4)
+                            .padding(.horizontal, 16)
+                        }
+                        
+                        SettingsSection(title: "软件更新") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Image(systemName: "arrow.triangle.2.circlepath.circle")
+                                        .foregroundColor(.accentColor)
+                                        .frame(width: 20)
+                                    Text("检查更新")
+                                    Spacer()
+                                    HStack(spacing: 6) {
+                                        if updateManager.isChecking {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                                .scaleEffect(0.8)
+                                            Text("正在检查...")
+                                                .foregroundColor(.secondary)
+                                                .font(.system(size: 12))
+                                        } else if updateManager.shouldShowRedDot {
+                                            Circle()
+                                                .fill(Color.red)
+                                                .frame(width: 8, height: 8)
+                                            Text("有可用更新")
+                                                .foregroundColor(.red)
+                                                .font(.system(size: 12, weight: .bold))
+                                        } else if let error = updateManager.checkError {
+                                            Text("错误: \(error)")
+                                                .foregroundColor(.red)
+                                                .font(.system(size: 11))
+                                        } else {
+                                            Text("已是最新版本 (\(updateManager.currentVersion))")
+                                                .foregroundColor(.secondary)
+                                                .font(.system(size: 12))
+                                        }
+                                        
+                                        Button("立即检查") {
+                                            updateManager.checkForUpdates()
+                                        }
+                                        .disabled(updateManager.isChecking || updateManager.isDownloading)
+                                    }
+                                }
+                                
+                                if updateManager.hasUpdate, let latest = updateManager.latestVersion {
+                                    Divider()
+                                    
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("发现新版本 v\(latest.trimmingCharacters(in: CharacterSet(charactersIn: "vV ")))")
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundColor(.primary)
+                                        
+                                        if let notes = updateManager.releaseNotes, !notes.isEmpty {
+                                            ScrollView {
+                                                Text(notes)
+                                                    .font(.system(size: 11, design: .monospaced))
+                                                    .foregroundColor(.secondary)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                                    .padding(8)
+                                                    .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
+                                                    .cornerRadius(6)
+                                            }
+                                            .frame(maxHeight: 80)
+                                        }
+                                        
+                                        if updateManager.isDownloading {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                ProgressView(value: updateManager.downloadProgress, total: 1.0)
+                                                HStack {
+                                                    Text(String(format: "正在下载安装包: %.0f%%", updateManager.downloadProgress * 100))
+                                                        .font(.system(size: 11))
+                                                        .foregroundColor(.secondary)
+                                                    Spacer()
+                                                    Button("取消") {
+                                                        updateManager.cancelDownload()
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                    .foregroundColor(.accentColor)
+                                                    .font(.system(size: 11))
+                                                }
+                                            }
+                                        } else {
+                                            HStack(spacing: 12) {
+                                                Button(action: {
+                                                    updateManager.startDownload()
+                                                }) {
+                                                    HStack(spacing: 6) {
+                                                        Image(systemName: "arrow.down.circle.fill")
+                                                        Text(updateManager.downloadURL != nil ? "在线更新" : "下载更新 (打开网页)")
+                                                    }
+                                                    .padding(.horizontal, 12)
+                                                    .padding(.vertical, 6)
+                                                    .background(Color.accentColor)
+                                                    .foregroundColor(.white)
+                                                    .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                                
+                                                Button(action: {
+                                                    updateManager.skipVersion()
+                                                }) {
+                                                    Text("跳过此版本")
+                                                        .font(.system(size: 12))
+                                                        .foregroundColor(.secondary)
+                                                        .padding(.horizontal, 10)
+                                                        .padding(.vertical, 6)
+                                                        .background(Color.white.opacity(0.06))
+                                                        .cornerRadius(8)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
+                                        }
+                                        
+                                        if let dlError = updateManager.downloadError {
+                                            Text("下载失败: \(dlError)")
+                                                .foregroundColor(.red)
+                                                .font(.system(size: 11))
+                                        }
+                                    }
+                                    .padding(.top, 4)
+                                } else {
+                                    let skipped = UserDefaults.standard.string(forKey: "skippedVersion") ?? ""
+                                    if !skipped.isEmpty {
+                                        Divider()
+                                        HStack {
+                                            Text("已跳过版本: v\(skipped.trimmingCharacters(in: CharacterSet(charactersIn: "vV ")))")
+                                                .font(.system(size: 11))
+                                                .foregroundColor(.secondary)
+                                            Spacer()
+                                            Button("恢复提示") {
+                                                updateManager.resetSkippedVersion()
+                                            }
+                                            .buttonStyle(.link)
+                                            .font(.system(size: 11))
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 10)
                             .padding(.horizontal, 16)
                         }
                     }
