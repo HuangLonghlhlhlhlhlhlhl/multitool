@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.5.0-orange)
+![版本](https://img.shields.io/badge/版本-1.5.1-orange)
 ![大小](https://img.shields.io/badge/体积-约%206MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -20,7 +20,7 @@
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.5.0.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.5.1.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -75,7 +75,7 @@
 
 ## ⚡ 能耗控制策略
 
-v1.5.0 引入全新的双路独立能耗控制系统：
+v1.5.1 引入全新的双路独立能耗控制系统：
 
 - **🔌 电源模式**：🚀 极致性能 / ⚖️ 标准均衡 / 🍃 极致静音 三档
 - **🔋 电池模式**：独立于电源模式的三档策略 + 目标功耗限额滑块
@@ -84,9 +84,9 @@ v1.5.0 引入全新的双路独立能耗控制系统：
 
 ---
 
-## 🛡️ 设备安全与深度清理（v1.5.0 新增）
+## 🛡️ 设备安全与深度清理（v1.5.1 新增）
 
-STATUS CTRL v1.5.0 为您带来三项重磅的高级升级功能，专注于设备隐私保护与系统资源的最优化：
+STATUS CTRL v1.5.1 为您带来三项重磅的高级升级功能，专注于设备隐私保护与系统资源的最优化：
 
 ### 1. 🧹 内存深度清理 (Memory Purge detail)
 - **智能圆环监测**：直观的内存水位发光百分比图，动态反映当前系统物理内存负载。
@@ -113,9 +113,9 @@ STATUS CTRL v1.5.0 为您带来三项重磅的高级升级功能，专注于设�
 
 ---
 
-## 🏎️ 性能架构（v1.5.0 重构）
+## 🏎️ 性能架构（v1.5.1 重构）
 
-v1.5.0 对底层进行了系统性重构，彻底消除了卡顿：
+v1.5.1 对底层进行了系统性重构，彻底消除了卡顿：
 
 - **主线程 0ms 等待**：SMC 硬件 I/O 全部在后台线程异步执行
 - **非阻塞 tryLock**：主线程调用 SMC 时采用 `tryLock` + 缓存兜底，绝不阻塞 UI

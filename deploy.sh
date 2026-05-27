@@ -2,7 +2,7 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 TAG="v${VERSION}"
 DMG_PATH="/Users/h-l/Desktop/STATUS CTRL-v${VERSION}.dmg"
 

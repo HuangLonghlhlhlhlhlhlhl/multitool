@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.5.0-orange)
+![Version](https://img.shields.io/badge/Version-1.5.1-orange)
 ![Size](https://img.shields.io/badge/Size-~6MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -20,7 +20,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.5.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.5.1.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, then drag **`STATUS CTRL.app`** into the **`Applications`** folder.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
@@ -74,7 +74,7 @@ Manual fan speed control requires writing to SMC registers, which requires root 
 
 ## ⚡ Power Saving & Policies
 
-v1.5.0 introduces a brand new independent dual-path energy management system:
+v1.5.1 introduces a brand new independent dual-path energy management system:
 
 - **🔌 AC Power**: 🚀 Turbo / ⚖️ Balanced / 🍃 Eco Silent performance presets.
 - **🔋 Battery Power**: Three standalone presets + "Target System Power Limit" slider.
@@ -83,9 +83,9 @@ v1.5.0 introduces a brand new independent dual-path energy management system:
 
 ---
 
-## 🛡️ Device Security & Memory Purging (New in v1.5.0)
+## 🛡️ Device Security & Memory Purging (New in v1.5.1)
 
-STATUS CTRL v1.5.0 introduces three major advanced upgrades focusing on device privacy protection and system resource optimization:
+STATUS CTRL v1.5.1 introduces three major advanced upgrades focusing on device privacy protection and system resource optimization:
 
 ### 1. 🧹 Deep Memory Clean (Memory Purge detail)
 - **Visual Ring Monitoring**: An intuitive neon percentage ring dynamically reflecting the physical RAM load.
@@ -112,7 +112,7 @@ STATUS CTRL v1.5.0 introduces three major advanced upgrades focusing on device p
 
 ---
 
-## 🏎️ Performance Architecture (v1.5.0)
+## 🏎️ Performance Architecture (v1.5.1)
 
 Underwent a systemic rewrite to achieve 0ms main thread lag:
 
