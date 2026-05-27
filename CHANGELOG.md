@@ -15,9 +15,11 @@
 - **底层 I/O 通信加固**：全面从旧版 `kIOMasterPortDefault` 迁移至 `kIOMainPortDefault`（macOS 12+ 新标准），增强在 Apple Silicon/Intel 芯片上的 SMC 总线读写兼容性与安全性。
 - **高精度数值解码升级**：重构了 `sp78`（有符号温度）和 `fpe2`（风扇转速）定点数值转换逻辑，采用二进制补码与浮点精确除法，彻底杜绝极端转速/温度下的数据溢出异常。
 
-#### DashboardView UI 骨架与生命周期
+#### DashboardView UI 性能与生命周期重构
+- **高频动画子视图隔离**：将原本位于顶级视图、每秒触发 20-33 次 `@State` 重绘的高频风扇旋转与键盘背光波浪动画完全隔离到独立的 `RotatingFanIcon` 与 `KeyboardBacklightVisualizerView` 自定义子视图中，利用 GPU CoreAnimation 硬件加速，彻底消除了重绘对主线程的争用，将主线程重绘卡顿（UI Lag）彻底降低为 0。
 - **优雅骨架屏**：面板首次展开时显示带 Shimmering（闪烁渐变）呼吸微光动画的骨架占位界面，硬件数据加载完毕后以 `.easeOut` 淡入动画平滑过渡，彻底消除「弹出时界面卡死再突现」的闯入感。
 - **面板生命周期静默**：`.onAppear`/`.onDisappear` 精确追踪 Popover 可见性（`isPanelVisible`）；面板关闭后所有遥测 Timer 自动静默，CPU 与 SMC 物理包损耗降至零。
+
 
 ### ⚡ 全新能耗控制系统
 

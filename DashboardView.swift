@@ -33,8 +33,6 @@ struct DashboardView: View {
     
     // Refresh Timers
     private let statsTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
-    private let fanRotationTimer = Timer.publish(every: 0.03, on: .main, in: .common).autoconnect()
-    private let waveTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
     
     // UI & Hardware States
     private let telemetryQueue = DispatchQueue(label: "com.statusctrl.telemetryQueue", qos: .userInitiated)
@@ -109,7 +107,6 @@ struct DashboardView: View {
     @State private var targetFanSpeed: [Float] = [2000.0, 2000.0] // target per fan
     @State private var isManualFan: Bool = false
     @State private var fanLinked: Bool = true  // true = both fans move together
-    @State private var fanRotationAngle: Double = 0.0
     // 冲突警告：当用户尝试选择与功耗策略不兼容的风扇预设时显示
     @State private var fanPolicyConflictWarning: Bool = false
     
@@ -141,7 +138,6 @@ struct DashboardView: View {
     @State private var keyboardBrightness: Float = 0.5
     @State private var keyboardMode: Int = UserDefaults.standard.integer(forKey: "KeyboardLightingMode") // 0 = Static, 1 = Breathing, 2 = Wave
     @State private var breathingSpeed: Double = 4.0 // Period in seconds
-    @State private var wavePhase: Double = 0.0
     
     // Power Monitor States
     @State private var powerStats = PowerMonitor.PowerStats()
@@ -706,8 +702,6 @@ struct DashboardView: View {
             isPanelVisible = false
         }
         .onReceive(statsTimer) { _ in refreshStats() }
-        .onReceive(fanRotationTimer) { _ in updateFanRotation() }
-        .onReceive(waveTimer) { _ in updateWaveAnimation() }
     }
 
     private var originalDashboardView: some View {
@@ -2055,11 +2049,12 @@ struct DashboardView: View {
         VStack(spacing: 12) {
             // Header row
             HStack {
-                Image(systemName: "fanblades.fill")
-                    .font(.system(size: 14))
-                    .rotationEffect(.degrees(fanRotationAngle))
-                    .foregroundColor((fanSpeed.first ?? 0) > 100 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .gray)
-                    .shadow(color: Color(red: 0.18, green: 0.62, blue: 0.95).opacity((fanSpeed.first ?? 0) > 100 ? 0.4 : 0), radius: 4)
+                RotatingFanIcon(
+                    speed: fanSpeed.first ?? 0.0,
+                    color: (fanSpeed.first ?? 0.0) > 100 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .gray,
+                    size: 14
+                )
+                .shadow(color: Color(red: 0.18, green: 0.62, blue: 0.95).opacity((fanSpeed.first ?? 0.0) > 100 ? 0.4 : 0), radius: 4)
                 
                 Text(t("fan_controller"))
                     .font(.system(size: 13, weight: .semibold))
@@ -2610,6 +2605,10 @@ struct DashboardView: View {
             HStack(spacing: 0) {
                 ForEach(0..<3) { mode in
                     let label = mode == 0 ? t("mode_static") : (mode == 1 ? t("mode_breathing") : t("mode_wave"))
+                    let isSelected = (keyboardMode == mode)
+                    let textColor = isSelected ? Color.white : Color.white.opacity(0.4)
+                    let bgColor = isSelected ? Color(red: 0.62, green: 0.32, blue: 0.88) : Color.clear
+                    
                     Button(action: {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                             keyboardMode = mode
@@ -2619,12 +2618,12 @@ struct DashboardView: View {
                     }) {
                         Text(label)
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(keyboardMode == mode ? .white : .white.opacity(0.4))
+                            .foregroundColor(textColor)
                             .padding(.vertical, 5)
                             .frame(maxWidth: .infinity)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(keyboardMode == mode ? Color(red: 0.62, green: 0.32, blue: 0.88) : Color.clear)
+                                    .fill(bgColor)
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -2671,65 +2670,7 @@ struct DashboardView: View {
                                     .stroke(Color.white.opacity(0.06), lineWidth: 1)
                             )
                         
-                        VStack(spacing: 4) {
-                            // Upper row of 10 keys
-                            HStack(spacing: 4) {
-                                ForEach(0..<10) { i in
-                                    let offset = Double(i) * 0.35
-                                    let intensity: Double = {
-                                        if keyboardMode == 2 {
-                                            // True horizontal wave phase shift
-                                            return pow(sin(wavePhase * 0.5 - offset), 2.0)
-                                        } else {
-                                            // Uniform Breathing
-                                            return pow(sin(wavePhase * 0.5), 2.0)
-                                        }
-                                    }()
-                                    
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15 + 0.85 * intensity),
-                                                    Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15 + 0.85 * intensity)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                        .frame(width: 16, height: 11)
-                                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(intensity * 0.5), radius: 2)
-                                }
-                            }
-                            
-                            // Lower row of 10 keys
-                            HStack(spacing: 4) {
-                                ForEach(0..<10) { i in
-                                    let offset = Double(i) * 0.35 + 0.17
-                                    let intensity: Double = {
-                                        if keyboardMode == 2 {
-                                            return pow(sin(wavePhase * 0.5 - offset), 2.0)
-                                        } else {
-                                            return pow(sin(wavePhase * 0.5), 2.0)
-                                        }
-                                    }()
-                                    
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15 + 0.85 * intensity),
-                                                    Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15 + 0.85 * intensity)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                        .frame(width: 16, height: 11)
-                                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(intensity * 0.5), radius: 2)
-                                }
-                            }
-                        }
+                        KeyboardBacklightVisualizerView(keyboardMode: keyboardMode, breathingSpeed: breathingSpeed)
                     }
                     .padding(.horizontal, 4)
                     
@@ -3229,6 +3170,7 @@ struct DashboardView: View {
     }
     
     private func refreshStats() {
+        guard isPanelVisible else { return }
         guard !isRefreshing else { return }
         isRefreshing = true
         
@@ -3474,17 +3416,7 @@ struct DashboardView: View {
         return usage
     }
     
-    private func updateFanRotation() {
-        let speed = isManualFan ? (targetFanSpeed.first ?? 2000) : (fanSpeed.first ?? 0)
-        fanRotationAngle += Double(speed) / 180.0
-    }
-    
-    private func updateWaveAnimation() {
-        if keyboardMode > 0 {
-            wavePhase += (2.0 * .pi) / (breathingSpeed * 20.0)
-        }
-    }
-    
+
     private func saveCustomCurveSettings() {
         UserDefaults.standard.set(customCurveTemp1, forKey: "CustomCurveTemp1")
         UserDefaults.standard.set(customCurveSpeed1, forKey: "CustomCurveSpeed1")
@@ -4235,7 +4167,7 @@ struct DashboardView: View {
                                     label: label,
                                     value: String(format: "%.0f RPM (%.0f - %.0f)", actual, minSp, maxSp),
                                     showFanAnimation: true,
-                                    fanRotation: fanRotationAngle
+                                    fanSpeed: actual
                                 )
                             }
                         } else {
@@ -4651,15 +4583,19 @@ struct TelemetryRow: View {
     var value: String
     var badgeColor: Color? = nil
     var showFanAnimation: Bool = false
-    var fanRotation: Double = 0.0
+    var fanSpeed: Float = 0.0
     
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 11))
-                .foregroundColor(iconColor)
-                .frame(width: 14, height: 14)
-                .rotationEffect(.degrees(showFanAnimation ? fanRotation : 0.0))
+            if showFanAnimation {
+                RotatingFanIcon(speed: fanSpeed, color: iconColor, size: 11)
+                    .frame(width: 14, height: 14)
+            } else {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundColor(iconColor)
+                    .frame(width: 14, height: 14)
+            }
             
             Text(label)
                 .font(.system(size: 11))
@@ -5105,6 +5041,117 @@ struct CorePattern: Shape {
             x += 6.0
         }
         return path
+    }
+}
+
+// ── GPU-Accelerated CoreAnimation Rotating Fan Icon View ──
+struct RotatingFanIcon: View {
+    let speed: Float
+    let color: Color
+    let size: CGFloat
+    
+    @State private var isAnimating = false
+    
+    var body: some View {
+        Image(systemName: "fanblades.fill")
+            .font(.system(size: size))
+            .rotationEffect(.degrees(isAnimating ? 360.0 : 0.0))
+            .foregroundColor(color)
+            .animation(
+                speed > 100
+                ? Animation.linear(duration: Double(120.0 / max(100.0, speed))).repeatForever(autoreverses: false)
+                : .default,
+                value: isAnimating
+            )
+            .onAppear {
+                if speed > 100 {
+                    isAnimating = true
+                }
+            }
+            .onChange(of: speed) { newSpeed in
+                if newSpeed > 100 {
+                    isAnimating = false
+                    DispatchQueue.main.async {
+                        isAnimating = true
+                    }
+                } else {
+                    isAnimating = false
+                }
+            }
+    }
+}
+
+// ── Isolated Keyboard Backlight Simulation Visualizer Subview ──
+struct KeyboardBacklightVisualizerView: View {
+    let keyboardMode: Int
+    let breathingSpeed: Double
+    
+    @State private var wavePhase: Double = 0.0
+    private let waveTimer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            // Upper row of 10 keys
+            HStack(spacing: 4) {
+                ForEach(0..<10) { i in
+                    let offset = Double(i) * 0.35
+                    let intensity: Double = {
+                        if keyboardMode == 2 {
+                            return pow(sin(wavePhase * 0.5 - offset), 2.0)
+                        } else {
+                            return pow(sin(wavePhase * 0.5), 2.0)
+                        }
+                    }()
+                    
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15 + 0.85 * intensity),
+                                    Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15 + 0.85 * intensity)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 16, height: 11)
+                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(intensity * 0.5), radius: 2)
+                }
+            }
+            
+            // Lower row of 10 keys
+            HStack(spacing: 4) {
+                ForEach(0..<10) { i in
+                    let offset = Double(i) * 0.35 + 0.17
+                    let intensity: Double = {
+                        if keyboardMode == 2 {
+                            return pow(sin(wavePhase * 0.5 - offset), 2.0)
+                        } else {
+                            return pow(sin(wavePhase * 0.5), 2.0)
+                        }
+                    }()
+                    
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15 + 0.85 * intensity),
+                                    Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15 + 0.85 * intensity)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .frame(width: 16, height: 11)
+                        .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(intensity * 0.5), radius: 2)
+                }
+            }
+        }
+        .onReceive(waveTimer) { _ in
+            if keyboardMode > 0 {
+                wavePhase += (2.0 * .pi) / (breathingSpeed * 20.0)
+            }
+        }
     }
 }
 
