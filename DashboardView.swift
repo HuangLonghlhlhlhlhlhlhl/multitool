@@ -157,6 +157,7 @@ struct DashboardView: View {
     // Interactive feedback
     @State private var messagePrompt: String = ""
     @State private var showPrivilegeWarning: Bool = false
+    @State private var showSiliconDieView: Bool = true
     
     // Helper breathing variables
     @State private var breathingTask: AnyCancellable?
@@ -4081,40 +4082,86 @@ struct DashboardView: View {
                 Text(t("system_telemetry"))
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.white.opacity(0.95))
+                
                 Spacer()
+                
+                // Toggle between Graphical Silicon Die View & Classic Gauge view
+                Button(action: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                        showSiliconDieView.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: showSiliconDieView ? "list.bullet.rectangle.portrait" : "cpu.fill")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(showSiliconDieView ? (currentLanguage == "zh-Hans" ? "列表视图" : "Classic List") : (currentLanguage == "zh-Hans" ? "晶圆透视" : "SoC Die View"))
+                            .font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundColor(.white.opacity(0.4))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.04))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
             }
             
-            // Rings Gauges (CPU, GPU, FANS)
-            HStack(spacing: 14) {
-                // CPU Ring
-                RingGauge(
-                    progress: cpuUsage,
-                    color: Color(red: 0.62, green: 0.32, blue: 0.88),
-                    title: "CPU",
-                    valueText: String(format: "%.0f°", cpuTemp),
-                    subValueText: String(format: "%.2f GHz", cpuFreqPerf)
+            if showSiliconDieView {
+                SiliconDieView(
+                    cpuTemp: cpuTemp,
+                    tempCpuPerf: tempCpuPerf,
+                    tempCpuEff: tempCpuEff,
+                    gpuTemp: gpuTemp,
+                    tempMemory: tempMemory,
+                    tempSSD: tempSSD,
+                    tempWiFi: tempWiFi,
+                    cpuUsage: cpuUsage,
+                    gpuUsage: gpuUsage,
+                    currentLanguage: currentLanguage
                 )
-                
-                // GPU Ring
-                RingGauge(
-                    progress: gpuUsage,
-                    color: Color(red: 0.22, green: 0.80, blue: 0.45),
-                    title: "GPU",
-                    valueText: String(format: "%.0f°", gpuTemp),
-                    subValueText: String(format: "%.2f GHz", gpuFreq)
-                )
-                
-                // Fan Ring
-                let fanLoad = (fanMaxSpeed.first ?? 6000) > 0 ? Double(fanSpeed.first ?? 0) * 100.0 / Double(fanMaxSpeed.first ?? 6000) : 0.0
-                RingGauge(
-                    progress: fanCount > 0 ? fanLoad : 0.0,
-                    color: Color(red: 0.18, green: 0.62, blue: 0.95),
-                    title: "FANS",
-                    valueText: fanCount > 0 ? String(format: "%.0f%%", fanLoad) : "PASSIVE",
-                    subValueText: fanCount > 0 ? String(format: "%.0f RPM", fanSpeed.first ?? 0) : "0 RPM"
-                )
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                    removal: .opacity.combined(with: .scale(scale: 0.95))
+                ))
+            } else {
+                // Rings Gauges (CPU, GPU, FANS)
+                HStack(spacing: 14) {
+                    // CPU Ring
+                    RingGauge(
+                        progress: cpuUsage,
+                        color: Color(red: 0.62, green: 0.32, blue: 0.88),
+                        title: "CPU",
+                        valueText: String(format: "%.0f°", cpuTemp),
+                        subValueText: String(format: "%.2f GHz", cpuFreqPerf)
+                    )
+                    
+                    // GPU Ring
+                    RingGauge(
+                        progress: gpuUsage,
+                        color: Color(red: 0.22, green: 0.80, blue: 0.45),
+                        title: "GPU",
+                        valueText: String(format: "%.0f°", gpuTemp),
+                        subValueText: String(format: "%.2f GHz", gpuFreq)
+                    )
+                    
+                    // Fan Ring
+                    let fanLoad = (fanMaxSpeed.first ?? 6000) > 0 ? Double(fanSpeed.first ?? 0) * 100.0 / Double(fanMaxSpeed.first ?? 6000) : 0.0
+                    RingGauge(
+                        progress: fanCount > 0 ? fanLoad : 0.0,
+                        color: Color(red: 0.18, green: 0.62, blue: 0.95),
+                        title: "FANS",
+                        valueText: fanCount > 0 ? String(format: "%.0f%%", fanLoad) : "PASSIVE",
+                        subValueText: fanCount > 0 ? String(format: "%.0f RPM", fanSpeed.first ?? 0) : "0 RPM"
+                    )
+                }
+                .padding(.vertical, 4)
+                .transition(.opacity)
             }
-            .padding(.vertical, 4)
             
             // Collapsible Expanders (Temperatures, Power & Voltages, Fans, Frequencies)
             VStack(spacing: 8) {
@@ -4805,6 +4852,259 @@ struct TerminateButtonStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.88 : 1.0)
             .opacity(configuration.isPressed ? 0.7 : 1.0)
             .animation(.spring(response: 0.2, dampingFraction: 0.65), value: configuration.isPressed)
+    }
+}
+
+// ── Option B: Silicon Die SoC Mockup Graphical Telemetry View ──
+
+struct SiliconDieView: View {
+    var cpuTemp: Float
+    var tempCpuPerf: Float
+    var tempCpuEff: Float
+    var gpuTemp: Float
+    var tempMemory: Float
+    var tempSSD: Float
+    var tempWiFi: Float
+    var cpuUsage: Double
+    var gpuUsage: Double
+    var currentLanguage: String
+    
+    @State private var isAnimating = false
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Die Header with M-Series SoC Label
+            HStack {
+                Text(currentLanguage == "zh-Hans" ? "STATUS CTRL 极客晶圆架构图" : "STATUS CTRL GEEK SILICON DIE")
+                    .font(.system(size: 8, weight: .black, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.35))
+                Spacer()
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 4, height: 4)
+                        .opacity(isAnimating ? 1.0 : 0.3)
+                        .animation(Animation.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isAnimating)
+                    Text("ACTIVE")
+                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .foregroundColor(.green.opacity(0.7))
+                }
+            }
+            .padding(.horizontal, 4)
+            
+            // Bento Grid for Silicon Die
+            HStack(spacing: 8) {
+                // Left Column: Unified Memory (RAM)
+                DieBlock(
+                    title: currentLanguage == "zh-Hans" ? "统一内存" : "UNIFIED RAM",
+                    subtitle: "LPDDR5 HUB",
+                    temp: tempMemory,
+                    load: nil,
+                    glowColor: Color(red: 0.85, green: 0.30, blue: 0.45), // Cool Pink
+                    isAnimating: isAnimating
+                )
+                .frame(width: 95)
+                
+                // Middle Column: Compute Units (CPU Perf, CPU Eff, GPU)
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        DieBlock(
+                            title: currentLanguage == "zh-Hans" ? "性能核心 (P)" : "P-CORES",
+                            subtitle: "PERF CLUSTER",
+                            temp: tempCpuPerf,
+                            load: cpuUsage,
+                            glowColor: Color(red: 0.62, green: 0.32, blue: 0.88), // Purple
+                            isAnimating: isAnimating
+                        )
+                        
+                        DieBlock(
+                            title: currentLanguage == "zh-Hans" ? "能效核心 (E)" : "E-CORES",
+                            subtitle: "EFF CLUSTER",
+                            temp: tempCpuEff,
+                            load: cpuUsage * 0.3,
+                            glowColor: Color(red: 0.82, green: 0.52, blue: 0.98), // Soft Purple
+                            isAnimating: isAnimating
+                        )
+                    }
+                    
+                    DieBlock(
+                        title: currentLanguage == "zh-Hans" ? "图形核心 (GPU)" : "GRAPHICS GPU",
+                        subtitle: "32-CORE GPU MOTOR",
+                        temp: gpuTemp,
+                        load: gpuUsage,
+                        glowColor: Color(red: 0.22, green: 0.80, blue: 0.45), // Neo Green
+                        isAnimating: isAnimating
+                    )
+                    .frame(height: 52)
+                }
+            }
+            
+            // Bottom Row: Storage & Wireless Hub
+            HStack(spacing: 8) {
+                DieBlock(
+                    title: currentLanguage == "zh-Hans" ? "存储控制器" : "STORAGE SSD",
+                    subtitle: "PCIE CONTROLLER",
+                    temp: tempSSD,
+                    load: nil,
+                    glowColor: Color(red: 0.95, green: 0.60, blue: 0.18), // Warm Orange
+                    isAnimating: isAnimating
+                )
+                
+                DieBlock(
+                    title: currentLanguage == "zh-Hans" ? "无线控制器" : "WIRELESS SOC",
+                    subtitle: "Wi-Fi & BT HUB",
+                    temp: tempWiFi,
+                    load: nil,
+                    glowColor: Color(red: 0.18, green: 0.62, blue: 0.95), // Sky Blue
+                    isAnimating: isAnimating
+                )
+            }
+        }
+        .padding(10)
+        .background(
+            ZStack {
+                Color.black.opacity(0.3)
+                CircuitPattern()
+                    .stroke(Color.white.opacity(0.015), lineWidth: 1)
+            }
+        )
+        .cornerRadius(12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.3), radius: 8, y: 4)
+        .onAppear {
+            isAnimating = true
+        }
+    }
+}
+
+struct DieBlock: View {
+    var title: String
+    var subtitle: String
+    var temp: Float
+    var load: Double?
+    var glowColor: Color
+    var isAnimating: Bool
+    
+    private var heatColor: Color {
+        if temp > 72.0 {
+            return Color.red
+        } else if temp > 58.0 {
+            return Color.orange
+        } else {
+            return glowColor
+        }
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(subtitle)
+                .font(.system(size: 6, weight: .black, design: .monospaced))
+                .foregroundColor(.white.opacity(0.25))
+            
+            Text(title)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.white.opacity(0.85))
+                .lineLimit(1)
+            
+            Spacer()
+            
+            HStack(alignment: .bottom) {
+                HStack(spacing: 2) {
+                    Image(systemName: "thermometer")
+                        .font(.system(size: 6.5))
+                    Text(String(format: "%.1f°", temp))
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                }
+                .foregroundColor(heatColor)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(heatColor.opacity(0.12))
+                .cornerRadius(4)
+                
+                Spacer()
+                
+                if let usage = load {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(String(format: "%.0f%%", usage))
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.5))
+                        
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(Color.white.opacity(0.1))
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(heatColor)
+                                    .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, usage / 100.0))))
+                            }
+                        }
+                        .frame(width: 24, height: 1.5)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            ZStack {
+                Color.white.opacity(0.015)
+                CorePattern()
+                    .stroke(heatColor.opacity(0.025), lineWidth: 0.5)
+            }
+        )
+        .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(
+                    LinearGradient(
+                        colors: [heatColor.opacity(0.35), heatColor.opacity(0.05)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+        )
+        .shadow(color: heatColor.opacity(0.08), radius: 3)
+    }
+}
+
+struct CircuitPattern: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let step = rect.width / 8
+        for i in 0..<8 {
+            let x = CGFloat(i) * step
+            path.move(to: CGPoint(x: x, y: 0))
+            path.addLine(to: CGPoint(x: x + 8, y: 8))
+            path.addLine(to: CGPoint(x: x + 8, y: rect.height))
+        }
+        return path
+    }
+}
+
+struct CorePattern: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let w = rect.width
+        let h = rect.height
+        
+        var y: Double = 4.0
+        while y < Double(h - 4) {
+            path.move(to: CGPoint(x: 4.0, y: y))
+            path.addLine(to: CGPoint(x: Double(w - 4), y: y))
+            y += 6.0
+        }
+        
+        var x: Double = 4.0
+        while x < Double(w - 4) {
+            path.move(to: CGPoint(x: x, y: 4.0))
+            path.addLine(to: CGPoint(x: x, y: Double(h - 4)))
+            x += 6.0
+        }
+        return path
     }
 }
 
