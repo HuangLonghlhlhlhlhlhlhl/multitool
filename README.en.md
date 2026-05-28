@@ -16,6 +16,11 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 </div>
 
+<div align="center">
+  <img src="assets/screenshots/dashboard.png" width="49%" alt="STATUS CTRL Dashboard" />
+  <img src="assets/screenshots/settings.png" width="49%" alt="STATUS CTRL Settings" />
+</div>
+
 ---
 
 ## 📦 Installation

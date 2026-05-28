@@ -13,6 +13,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[App] Launching status bar helper app...")
+        
         NSApp.setActivationPolicy(.accessory)
         
         UserDefaults.standard.register(defaults: [
