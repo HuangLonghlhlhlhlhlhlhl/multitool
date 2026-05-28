@@ -826,27 +826,23 @@ struct DashboardView: View {
                         data.smartStatus = passed ? "Passed" : "Failed"
                     }
                     if let log = json["nvme_smart_health_information_log"] as? [String: Any] {
-                        if let percent = log["percentage_used"] as? Int {
-                            data.healthPercent = 100 - percent
+                        if let percentNum = log["percentage_used"] as? NSNumber {
+                            data.healthPercent = 100 - percentNum.intValue
                         }
-                        if let written = log["data_units_written"] as? Double {
-                            data.bytesWrittenTB = (written * 512000.0) / 1_000_000_000_000.0
-                        } else if let written = log["data_units_written"] as? Int64 {
-                            data.bytesWrittenTB = (Double(written) * 512000.0) / 1_000_000_000_000.0
+                        if let writtenNum = log["data_units_written"] as? NSNumber {
+                            data.bytesWrittenTB = (writtenNum.doubleValue * 512000.0) / 1_000_000_000_000.0
                         }
-                        if let read = log["data_units_read"] as? Double {
-                            data.bytesReadTB = (read * 512000.0) / 1_000_000_000_000.0
-                        } else if let read = log["data_units_read"] as? Int64 {
-                            data.bytesReadTB = (Double(read) * 512000.0) / 1_000_000_000_000.0
+                        if let readNum = log["data_units_read"] as? NSNumber {
+                            data.bytesReadTB = (readNum.doubleValue * 512000.0) / 1_000_000_000_000.0
                         }
-                        if let hours = log["power_on_hours"] as? Int {
-                            data.powerOnHours = hours
+                        if let hoursNum = log["power_on_hours"] as? NSNumber {
+                            data.powerOnHours = hoursNum.intValue
                         }
-                        if let unsafe = log["unsafe_shutdowns"] as? Int {
-                            data.unsafeShutdowns = unsafe
+                        if let unsafeNum = log["unsafe_shutdowns"] as? NSNumber {
+                            data.unsafeShutdowns = unsafeNum.intValue
                         }
-                        if let errors = log["media_errors"] as? Int {
-                            data.mediaErrors = errors
+                        if let errorsNum = log["media_errors"] as? NSNumber {
+                            data.mediaErrors = errorsNum.intValue
                         }
                     }
                 }
