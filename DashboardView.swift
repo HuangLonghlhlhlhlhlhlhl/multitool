@@ -157,6 +157,22 @@ struct DashboardView: View {
     @State private var showPrivilegeWarning: Bool = false
     @State private var showSiliconDieView: Bool = true
     
+    // SSD SMART & Diagnostics States
+    @State private var smartctlInstalled: Bool = false
+    @State private var isSettingUpEnvironment: Bool = false
+    @State private var environmentError: String? = nil
+    
+    @State private var ssdHealthPercent: Int = 100
+    @State private var ssdBytesWrittenTB: Double = 0.0
+    @State private var ssdBytesReadTB: Double = 0.0
+    @State private var ssdPowerOnHours: Int = 0
+    @State private var ssdUnsafeShutdowns: Int = 0
+    @State private var ssdMediaErrors: Int = 0
+    
+    @State private var ssdModelName: String = "APPLE SSD"
+    @State private var ssdCapacity: String = "512 GB"
+    @State private var ssdSmartStatus: String = "Verified"
+    
     // Helper breathing variables
     @State private var breathingTask: AnyCancellable?
     @State private var breathingStartTime = Date()
@@ -622,7 +638,7 @@ struct DashboardView: View {
 
                         // Segmented Tab Switched at the top (with namespaces and nice segmented buttons)
                         HStack(spacing: 0) {
-                            ForEach(0..<3) { idx in
+                            ForEach(0..<4) { idx in
                                 Button(action: {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                         selectedTab = idx
@@ -630,9 +646,9 @@ struct DashboardView: View {
                                 }) {
                                     VStack(spacing: 6) {
                                         HStack(spacing: 6) {
-                                            Image(systemName: idx == 0 ? "trash.fill" : (idx == 1 ? "gauge.with.needle.fill" : "lock.shield.fill"))
+                                            Image(systemName: idx == 0 ? "trash.fill" : (idx == 1 ? "gauge.with.needle.fill" : (idx == 2 ? "heart.text.square.fill" : "lock.shield.fill")))
                                                 .font(.system(size: 11))
-                                            Text(idx == 0 ? "清理释放" : (idx == 1 ? "系统功能" : "隐私守护"))
+                                            Text(idx == 0 ? "清理释放" : (idx == 1 ? "系统功能" : (idx == 2 ? "系统健康" : "隐私守护")))
                                                 .font(.system(size: 12, weight: .semibold))
                                         }
                                         .foregroundColor(selectedTab == idx ? .white : .white.opacity(0.4))
@@ -668,6 +684,9 @@ struct DashboardView: View {
                         } else if selectedTab == 1 {
                             originalDashboardView
                                 .transition(.opacity)
+                        } else if selectedTab == 2 {
+                            systemHealthPageView
+                                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
                         } else {
                             privacyGuardPageView
                                 .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
@@ -726,6 +745,440 @@ struct DashboardView: View {
                     keyboardSection
                 }
                 .frame(maxWidth: .infinity)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+    
+    // ── 磁盘健康度与寿命诊断 (v1.8.0 重磅) ──
+    struct SSDHealthData {
+        var smartctlInstalled: Bool = false
+        var modelName: String = "APPLE SSD"
+        var capacity: String = "512 GB"
+        var smartStatus: String = "Verified"
+        var healthPercent: Int = 100
+        var bytesWrittenTB: Double = 0.0
+        var bytesReadTB: Double = 0.0
+        var powerOnHours: Int = 0
+        var unsafeShutdowns: Int = 0
+        var mediaErrors: Int = 0
+    }
+    
+    private func fetchSSDHealthDataInBackground() -> SSDHealthData {
+        var data = SSDHealthData()
+        
+        // 1. 检查 smartctl 安装路径
+        let paths = ["/opt/homebrew/bin/smartctl", "/usr/local/bin/smartctl", "/usr/bin/smartctl"]
+        var installed = false
+        for path in paths {
+            if FileManager.default.fileExists(atPath: path) {
+                installed = true
+                break
+            }
+        }
+        data.smartctlInstalled = installed
+        
+        // 2. 获取 diskutil 兜底基础数据
+        let diskutilTask = Process()
+        diskutilTask.launchPath = "/usr/sbin/diskutil"
+        diskutilTask.arguments = ["info", "-plist", "disk0"]
+        let diskutilPipe = Pipe()
+        diskutilTask.standardOutput = diskutilPipe
+        diskutilTask.standardError = diskutilPipe
+        
+        do {
+            try diskutilTask.run()
+            diskutilTask.waitUntilExit()
+            let rawData = diskutilPipe.fileHandleForReading.readDataToEndOfFile()
+            if let plist = try? PropertyListSerialization.propertyList(from: rawData, options: [], format: nil) as? [String: Any] {
+                data.modelName = plist["MediaName"] as? String ?? (plist["DeviceMediaType"] as? String ?? "APPLE SSD")
+                data.smartStatus = plist["SMARTStatus"] as? String ?? "Verified"
+                if let sizeBytes = plist["Size"] as? Int64 {
+                    let gb = Double(sizeBytes) / 1_000_000_000.0
+                    data.capacity = String(format: "%.0f GB", gb)
+                }
+            }
+        } catch {}
+        
+        // 3. 如果安装了 smartctl，拉取高精度特权 SMART 诊断
+        if installed {
+            let smartTask = Process()
+            smartTask.launchPath = smcHelperPath
+            smartTask.arguments = ["smart"]
+            let smartPipe = Pipe()
+            smartTask.standardOutput = smartPipe
+            smartTask.standardError = smartPipe
+            
+            do {
+                try smartTask.run()
+                smartTask.waitUntilExit()
+                let rawData = smartPipe.fileHandleForReading.readDataToEndOfFile()
+                if let json = try? JSONSerialization.jsonObject(with: rawData, options: []) as? [String: Any] {
+                    if let device = json["device"] as? [String: Any], let model = device["model_name"] as? String {
+                        data.modelName = model
+                    }
+                    if let capacity = json["user_capacity"] as? [String: Any], let sizeBytes = capacity["bytes"] as? Int64 {
+                        let gb = Double(sizeBytes) / 1_000_000_000.0
+                        data.capacity = String(format: "%.0f GB", gb)
+                    }
+                    if let smartStatus = json["smart_status"] as? [String: Any], let passed = smartStatus["passed"] as? Bool {
+                        data.smartStatus = passed ? "Passed" : "Failed"
+                    }
+                    if let log = json["nvme_smart_health_information_log"] as? [String: Any] {
+                        if let percent = log["percentage_used"] as? Int {
+                            data.healthPercent = 100 - percent
+                        }
+                        if let written = log["data_units_written"] as? Double {
+                            data.bytesWrittenTB = (written * 512000.0) / 1_000_000_000_000.0
+                        } else if let written = log["data_units_written"] as? Int64 {
+                            data.bytesWrittenTB = (Double(written) * 512000.0) / 1_000_000_000_000.0
+                        }
+                        if let read = log["data_units_read"] as? Double {
+                            data.bytesReadTB = (read * 512000.0) / 1_000_000_000_000.0
+                        } else if let read = log["data_units_read"] as? Int64 {
+                            data.bytesReadTB = (Double(read) * 512000.0) / 1_000_000_000_000.0
+                        }
+                        if let hours = log["power_on_hours"] as? Int {
+                            data.powerOnHours = hours
+                        }
+                        if let unsafe = log["unsafe_shutdowns"] as? Int {
+                            data.unsafeShutdowns = unsafe
+                        }
+                        if let errors = log["media_errors"] as? Int {
+                            data.mediaErrors = errors
+                        }
+                    }
+                }
+            } catch {}
+        }
+        
+        return data
+    }
+    
+    private func setupSmartctlEnvironment() {
+        guard !isSettingUpEnvironment else { return }
+        isSettingUpEnvironment = true
+        environmentError = nil
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let isM1 = FileManager.default.fileExists(atPath: "/opt/homebrew/bin/brew")
+            let brewPath = isM1 ? "/opt/homebrew/bin/brew" : "/usr/local/bin/brew"
+            
+            guard FileManager.default.fileExists(atPath: brewPath) else {
+                DispatchQueue.main.async {
+                    self.isSettingUpEnvironment = false
+                    self.environmentError = "未检测到本地 Homebrew 环境，请先安装 Homebrew 或手动执行 brew install smartmontools"
+                }
+                return
+            }
+            
+            let task = Process()
+            task.launchPath = brewPath
+            task.arguments = ["install", "smartmontools"]
+            
+            let errorPipe = Pipe()
+            task.standardError = errorPipe
+            
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let status = task.terminationStatus
+                
+                DispatchQueue.main.async {
+                    self.isSettingUpEnvironment = false
+                    if status == 0 {
+                        self.smartctlInstalled = true
+                        self.messagePrompt = "🎉 SMART 环境配置完成！已成功安装 smartmontools。"
+                        self.refreshStats()
+                    } else {
+                        let errData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                        let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        self.environmentError = "配置环境失败 (\(status)): \(errMsg.prefix(100))"
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isSettingUpEnvironment = false
+                    self.environmentError = "安装指令执行异常: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    private var systemHealthPageView: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 12) {
+                // Header overview Card
+                HStack(spacing: 14) {
+                    Image(systemName: "heart.text.square.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.pink)
+                        .frame(width: 44, height: 44)
+                        .background(Color.pink.opacity(0.12))
+                        .cornerRadius(10)
+                        
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("系统固态硬盘健康诊断与寿命管理")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("固态硬盘为焊死不可更换架构，智能监测已写入总量(TBW)，守卫核心数据资产。")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color.white.opacity(0.02))
+                .cornerRadius(14)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                
+                HStack(alignment: .top, spacing: 12) {
+                    // Left Column: Circular gauge showing Life Percent
+                    VStack(spacing: 12) {
+                        VStack(spacing: 14) {
+                            Text("SSD 可用健康度")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            Divider().background(Color.white.opacity(0.06))
+                            
+                            // Health Ring Gauge
+                            ZStack {
+                                Circle()
+                                    .stroke(Color.white.opacity(0.05), lineWidth: 10)
+                                    .frame(width: 120, height: 120)
+                                
+                                Circle()
+                                    .trim(from: 0.0, to: CGFloat(min(max(Double(ssdHealthPercent) / 100.0, 0.0), 1.0)))
+                                    .stroke(
+                                        LinearGradient(
+                                            colors: ssdHealthPercent >= 90 ? [.cyan, .green] : (ssdHealthPercent >= 70 ? [.orange, .yellow] : [.red, .pink]),
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        ),
+                                        style: StrokeStyle(lineWidth: 10, lineCap: .round)
+                                    )
+                                    .frame(width: 120, height: 120)
+                                    .rotationEffect(.degrees(-90))
+                                    .shadow(color: (ssdHealthPercent >= 90 ? Color.green : (ssdHealthPercent >= 70 ? Color.orange : Color.red)).opacity(0.3), radius: 6, x: 0, y: 0)
+                                
+                                VStack(spacing: 2) {
+                                    Text("\(ssdHealthPercent)%")
+                                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                                        .foregroundColor(.white)
+                                    Text(ssdHealthPercent >= 95 ? "优秀" : (ssdHealthPercent >= 85 ? "良好" : "警告"))
+                                        .font(.system(size: 9.5, weight: .semibold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2.5)
+                                        .background((ssdHealthPercent >= 95 ? Color.green : (ssdHealthPercent >= 85 ? Color.orange : Color.red)).opacity(0.12))
+                                        .foregroundColor(ssdHealthPercent >= 95 ? .green : (ssdHealthPercent >= 85 ? .orange : .red))
+                                        .cornerRadius(4)
+                                }
+                            }
+                            .padding(.vertical, 10)
+                            
+                            Text("健康状态：\(ssdSmartStatus == "Verified" || ssdSmartStatus.lowercased() == "passed" ? "✅ 良好 (正常)" : "⚠️ 预警 (建议备份)")")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                        .padding(14)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                        
+                        // SSD Hardware specifications card
+                        VStack(spacing: 12) {
+                            Text("磁盘硬件规格")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            Divider().background(Color.white.opacity(0.06))
+                            
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("硬盘型号").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                    Spacer()
+                                    Text(ssdModelName).foregroundColor(.white).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                                }
+                                HStack {
+                                    Text("物理容量").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                    Spacer()
+                                    Text(ssdCapacity).foregroundColor(.white).font(.system(size: 11, design: .monospaced))
+                                }
+                                HStack {
+                                    Text("物理通道").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                    Spacer()
+                                    Text(isSilicon ? "Apple Fabric (PCIe)" : "NVM Express").foregroundColor(.white.opacity(0.7)).font(.system(size: 11))
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                    }
+                    .frame(maxWidth: .infinity)
+                    
+                    // Right Column: Data statistic cards (TBW progress & detail matrix)
+                    VStack(spacing: 12) {
+                        // TBW Stats card
+                        VStack(spacing: 12) {
+                            Text("累计读写统计 (TBW)")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white.opacity(0.8))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            Divider().background(Color.white.opacity(0.06))
+                            
+                            VStack(alignment: .leading, spacing: 10) {
+                                // Write Card
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("累计写入 (TBW)").foregroundColor(.white.opacity(0.45)).font(.system(size: 11))
+                                        Spacer()
+                                        Text(String(format: "%.3f TB", ssdBytesWrittenTB))
+                                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                            .foregroundColor(.cyan)
+                                    }
+                                    
+                                    // Progress bar mapping to a typical 512GB standard 300 TBW life line
+                                    GeometryReader { geo in
+                                        ZStack(alignment: .leading) {
+                                            Capsule()
+                                                .fill(Color.white.opacity(0.06))
+                                                .frame(height: 5)
+                                            Capsule()
+                                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                                .frame(width: geo.size.width * CGFloat(min(ssdBytesWrittenTB / 300.0, 1.0)), height: 5)
+                                        }
+                                    }
+                                    .frame(height: 5)
+                                    .padding(.vertical, 2)
+                                    
+                                    Text("已消耗 512GB 标称寿命 (300 TBW) 的 \(String(format: "%.2f%%", (ssdBytesWrittenTB / 300.0) * 100.0))")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.white.opacity(0.35))
+                                }
+                                
+                                Divider().background(Color.white.opacity(0.04))
+                                
+                                // Read Card
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Text("累计读取").foregroundColor(.white.opacity(0.45)).font(.system(size: 11))
+                                        Spacer()
+                                        Text(String(format: "%.3f TB", ssdBytesReadTB))
+                                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                            .foregroundColor(.purple)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(14)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(14)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                        
+                        // SMART Detail stats card / Brew Install card
+                        if smartctlInstalled {
+                            VStack(spacing: 12) {
+                                Text("SMART 物理诊断指标")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.8))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                
+                                Divider().background(Color.white.opacity(0.06))
+                                
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("累计通电时间").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                        Spacer()
+                                        Text("\(ssdPowerOnHours) 小时").foregroundColor(.white).font(.system(size: 11, design: .monospaced))
+                                    }
+                                    Divider().background(Color.white.opacity(0.04))
+                                    HStack {
+                                        Text("异常断电次数").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                        Spacer()
+                                        Text("\(ssdUnsafeShutdowns) 次")
+                                            .foregroundColor(ssdUnsafeShutdowns > 25 ? .orange : .white)
+                                            .font(.system(size: 11, design: .monospaced))
+                                    }
+                                    Divider().background(Color.white.opacity(0.04))
+                                    HStack {
+                                        Text("媒介完整性错误").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                        Spacer()
+                                        Text("\(ssdMediaErrors)")
+                                            .foregroundColor(ssdMediaErrors > 0 ? .red : .green)
+                                            .font(.system(size: 11, weight: ssdMediaErrors > 0 ? .bold : .regular, design: .monospaced))
+                                    }
+                                }
+                            }
+                            .padding(14)
+                            .background(Color.white.opacity(0.03))
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                        } else {
+                            // Guide to setup environments with nice breathing layout
+                            VStack(spacing: 10) {
+                                Text("🛠️ 一键配置 SMART 看板")
+                                    .font(.system(size: 12.5, weight: .bold))
+                                    .foregroundColor(.cyan)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                
+                                Text("macOS 普通权限被沙箱限制。通过 Homebrew 一键部署轻量级 smartmontools 开源模块，即可无缝穿透物理层，解锁上表高精细的写入小时、异常断电及完整性错误指标！")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.55))
+                                    .lineSpacing(2)
+                                
+                                if isSettingUpEnvironment {
+                                    HStack(spacing: 8) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .scaleEffect(0.8)
+                                        Text("正在后台配置环境中 (通过 brew)...")
+                                            .font(.system(size: 10.5, weight: .semibold))
+                                            .foregroundColor(.cyan)
+                                    }
+                                    .padding(.vertical, 6)
+                                } else {
+                                    Button(action: {
+                                        setupSmartctlEnvironment()
+                                    }) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "terminal.fill")
+                                                .font(.system(size: 11))
+                                            Text("一键自动部署 SMART 环境")
+                                                .font(.system(size: 11, weight: .semibold))
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 7)
+                                        .background(LinearGradient(colors: [.cyan.opacity(0.2), .purple.opacity(0.12)], startPoint: .leading, endPoint: .trailing))
+                                        .foregroundColor(.cyan)
+                                        .cornerRadius(8)
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cyan.opacity(0.4), lineWidth: 1))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.top, 4)
+                                    
+                                    if let err = environmentError {
+                                        Text("提示: \(err)")
+                                            .font(.system(size: 9.5))
+                                            .foregroundColor(.orange)
+                                    }
+                                }
+                            }
+                            .padding(14)
+                            .background(Color.cyan.opacity(0.02))
+                            .cornerRadius(14)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.cyan.opacity(0.12), lineWidth: 1))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -3260,6 +3713,9 @@ struct DashboardView: View {
             let processes = currentTab == 0 ? MemoryPurger.getActiveProcessMemoryList() : []
             let ramPercent = self.getRAMUsage()
             
+            // Only fetch SSD SMART health logs if on tab 2 (System Health)
+            let ssdData = currentTab == 2 ? self.fetchSSDHealthDataInBackground() : nil
+            
             let pCpuPerf = self.smc.getCPUPerfCoresTemperature()
             let pCpuEff = self.smc.getCPUEffCoresTemperature()
             let pSSD = self.smc.getSSDTemperature()
@@ -3397,6 +3853,22 @@ struct DashboardView: View {
                     self.activeProcesses = processes
                 }
                 self.currentRAMUsagePercent = ramPercent
+                
+                if currentTab == 2, let data = ssdData {
+                    self.smartctlInstalled = data.smartctlInstalled
+                    self.ssdModelName = data.modelName
+                    self.ssdCapacity = data.capacity
+                    self.ssdSmartStatus = data.smartStatus
+                    
+                    if data.smartctlInstalled {
+                        self.ssdHealthPercent = data.healthPercent
+                        self.ssdBytesWrittenTB = data.bytesWrittenTB
+                        self.ssdBytesReadTB = data.bytesReadTB
+                        self.ssdPowerOnHours = data.powerOnHours
+                        self.ssdUnsafeShutdowns = data.unsafeShutdowns
+                        self.ssdMediaErrors = data.mediaErrors
+                    }
+                }
                 
                 self.tempCpuPerf = pCpuPerf
                 self.tempCpuEff = pCpuEff

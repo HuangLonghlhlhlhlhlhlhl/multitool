@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.7.0-orange)
+![Version](https://img.shields.io/badge/Version-1.8.0-orange)
 ![Size](https://img.shields.io/badge/Size-~6MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -17,15 +17,16 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 </div>
 
 <div align="center">
-  <img src="assets/screenshots/dashboard.png" width="49%" alt="STATUS CTRL Dashboard" />
-  <img src="assets/screenshots/settings.png" width="49%" alt="STATUS CTRL Settings" />
+  <img src="assets/screenshots/dashboard.png" width="32%" alt="STATUS CTRL Dashboard" />
+  <img src="assets/screenshots/ssd_health.png" width="32%" alt="STATUS CTRL SSD Health" />
+  <img src="assets/screenshots/settings.png" width="32%" alt="STATUS CTRL Settings" />
 </div>
 
 ---
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.7.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.8.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, then drag **`STATUS CTRL.app`** into the **`Applications`** folder.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
@@ -50,6 +51,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 | 🛡️ Device Privacy Guard | **[NEW]** 4-way privacy switches (Camera, Mic, Screen, Auto Action) alongside a randomized scrambled keylogger-proof on-screen keyboard. |
 | ⚙️ Customize Status Bar | **[NEW]** Dedicated settings tab with interactive macOS menu bar mockup preview to show/hide 8 status indicators with perfect alignment. |
 | 🔄 Auto-Updater & Upgrade | **[NEW]** Integrates GitHub Releases API to automatically check for updates. Supports background download, live progress bar, automatic mounting/opening of `.dmg` installers, version skipping, and a neon notification dot. |
+| 🩺 System Health & SSD | **[NEW]** Dedicated 4th Tab with a premium dark glassmorphic health dial and glowing ring to show health %; card-based telemetry for TBW & Read total (precision to 3 decimal places in TB), visual bar tracking against the standard 300 TBW SSD lifespan limit. |
 | 🖱️ Context Menu | Right-click the status bar icon for Settings, About, and Quit. |
 
 ---
@@ -86,6 +88,19 @@ v1.7.0 introduces high-precision native battery telemetry without percentage con
 - **🔋 Battery Power**: Three standalone presets + "Target System Power Limit" slider.
 - **Runtime Budgeting**: Dynamically and precisely estimates and compares "Limit Budgeted Runtime" vs "Live Estimated Runtime" using native mAh values, completely eliminating fluctuations.
 - **Auto-Align Settings**: Automatically matches fan curve presets, keyboard backlight, and screen sleep timeout with the current performance level.
+
+---
+
+## 🩺 SSD Lifespan & Health Diagnostics (New in v1.8.0)
+
+STATUS CTRL v1.8.0 introduces a highly requested solid-state drive lifespan and health diagnostics dashboard designed for power users and developers:
+
+- **🌀 Neon Health Circle Gauge**: Displays a dynamic, colorful circular health status dial that ranges from vibrant green to warned red, placing the exact remaining life percentage `%` right at the center.
+- **📊 Precise TBW Telemetry**: High-fidelity rounded diagnostic cards display your exact cumulative **bytes written (TBW)** and **bytes read** down to 3 decimal places in TB. Includes an elegant linear budget bar that maps your usage against the standard 300 TBW limits.
+- **🛡️ Sandboxed Privilege Bypass**: Executes NVMe SMART diagnostics as root using the secured helper `smchelper`, bypasses strict sandboxed directory permissions of standard macOS applications.
+- **🛠️ One-Click Automatic Environment Configuration**: Detects missing diagnostic backends and provides a sleek, glowing floating helper button. Click once to automatically install `smartmontools` using Homebrew (`brew install smartmontools`) in a silent background thread. Once done, the dashboard fades in with detailed telemetry.
+- **🔌 No-Dependency Plist Fallback**: Automatically downgrades to a zero-dependency Plist parser using `diskutil info` if Homebrew is unavailable. Restores basic device models (e.g. `APPLE SSD AP0512R`), raw device capacity, and verified SMART status immediately.
+- **⏱️ Zero Background Overhead**: Adheres to our zero-lag principle. SSD disk telemetry runs only when the "System Health" tab is actively viewed. Telemetry goes fully silent when the dashboard is closed or when switching tabs, yielding **0ms main-thread lag and 0% CPU consumption**.
 
 ---
 

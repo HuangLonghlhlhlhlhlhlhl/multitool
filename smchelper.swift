@@ -133,6 +133,41 @@ func main() {
         } catch {
             print("ERROR")
         }
+    } else if command == "smart" {
+        let paths = ["/opt/homebrew/bin/smartctl", "/usr/local/bin/smartctl", "/usr/bin/smartctl"]
+        var smartctlPath = ""
+        for path in paths {
+            if FileManager.default.fileExists(atPath: path) {
+                smartctlPath = path
+                break
+            }
+        }
+        
+        if smartctlPath.isEmpty {
+            print("ERROR: smartctl not installed")
+            exit(1)
+        }
+        
+        let task = Process()
+        task.launchPath = smartctlPath
+        task.arguments = ["-a", "-j", "/dev/disk0"]
+        
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                print(output)
+            } else {
+                print("ERROR: Failed to read smartctl output")
+            }
+        } catch {
+            print("ERROR: \(error.localizedDescription)")
+        }
     } else {
         print("ERROR: Unknown command \(command)")
         exit(1)

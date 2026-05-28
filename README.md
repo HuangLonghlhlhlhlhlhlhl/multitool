@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.7.0-orange)
+![版本](https://img.shields.io/badge/版本-1.8.0-orange)
 ![大小](https://img.shields.io/badge/体积-约%206MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -17,15 +17,16 @@
 </div>
 
 <div align="center">
-  <img src="assets/screenshots/dashboard.png" width="49%" alt="STATUS CTRL Dashboard" />
-  <img src="assets/screenshots/settings.png" width="49%" alt="STATUS CTRL Settings" />
+  <img src="assets/screenshots/dashboard.png" width="32%" alt="STATUS CTRL Dashboard" />
+  <img src="assets/screenshots/ssd_health.png" width="32%" alt="STATUS CTRL SSD Health" />
+  <img src="assets/screenshots/settings.png" width="32%" alt="STATUS CTRL Settings" />
 </div>
 
 ---
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.7.0.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.8.0.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -50,6 +51,7 @@
 | 🛡️ 隐私守护中心 | **【全新】**4路实时设备隐私控制（麦克风、摄像头、屏幕、自动操作），物理防窥防按键截获的洗牌乱码键盘 |
 | ⚙️ 高度定制状态栏 | **【全新】**设置中独立「状态栏」Tab，可视化 macOS 顶部状态栏 Mockup 预览，动态定制右上角 8 路遥测指标并等宽对齐 |
 | 🔄 自动升级与检查 | **【全新】**对接 GitHub Releases，支持后台静默下载、在线升级、DMG 自动挂载拉起与版本跳过，并伴有精致红点提醒 |
+| 🩺 系统健康与 SSD 寿命 | **【全新】**专属第四大 Tab，极其震撼的发光大仪表盘与呼吸彩环展示寿命 %；高保真卡片式实时统计累计写入 (TBW) 与读取量（高精小数点后三位 TB 格式），绘制标称 300 TBW 寿命进度条，直观诊断硬盘磨损 |
 | 🖱️ 右键菜单 | 状态栏图标右键弹出：设置、关于、退出 |
 
 ---
@@ -87,6 +89,19 @@ v1.7.0 引入高精度电量免折算物理直读与剩余可用时间修正，�
 - **🔋 电池模式**：独立于电源模式的三档策略 + 目标功耗限额滑块
 - **续航推演**：利用库仑计原生 mAh 数据进行高精度预计，实时推算「设定可用时长」与「当前消耗预计时长」的对比，杜绝误差抖动
 - **智能对齐**：开启后自动将风扇预设、键盘背光、屏幕休眠等关联设置同步匹配
+
+---
+
+## 🩺 SSD 寿命与固态硬盘健康诊断 (v1.8.0 新增)
+
+STATUS CTRL v1.8.0 重磅引入了开发者与极客期待已久的固态硬盘寿命与健康度诊断系统：
+
+- **🌀 霓虹可用寿命大仪表盘 (Health Gauge)**：通过红、黄、绿三色彩环发光机制，圆心渲染特大号 `%` 寿命百分比，直观展示磁盘磨损。
+- **📊 累计读写总量统计 (TBW Statistics)**：高保真磨砂圆角小卡片，以小数点后三位高精 TB 格式实时展示**已写入总量 (TBW)** 与**已读取总量**，并根据 512GB SSD 行业标称 300 TBW 极限寿命线绘制精美的横向进度条，直观掌控寿命消耗百分比。
+- **🛡️ 特权穿透硬件直读 (Privileged Pass-through)**：利用免密特权辅助工具 `smchelper`，直接在 root 权限下与 NVMe 物理设备通信并以 JSON 格式捕获高精度 SMART 详情，**100% 穿透 macOS 严苛的普通应用沙箱权限限制**！
+- **🛠️ 一键自动配置 Homebrew 环境**：如果系统未配置 `smartctl` 工具，界面提供悬浮流光效果的一键自动配置按钮。点击即可无感在后台调用 `brew install smartmontools` 进行高精硬件接口配置，完成后自动以优雅的淡入动画无缝展现核心诊断详情。
+- **🔌 无依赖 Plist 降级兜底**：如果在没有 Homebrew 或未安装 `smartctl` 状态下，系统自动回退至免安装兜底模式 ── 通过自带的 `diskutil info` 进行无感 Plist 序列化，提取硬盘物理型号（如 `APPLE SSD AP0512R`）、准确容量以及底层的 SMART 正常认证状态（Verified），提供丝滑的即开即用体验。
+- **⏱️ 0% 后台空载损耗**：延续了极致性能理念。磁盘 I/O 硬件请求仅在用户停留在该 Tab 时才会在高优先级后台线程激活，在其他页面或面板关闭时自动完全静默，带来真正的 **0ms UI 卡顿与 0% IO 功耗**。
 
 ---
 
