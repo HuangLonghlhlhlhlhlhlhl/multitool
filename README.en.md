@@ -8,8 +8,8 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.8.0-orange)
-![Size](https://img.shields.io/badge/Size-~6MB-lightgrey)
+![Version](https://img.shields.io/badge/Version-1.9.0-orange)
+![Size](https://img.shields.io/badge/Size-~9.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 [English](README.en.md) | [简体中文](README.md)
@@ -26,7 +26,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.8.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.9.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, then drag **`STATUS CTRL.app`** into the **`Applications`** folder.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
@@ -47,11 +47,15 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 | ⌨️ Keyboard Backlight | Brightness slider with static, breathing, and wave effect animations. |
 | ⚡ Power Policy Tuning | Silent, Balanced, and Turbo presets. Separate policies for AC power and battery power. |
 | 📊 Est. Runtime Budgeting | Deductive remaining runtime based on current discharge rate and custom power limit. |
-| 🧹 Deep RAM Clean | **[NEW]** Multi-column Memory Page with a dynamic water-level ring, live scanning of top 7 active user processes, and deep memory purge feedback. |
-| 🛡️ Device Privacy Guard | **[NEW]** 4-way privacy switches (Camera, Mic, Screen, Auto Action) alongside a randomized scrambled keylogger-proof on-screen keyboard. |
-| ⚙️ Customize Status Bar | **[NEW]** Dedicated settings tab with interactive macOS menu bar mockup preview to show/hide 8 status indicators with perfect alignment. |
-| 🔄 Auto-Updater & Upgrade | **[NEW]** Integrates GitHub Releases API to automatically check for updates. Supports background download, live progress bar, automatic mounting/opening of `.dmg` installers, version skipping, and a neon notification dot. |
-| 🩺 System Health & SSD | **[NEW]** Dedicated 4th Tab with a premium dark glassmorphic health dial and glowing ring to show health %; card-based telemetry for TBW & Read total (precision to 3 decimal places in TB), visual bar tracking against the standard 300 TBW SSD lifespan limit. |
+| 🧹 Deep RAM Clean | Multi-column Memory Page with a dynamic water-level ring, live scanning of top 7 active user processes, and deep memory purge feedback. |
+| 🧹 Deep Storage Clean | **[NEW]** Deeply scans and cleans Xcode DerivedData, system log caches, general application caches, and leftover application data (bundle match validation). |
+| 👯 Duplicate File Finder | **[NEW]** Progressive 3-step MD5 search engine to instantly identify and safely remove duplicate files. |
+| 📈 Live Throughput Chart | **[NEW]** Live dual line glowing line chart plotting real-time SSD MB/s read/write speed on System Health Tab. |
+| 🔌 AC/Idle Self-Maintenance| **[NEW]** Automates memory purge and APFS preboot index rebuilding when connected to AC power and user is idle for >= 5 minutes. |
+| 🛡️ Device Privacy Guard | 4-way privacy switches (Camera, Mic, Screen, Auto Action) alongside a randomized scrambled keylogger-proof on-screen keyboard. |
+| ⚙️ Customize Status Bar | Dedicated settings tab with interactive macOS menu bar mockup preview to show/hide 8 status indicators with perfect alignment. |
+| 🔄 Auto-Updater & Upgrade | Integrates GitHub Releases API to automatically check for updates. Supports background download, live progress bar, automatic mounting/opening of `.dmg` installers, version skipping, and a neon notification dot. |
+| 🩺 System Health & SSD | Dedicated 4th Tab with a premium dark glassmorphic health dial and glowing ring to show health %; card-based telemetry for TBW & Read total (precision to 3 decimal places in TB), visual bar tracking against the standard 300 TBW SSD lifespan limit. |
 | 🖱️ Context Menu | Right-click the status bar icon for Settings, About, and Quit. |
 
 ---
@@ -101,6 +105,30 @@ STATUS CTRL v1.8.0 introduces a highly requested solid-state drive lifespan and 
 - **🛠️ One-Click Automatic Environment Configuration**: Detects missing diagnostic backends and provides a sleek, glowing floating helper button. Click once to automatically install `smartmontools` using Homebrew (`brew install smartmontools`) in a silent background thread. Once done, the dashboard fades in with detailed telemetry.
 - **🔌 No-Dependency Plist Fallback**: Automatically downgrades to a zero-dependency Plist parser using `diskutil info` if Homebrew is unavailable. Restores basic device models (e.g. `APPLE SSD AP0512R`), raw device capacity, and verified SMART status immediately.
 - **⏱️ Zero Background Overhead**: Adheres to our zero-lag principle. SSD disk telemetry runs only when the "System Health" tab is actively viewed. Telemetry goes fully silent when the dashboard is closed or when switching tabs, yielding **0ms main-thread lag and 0% CPU consumption**.
+
+---
+
+## 🧹 Smart Storage Cleaning, Duplicate Finding & Idle Maintenance (New in v1.9.0)
+
+STATUS CTRL v1.9.0 introduces a comprehensive storage cleanup and optimization suite to safeguard your board-soldered SSD and reclaim valuable space:
+
+- **🧹 Caches & Leftovers Deep Cleaner**:
+  - **Xcode Build Sweeper**: Safely sweeps large compile cache directories (`Xcode DerivedData`).
+  - **Logs & System Cache Scans**: Clears system logs under `/Library/Logs` and app caches under `~/Library/Caches`.
+  - **Bundle ID Residual Scanner**: Automatically compares sub-directories in `~/Library/Application Support` with current active application bundle IDs to identify and clean abandoned app configurations and leftover folders.
+
+- **👯 Progressive Duplicate File Finder**:
+  - **Progressive Tri-Stage Algorithm**: Employs an ultra-fast "file size pre-filtering ── 10KB partial MD5 hash ── full-file MD5 signature" validation pipeline. Swiftly locates exact duplicates within seconds, even across tens of thousands of files.
+  - **Custom Folder Target**: One-click scanner for the default `~/Downloads` directory or any custom directory via a native folder sheet.
+  - **Safe Trash/Delete Actions**: Move selected duplicates securely to the System Trash (`trashItem`) or permanently delete them with complete confirmation checks.
+
+- **📈 Real-Time Disk Throughput Chart**:
+  - Leverages low-level **IOKit Block Storage Drivers** to read physical sector transaction differentials.
+  - Plots a glowing, smooth double-line graph representing live read/write speeds in MB/s on the System Health tab.
+
+- **🔌 Intelligent AC/Idle Automation (Idle-Purger)**:
+  - **Silent Purge**: Listens to system user idle status (`CGEventSource.secondsSinceLastEventType`). If idle for $\ge 5$ minutes and RAM occupancy $\ge 80\%$, automatically launches a silent Mach memory optimization.
+  - **AC Preboot Optimizer**: Rebuilds APFS preboot index structures (`diskutil apfs updatePreboot`) and clears caches in a privileged background process when the Mac is idle for $\ge 5$ minutes and connected to AC wall power.
 
 ---
 

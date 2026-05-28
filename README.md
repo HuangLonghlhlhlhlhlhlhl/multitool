@@ -8,8 +8,8 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.8.0-orange)
-![大小](https://img.shields.io/badge/体积-约%206MB-lightgrey)
+![版本](https://img.shields.io/badge/版本-1.9.0-orange)
+![大小](https://img.shields.io/badge/体积-约%209.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 [English](README.en.md) | [简体中文](README.md)
@@ -26,7 +26,7 @@
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.8.0.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.0.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -47,11 +47,15 @@
 | ⌨️ 键盘背光 | 亮度调节 + 常亮/呼吸灯/波浪三种特效 |
 | ⚡ 能耗策略控制 | 极静/均衡/极致三档一键切换，电池/电源供电独立策略 |
 | 📊 续航推演面板 | 根据当前功耗实时推算剩余续航，并与设定限额进行对比 |
-| 🧹 内存深度清理 | **【全新】**可视化圆环面板与诊断，实时扫描并展现前7个活跃应用进程（Chrome, 微信等）占用，一键深度压迫清空缓存 |
-| 🛡️ 隐私守护中心 | **【全新】**4路实时设备隐私控制（麦克风、摄像头、屏幕、自动操作），物理防窥防按键截获的洗牌乱码键盘 |
-| ⚙️ 高度定制状态栏 | **【全新】**设置中独立「状态栏」Tab，可视化 macOS 顶部状态栏 Mockup 预览，动态定制右上角 8 路遥测指标并等宽对齐 |
-| 🔄 自动升级与检查 | **【全新】**对接 GitHub Releases，支持后台静默下载、在线升级、DMG 自动挂载拉起与版本跳过，并伴有精致红点提醒 |
-| 🩺 系统健康与 SSD 寿命 | **【全新】**专属第四大 Tab，极其震撼的发光大仪表盘与呼吸彩环展示寿命 %；高保真卡片式实时统计累计写入 (TBW) 与读取量（高精小数点后三位 TB 格式），绘制标称 300 TBW 寿命进度条，直观诊断硬盘磨损 |
+| 🧹 内存深度清理 | 可视化圆环面板与诊断，实时扫描并展现前7个活跃应用进程（Chrome, 微信等）占用，一键深度压迫清空缓存 |
+| 🧹 磁盘深度清理 | **【全新】**Xcode DerivedData/系统日志/应用缓存/应用卸载残留一键智能扫描与深度清理，体验极速 |
+| 👯 重复文件匹配 | **【全新】**三级渐进式 MD5 查重引擎，毫秒级快速识别重复文件，支持安全移至回收站与物理永久删除 |
+| 📈 实时吞吐折线图 | **【全新】**系统健康页面新增 IOKit 驱动级磁盘实时吞吐（Read/Write）发光双折线波动图，监测读写更极客 |
+| 🔌 闲置智能整理 | **【全新】**智能监听用户 Idle 状态且接入 AC 电源时，自动静默 Purge 内存并特权优化 APFS Preboot 引导索引 |
+| 🛡️ 隐私守护中心 | 4路实时设备隐私控制（麦克风、摄像头、屏幕、自动操作），物理防窥防按键截获的洗牌乱码键盘 |
+| ⚙️ 高度定制状态栏 | 设置中独立「状态栏」Tab，可视化 macOS 顶部状态栏 Mockup 预览，动态定制右上角 8 路遥测指标并等宽对齐 |
+| 🔄 自动升级与检查 | 对接 GitHub Releases，支持后台静默下载、在线升级、DMG 自动挂载拉起与版本跳过，并伴有精致红点提醒 |
+| 🩺 系统健康与 SSD 寿命 | 专属第四大 Tab，极其震撼的发光大仪表盘与呼吸彩环展示寿命 %；高保真卡片式实时统计累计写入 (TBW) 与读取量（高精小数点后三位 TB 格式），绘制标称 300 TBW 寿命进度条，直观诊断硬盘磨损 |
 | 🖱️ 右键菜单 | 状态栏图标右键弹出：设置、关于、退出 |
 
 ---
@@ -102,6 +106,30 @@ STATUS CTRL v1.8.0 重磅引入了开发者与极客期待已久的固态硬盘�
 - **🛠️ 一键自动配置 Homebrew 环境**：如果系统未配置 `smartctl` 工具，界面提供悬浮流光效果的一键自动配置按钮。点击即可无感在后台调用 `brew install smartmontools` 进行高精硬件接口配置，完成后自动以优雅的淡入动画无缝展现核心诊断详情。
 - **🔌 无依赖 Plist 降级兜底**：如果在没有 Homebrew 或未安装 `smartctl` 状态下，系统自动回退至免安装兜底模式 ── 通过自带的 `diskutil info` 进行无感 Plist 序列化，提取硬盘物理型号（如 `APPLE SSD AP0512R`）、准确容量以及底层的 SMART 正常认证状态（Verified），提供丝滑的即开即用体验。
 - **⏱️ 0% 后台空载损耗**：延续了极致性能理念。磁盘 I/O 硬件请求仅在用户停留在该 Tab 时才会在高优先级后台线程激活，在其他页面或面板关闭时自动完全静默，带来真正的 **0ms UI 卡顿与 0% IO 功耗**。
+
+---
+
+## 🧹 智能磁盘深度清理、重复文件查重与系统闲置自维护 (v1.9.0 新增)
+
+STATUS CTRL v1.9.0 引入了全功能、极客定制的智能磁盘清理与维护系统，专注于保护您的 SSD 并保持系统极致清爽：
+
+- **🧹 系统垃圾与应用残留深度清理 (Caches & Leftovers Deep Cleaner)**：
+  - **编译缓存**：一键安全扫除庞大的 Xcode DerivedData 编译文件夹。
+  - **系统与应用缓存**：深度分析 `/Library/Logs` 系统日志以及 `~/Library/Caches` 缓存目录。
+  - **卸载残留扫描**：智能对比 `~/Library/Application Support`。将目录名称与已安装 App 的 Bundle ID 进行精确匹配，秒级定位已卸载 App 的残留目录，为您找回数 GB 宝贵磁盘空间。
+
+- **👯 重复文件智能特征比对与识别 (Progressive Duplicate File Finder)**：
+  - **首创渐进式哈希校验算法**：采用「文件大小预筛 ── 首部 10KB 快速 MD5 哈希 ── 全文件 MD5 精细哈希」三级流水线引擎，在数秒内精准定位内容完全一致的重复文件，查重率 100%。
+  - **支持自定义扫描目录**：支持高频「Downloads 目录一键扫描」及「自定义任意文件夹深度检索」。
+  - **安全回收机制**：支持将重复项一键安全移至系统回收站 (`trashItem`) 或物理级彻底删除，提供防误删机制。
+
+- **📈 实时磁盘吞吐发光折线图表 (Live Disk Performance Chart)**：
+  - 在「系统健康」Tab 底层，重磅打通 **IOKit 物理存储接口**，采用高频差值计算物理磁盘每秒的 Read/Write 速度。
+  - 绘制发光、平滑的**双折线吞吐曲线图 (Disk Speed Chart)**，直观动态监测 SSD 每秒的读写 MB/s 流量，气场拉满。
+
+- **🔌 智能闲置免打扰自维护 (AC/Idle Automation)**：
+  - **无感智能 Purge**：自动监听系统空闲状态 (检测到用户 idle 时间 $\ge 5$ 分钟)。若此时 RAM 占用率超过 80%，在后台静默发起 mach 内存整理与页面回收。
+  - **插电深度自重构**：当用户闲置 $\ge 5$ 分钟且已连接至交流电源 (AC Power) 时，后台自动发起 APFS preboot 启动引导索引重构 (`diskutil apfs updatePreboot`) 以及全盘静默整理，每次重坐回 Mac 前都拥有最清爽的系统环境。
 
 ---
 

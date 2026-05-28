@@ -31,6 +31,40 @@ struct DashboardView: View {
         return "/Users/h-l/Desktop/多功能小助手/smchelper"
     }
 
+    // Static stored properties to compute differential disk speed (v1.9.0)
+    private static var lastReadBytes: UInt64 = 0
+    private static var lastWriteBytes: UInt64 = 0
+    private static var lastIOTime: Date? = nil
+    
+    private func getSystemDiskIOBytes() -> (read: UInt64, write: UInt64) {
+        var totalRead: UInt64 = 0
+        var totalWrite: UInt64 = 0
+        
+        let matchingDict = IOServiceMatching("IOBlockStorageDriver")
+        var iterator: io_iterator_t = 0
+        
+        let result = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
+        if result == KERN_SUCCESS {
+            var drive = IOIteratorNext(iterator)
+            while drive != 0 {
+                var properties: Unmanaged<CFMutableDictionary>?
+                let propResult = IORegistryEntryCreateCFProperties(drive, &properties, kCFAllocatorDefault, 0)
+                if propResult == KERN_SUCCESS, let props = properties?.takeRetainedValue() as? [String: Any] {
+                    if let statistics = props["Statistics"] as? [String: Any] {
+                        let bytesRead = statistics["Bytes (Read)"] as? UInt64 ?? (statistics["Bytes (Read)"] as? Int64).map { UInt64($0) } ?? 0
+                        let bytesWritten = statistics["Bytes (Write)"] as? UInt64 ?? (statistics["Bytes (Write)"] as? Int64).map { UInt64($0) } ?? 0
+                        totalRead += bytesRead
+                        totalWrite += bytesWritten
+                    }
+                }
+                IOObjectRelease(drive)
+                drive = IOIteratorNext(iterator)
+            }
+            IOObjectRelease(iterator)
+        }
+        return (totalRead, totalWrite)
+    }
+
     
     // Refresh Timers
     private let statsTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
@@ -172,6 +206,29 @@ struct DashboardView: View {
     @State private var ssdModelName: String = "APPLE SSD"
     @State private var ssdCapacity: String = "512 GB"
     @State private var ssdSmartStatus: String = "Verified"
+    
+    // SSD Real-Time Speed & History (v1.9.0)
+    @State private var diskReadSpeed: Double = 0.0
+    @State private var diskWriteSpeed: Double = 0.0
+    @State private var diskReadHistory: [Double] = Array(repeating: 0.0, count: 18)
+    @State private var diskWriteHistory: [Double] = Array(repeating: 0.0, count: 18)
+    
+    // Sub-tab selection for Tab 0: 0 = Memory Purge, 1 = Disk Clean
+    @State private var activeTab0: Int = 0
+    
+    // Disk Cleaner States
+    @State private var isScanningDisk: Bool = false
+    @State private var scanDiskProgress: Double = 0.0
+    @State private var scanDiskStatusText: String = ""
+    @State private var scannedTrashItems: [MemoryPurger.TrashItem] = []
+    @State private var selectedTrashIds: Set<UUID> = []
+    
+    // Duplicate Files States
+    @State private var isScanningDuplicates: Bool = false
+    @State private var scanDupProgress: Double = 0.0
+    @State private var scanDupStatusText: String = ""
+    @State private var scannedDuplicateGroups: [MemoryPurger.DuplicateFileGroup] = []
+    @State private var selectedDuplicateFiles: Set<URL> = []
     
     // Helper breathing variables
     @State private var breathingTask: AnyCancellable?
@@ -1175,6 +1232,13 @@ struct DashboardView: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
+                
+                DiskSpeedChartView(
+                    readHistory: diskReadHistory,
+                    writeHistory: diskWriteHistory,
+                    currentRead: diskReadSpeed,
+                    currentWrite: diskWriteSpeed
+                )
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -1243,264 +1307,631 @@ struct DashboardView: View {
     }
     
     private var memoryCleanPageView: some View {
-        HStack(spacing: 16) {
-            // Left Column: Circular gauge and Clean trigger
-            VStack(spacing: 16) {
-                VStack(spacing: 12) {
-                    Text("内存状态")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white.opacity(0.5))
-                    
-                    // Circular Gauge
-                    ZStack {
-                        // Background track
-                        Circle()
-                            .stroke(Color.white.opacity(0.06), lineWidth: 14)
-                            .frame(width: 140, height: 140)
-                        
-                        // Active track (gradient)
-                        Circle()
-                            .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
-                            .stroke(
-                                LinearGradient(
-                                    colors: [Color(red: 0.00, green: 0.95, blue: 1.00), Color(red: 0.62, green: 0.00, blue: 1.00)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                style: StrokeStyle(lineWidth: 14, lineCap: .round)
-                            )
-                            .frame(width: 140, height: 140)
-                            .rotationEffect(.degrees(-90))
-                            .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentRAMUsagePercent)
-                        
-                        // Shadow glow
-                        Circle()
-                            .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
-                            .stroke(Color.cyan.opacity(0.3), style: StrokeStyle(lineWidth: 14, lineCap: .round))
-                            .frame(width: 140, height: 140)
-                            .rotationEffect(.degrees(-90))
-                            .blur(radius: 6)
-                        
-                        // Center text
-                        VStack(spacing: 2) {
-                            Text(String(format: "%.0f%%", currentRAMUsagePercent))
-                                .font(.system(size: 32, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-                            Text("已用空间")
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.5))
-                        }
-                    }
-                    .frame(width: 150, height: 150)
-                    .padding(.vertical, 8)
-                    
-                    // Diagnosis message
-                    Text(currentRAMUsagePercent > 75.0 ? "系统内存吃紧，请及时清理" : (currentRAMUsagePercent > 50.0 ? "运行状态良好，继续保持" : "内存非常充足，感觉棒极了"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(currentRAMUsagePercent > 75.0 ? Color(red: 1.0, green: 0.35, blue: 0.35) : (currentRAMUsagePercent > 50.0 ? Color.cyan : Color(red: 0.22, green: 0.80, blue: 0.45)))
-                        .multilineTextAlignment(.center)
-                        .frame(height: 24)
-                }
-                .padding(16)
-                .background(Color.white.opacity(0.03))
-                .cornerRadius(14)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                )
-                
-                // Clean Button
+        VStack(spacing: 0) {
+            // Capsule switcher for activeTab0 (Memory Purge vs Disk Clean) (v1.9.0)
+            HStack(spacing: 4) {
                 Button(action: {
-                    triggerMemoryPurge()
-                }) {
-                    HStack(spacing: 8) {
-                        if isPurging {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.8)
-                                .brightness(2.0)
-                            Text("深度释放中...")
-                                .font(.system(size: 13, weight: .bold))
-                        } else {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 13))
-                            Text(showPurgeSuccess ? String(format: "已整理 %.0f MB", lastPurgedAmount) : "一键释放物理内存")
-                                .font(.system(size: 13, weight: .bold))
-                        }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        activeTab0 = 0
                     }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 40)
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "memorychip")
+                            .font(.system(size: 11))
+                        Text("物理内存释放")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundColor(activeTab0 == 0 ? .white : .white.opacity(0.45))
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 16)
                     .background(
-                        LinearGradient(
-                            colors: isPurging
-                                ? [Color.gray.opacity(0.3), Color.gray.opacity(0.3)]
-                                : (showPurgeSuccess ? [Color(red: 0.22, green: 0.80, blue: 0.45), Color(red: 0.15, green: 0.60, blue: 0.35)] : [Color(red: 0.18, green: 0.62, blue: 0.95), Color(red: 0.62, green: 0.32, blue: 0.88)]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
+                        Capsule()
+                            .fill(activeTab0 == 0 ? Color.white.opacity(0.12) : Color.clear)
                     )
-                    .cornerRadius(10)
-                    .shadow(color: (isPurging ? Color.clear : (showPurgeSuccess ? Color.green.opacity(0.3) : Color.blue.opacity(0.3))), radius: 6, x: 0, y: 3)
                 }
-                .disabled(isPurging)
+                .buttonStyle(.plain)
+                
+                Button(action: {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        activeTab0 = 1
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 11))
+                        Text("磁盘深度清理与重复文件")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundColor(activeTab0 == 1 ? .white : .white.opacity(0.45))
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 16)
+                    .background(
+                        Capsule()
+                            .fill(activeTab0 == 1 ? Color.white.opacity(0.12) : Color.clear)
+                    )
+                }
                 .buttonStyle(.plain)
             }
-            .frame(width: 200)
+            .padding(4)
+            .background(Color.white.opacity(0.04))
+            .cornerRadius(20)
+            .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 1))
+            .padding(.top, 4)
+            .padding(.bottom, 8)
             
-            // Right Column: Process usage list
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Image(systemName: "app.badge.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(.cyan)
-                    Text("活跃应用内存占用排行")
-                        .font(.system(size: 13, weight: .bold))
-                    Spacer()
-                    Text("前 7 位活跃应用")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
-                }
-                .padding(.horizontal, 4)
-                
-                VStack(spacing: 8) {
-                    if activeProcesses.isEmpty {
-                        // Loading / Empty state
+            if activeTab0 == 0 {
+                HStack(spacing: 16) {
+                    // Left Column: Circular gauge and Clean trigger
+                    VStack(spacing: 16) {
                         VStack(spacing: 12) {
-                            Spacer()
-                            ProgressView()
-                                .controlSize(.regular)
-                            Text("正在分析系统活跃应用...")
-                                .font(.system(size: 12))
+                            Text("内存状态")
+                                .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(.white.opacity(0.5))
-                            Spacer()
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.white.opacity(0.02))
-                        .cornerRadius(12)
-                    } else {
-                        // Display List
-                        let enumerated = Array(activeProcesses.enumerated())
-                        ForEach(enumerated, id: \.element.id) { index, proc in
-                            let rank = index + 1
-                            HStack(spacing: 12) {
-                                // Rank Badge
-                                ZStack {
-                                    Circle()
-                                        .fill(rank == 1 
-                                            ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
-                                            : (rank == 2 
-                                                ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
-                                                : (rank == 3 
-                                                    ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
-                                                    : LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
-                                                )
-                                            )
-                                        )
-                                        .frame(width: 24, height: 24)
-                                        .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? Color.white.opacity(0.2) : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
-                                    
-                                    Text("\(rank)")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .white.opacity(0.6))
-                                }
+                            
+                            // Circular Gauge
+                            ZStack {
+                                // Background track
+                                Circle()
+                                    .stroke(Color.white.opacity(0.06), lineWidth: 14)
+                                    .frame(width: 140, height: 140)
                                 
-                                // Mini icon mockup
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
-                                        .frame(width: 28, height: 28)
-                                    
-                                    Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.white.opacity(0.8))
-                                }
+                                // Active track (gradient)
+                                Circle()
+                                    .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
+                                    .stroke(
+                                        LinearGradient(
+                                            colors: [Color(red: 0.00, green: 0.95, blue: 1.00), Color(red: 0.62, green: 0.00, blue: 1.00)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ),
+                                        style: StrokeStyle(lineWidth: 14, lineCap: .round)
+                                    )
+                                    .frame(width: 140, height: 140)
+                                    .rotationEffect(.degrees(-90))
+                                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentRAMUsagePercent)
                                 
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(proc.name)
-                                        .font(.system(size: 12, weight: .semibold))
+                                // Shadow glow
+                                Circle()
+                                    .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
+                                    .stroke(Color.cyan.opacity(0.3), style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                                    .frame(width: 140, height: 140)
+                                    .rotationEffect(.degrees(-90))
+                                    .blur(radius: 6)
+                                
+                                // Center text
+                                VStack(spacing: 2) {
+                                    Text(String(format: "%.0f%%", currentRAMUsagePercent))
+                                        .font(.system(size: 32, weight: .bold, design: .rounded))
                                         .foregroundColor(.white)
-                                        .lineLimit(1)
-                                    
-                                    // RAM and CPU pill badges
-                                    HStack(spacing: 8) {
-                                        // RAM usage
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "memorychip")
-                                                .font(.system(size: 9))
-                                            Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
-                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    Text("已用空间")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.white.opacity(0.5))
+                                }
+                            }
+                            .frame(width: 150, height: 150)
+                            .padding(.vertical, 8)
+                            
+                            // Diagnosis message
+                            Text(currentRAMUsagePercent > 75.0 ? "系统内存吃紧，请及时清理" : (currentRAMUsagePercent > 50.0 ? "运行状态良好，继续保持" : "内存非常充足，感觉棒极了"))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(currentRAMUsagePercent > 75.0 ? Color(red: 1.0, green: 0.35, blue: 0.35) : (currentRAMUsagePercent > 50.0 ? Color.cyan : Color(red: 0.22, green: 0.80, blue: 0.45)))
+                                .multilineTextAlignment(.center)
+                                .frame(height: 24)
+                        }
+                        .padding(16)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(14)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                        )
+                        
+                        // Clean Button
+                        Button(action: {
+                            triggerMemoryPurge()
+                        }) {
+                            HStack(spacing: 8) {
+                                if isPurging {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .scaleEffect(0.8)
+                                        .brightness(2.0)
+                                    Text("深度释放中...")
+                                        .font(.system(size: 13, weight: .bold))
+                                } else {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 13))
+                                    Text(showPurgeSuccess ? String(format: "已整理 %.0f MB", lastPurgedAmount) : "一键释放物理内存")
+                                        .font(.system(size: 13, weight: .bold))
+                                }
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 40)
+                            .background(
+                                LinearGradient(
+                                    colors: isPurging
+                                        ? [Color.gray.opacity(0.3), Color.gray.opacity(0.3)]
+                                        : (showPurgeSuccess ? [Color(red: 0.22, green: 0.80, blue: 0.45), Color(red: 0.15, green: 0.60, blue: 0.35)] : [Color(red: 0.18, green: 0.62, blue: 0.95), Color(red: 0.62, green: 0.32, blue: 0.88)]),
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .cornerRadius(10)
+                            .shadow(color: (isPurging ? Color.clear : (showPurgeSuccess ? Color.green.opacity(0.3) : Color.blue.opacity(0.3))), radius: 6, x: 0, y: 3)
+                        }
+                        .disabled(isPurging)
+                        .buttonStyle(.plain)
+                    }
+                    .frame(width: 200)
+                    
+                    // Right Column: Process usage list
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Image(systemName: "app.badge.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.cyan)
+                            Text("活跃应用内存占用排行")
+                                .font(.system(size: 13, weight: .bold))
+                            Spacer()
+                            Text("前 7 位活跃应用")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                        .padding(.horizontal, 4)
+                        
+                        VStack(spacing: 8) {
+                            if activeProcesses.isEmpty {
+                                // Loading / Empty state
+                                VStack(spacing: 12) {
+                                    Spacer()
+                                    ProgressView()
+                                        .controlSize(.regular)
+                                    Text("正在分析系统活跃应用...")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.white.opacity(0.5))
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .background(Color.white.opacity(0.02))
+                                .cornerRadius(12)
+                            } else {
+                                // Display List
+                                let enumerated = Array(activeProcesses.enumerated())
+                                ForEach(enumerated, id: \.element.id) { index, proc in
+                                    let rank = index + 1
+                                    HStack(spacing: 12) {
+                                        // Rank Badge
+                                        ZStack {
+                                            Circle()
+                                                .fill(rank == 1 
+                                                    ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
+                                                    : (rank == 2 
+                                                        ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
+                                                        : (rank == 3 
+                                                            ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
+                                                            : LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+                                                        )
+                                                    )
+                                                )
+                                                .frame(width: 24, height: 24)
+                                                .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? Color.white.opacity(0.2) : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
+                                            
+                                            Text("\(rank)")
+                                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                                .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .white.opacity(0.6))
                                         }
-                                        .foregroundColor(.cyan)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.cyan.opacity(0.1))
-                                        .cornerRadius(4)
                                         
-                                        // CPU usage
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "cpu")
-                                                .font(.system(size: 9))
-                                            Text(String(format: "%.1f%%", proc.cpuPercent))
-                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        // Mini icon mockup
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .fill(LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                                                .frame(width: 28, height: 28)
+                                            
+                                            Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
+                                                .font(.system(size: 12))
+                                                .foregroundColor(.white.opacity(0.8))
                                         }
-                                        .foregroundColor(.purple)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.purple.opacity(0.1))
-                                        .cornerRadius(4)
+                                        
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(proc.name)
+                                                .font(.system(size: 12, weight: .semibold))
+                                                .foregroundColor(.white)
+                                                .lineLimit(1)
+                                            
+                                            // RAM and CPU pill badges
+                                            HStack(spacing: 8) {
+                                                // RAM usage
+                                                HStack(spacing: 3) {
+                                                    Image(systemName: "memorychip")
+                                                        .font(.system(size: 9))
+                                                    Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
+                                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                                }
+                                                .foregroundColor(.cyan)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.cyan.opacity(0.1))
+                                                .cornerRadius(4)
+                                                
+                                                // CPU usage
+                                                HStack(spacing: 3) {
+                                                    Image(systemName: "cpu")
+                                                        .font(.system(size: 9))
+                                                    Text(String(format: "%.1f%%", proc.cpuPercent))
+                                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                                }
+                                                .foregroundColor(.purple)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.purple.opacity(0.1))
+                                                .cornerRadius(4)
+                                            }
+                                        }
+                                        
+                                        Spacer()
+                                        
+                                        // Terminate Process Button
+                                        Button(action: {
+                                            MemoryPurger.terminateProcess(pids: proc.pids)
+                                            // Instantly refresh list
+                                            DispatchQueue.global(qos: .userInitiated).async {
+                                                let updated = MemoryPurger.getActiveProcessMemoryList()
+                                                DispatchQueue.main.async {
+                                                    withAnimation(.easeInOut(duration: 0.3)) {
+                                                        self.activeProcesses = updated
+                                                    }
+                                                }
+                                            }
+                                        }) {
+                                            ZStack {
+                                                Circle()
+                                                    .fill(Color.red.opacity(0.15))
+                                                    .frame(width: 22, height: 22)
+                                                
+                                                Image(systemName: "xmark")
+                                                    .font(.system(size: 9, weight: .bold))
+                                                    .foregroundColor(.red.opacity(0.9))
+                                            }
+                                        }
+                                        .buttonStyle(TerminateButtonStyle())
+                                        .focusable(false)
+                                        .help("停止运行程序")
                                     }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.02))
+                                    .cornerRadius(10)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                                    )
                                 }
                                 
                                 Spacer()
-                                
-                                // Terminate Process Button
-                                Button(action: {
-                                    MemoryPurger.terminateProcess(pids: proc.pids)
-                                    // Instantly refresh list
-                                    DispatchQueue.global(qos: .userInitiated).async {
-                                        let updated = MemoryPurger.getActiveProcessMemoryList()
-                                        DispatchQueue.main.async {
-                                            withAnimation(.easeInOut(duration: 0.3)) {
-                                                self.activeProcesses = updated
-                                            }
-                                        }
-                                    }
-                                }) {
-                                    ZStack {
-                                        Circle()
-                                            .fill(Color.red.opacity(0.15))
-                                            .frame(width: 22, height: 22)
-                                        
-                                        Image(systemName: "xmark")
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundColor(.red.opacity(0.9))
-                                    }
-                                }
-                                .buttonStyle(TerminateButtonStyle())
-                                .focusable(false)
-                                .help("停止运行程序")
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Color.white.opacity(0.02))
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.04), lineWidth: 1)
-                            )
                         }
-                        
-                        Spacer()
+                        .frame(maxHeight: .infinity)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity)))
+            } else {
+                diskCleanPageView
+                    .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+            }
+        }
+    }
+    
+    // ── Disk Cleanup Page (v1.9.0) ──
+    private var diskCleanPageView: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(spacing: 16) {
+                leftoversSectionView
+                duplicatesSectionView
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+        }
+        .frame(maxHeight: .infinity)
+    }
+    
+    private var leftoversSectionView: some View {
+        // Leftovers & Caches Section
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "folder.badge.minus")
+                    .font(.system(size: 14))
+                    .foregroundColor(.cyan)
+                Text("系统垃圾与应用残留清理")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                
+                if isScanningDisk {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                        Text(scanDiskStatusText)
+                            .font(.system(size: 10))
+                            .foregroundColor(.cyan)
+                    }
+                } else if !scannedTrashItems.isEmpty {
+                    let totalBytes = scannedTrashItems.reduce(Int64(0), { $0 + $1.sizeBytes })
+                    let sizeStr = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+                    Text("发现垃圾: \(sizeStr)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.orange)
+                }
+            }
+            
+            if scannedTrashItems.isEmpty && !isScanningDisk {
+                leftoversEmptyView
+            } else if isScanningDisk && scannedTrashItems.isEmpty {
+                leftoversScanningView
+            } else {
+                leftoversResultsView
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+    }
+    
+    private var leftoversEmptyView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 24))
+                .foregroundColor(.green.opacity(0.8))
+            Text("未发现系统垃圾，系统运转极速清爽")
+                .font(.system(size: 11.5))
+                .foregroundColor(.white.opacity(0.6))
+            
+            Button(action: {
+                triggerDiskScan()
+            }) {
+                Text("深度扫描系统垃圾")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.cyan)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 16)
+                    .background(Color.cyan.opacity(0.12))
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.cyan.opacity(0.3), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.white.opacity(0.01))
+        .cornerRadius(12)
+    }
+    
+    private var leftoversScanningView: some View {
+        VStack(spacing: 12) {
+            ProgressView(value: scanDiskProgress)
+                .progressViewStyle(.linear)
+                .frame(width: 160)
+            Text(scanDiskStatusText)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.5))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .background(Color.white.opacity(0.01))
+        .cornerRadius(12)
+    }
+    
+    private var leftoversResultsView: some View {
+        VStack(spacing: 8) {
+            ForEach(scannedTrashItems, id: \.id) { item in
+                TrashItemRowView(item: item, selectedTrashIds: $selectedTrashIds)
+            }
+            
+            // Action Button
+            let selectedItems = scannedTrashItems.filter { selectedTrashIds.contains($0.id) }
+            let selectedBytes = selectedItems.reduce(Int64(0), { $0 + $1.sizeBytes })
+            let selectedSizeStr = ByteCountFormatter.string(fromByteCount: selectedBytes, countStyle: .file)
+            
+            Button(action: {
+                performCleanCaches()
+            }) {
+                HStack {
+                    Image(systemName: "sparkles")
+                    Text("一键深度清理选中垃圾 (\(selectedSizeStr))")
+                        .font(.system(size: 12, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background(
+                    LinearGradient(colors: selectedItems.isEmpty ? [.gray.opacity(0.3), .gray.opacity(0.3)] : [.cyan, .blue], startPoint: .leading, endPoint: .trailing)
+                )
+                .cornerRadius(8)
+            }
+            .disabled(selectedItems.isEmpty || isScanningDisk)
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+        }
+    }
+    
+    private var duplicatesSectionView: some View {
+        // Duplicate Files Section
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "doc.on.doc.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.purple)
+                Text("重复文件智能扫描与清理")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                
+                if isScanningDuplicates {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                        Text(scanDupStatusText)
+                            .font(.system(size: 10))
+                            .foregroundColor(.purple)
+                    }
+                } else if !scannedDuplicateGroups.isEmpty {
+                    let totalGroups = scannedDuplicateGroups.count
+                    Text("已发现重复: \(totalGroups) 组")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.purple)
+                }
+            }
+            
+            if scannedDuplicateGroups.isEmpty && !isScanningDuplicates {
+                duplicatesEmptyView
+            } else if isScanningDuplicates && scannedDuplicateGroups.isEmpty {
+                duplicatesScanningView
+            } else {
+                duplicatesResultsView
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+    }
+    
+    private var duplicatesEmptyView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.fill")
+                .font(.system(size: 24))
+                .foregroundColor(.purple.opacity(0.8))
+            Text("未扫描重复文件，点击按钮深度匹配")
+                .font(.system(size: 11.5))
+                .foregroundColor(.white.opacity(0.6))
+            
+            HStack(spacing: 12) {
+                Button(action: scanDownloadsDirectory) {
+                    Text("扫描 Downloads 目录")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.purple)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 14)
+                        .background(Color.purple.opacity(0.12))
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.purple.opacity(0.3), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                
+                Button(action: selectCustomFolderForDuplicateScan) {
+                    Text("自定义文件夹...")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 14)
+                        .background(Color.white.opacity(0.06))
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.1), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.white.opacity(0.01))
+        .cornerRadius(12)
+    }
+    
+    private var duplicatesScanningView: some View {
+        VStack(spacing: 12) {
+            ProgressView(value: scanDupProgress)
+                .progressViewStyle(.linear)
+                .frame(width: 160)
+            Text(scanDupStatusText)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.5))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        .background(Color.white.opacity(0.01))
+        .cornerRadius(12)
+    }
+    
+    private var duplicatesResultsView: some View {
+        VStack(spacing: 10) {
+            ScrollView(.vertical) {
+                VStack(spacing: 10) {
+                    ForEach(scannedDuplicateGroups, id: \.id) { group in
+                        DuplicateGroupCardView(group: group, selectedDuplicateFiles: $selectedDuplicateFiles)
                     }
                 }
-                .frame(maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxHeight: 200)
+            
+            // Action Buttons
+            let selectedItems = Array(selectedDuplicateFiles)
+            let totalSelectedBytes = selectedItems.reduce(Int64(0)) { sum, url in
+                if let group = scannedDuplicateGroups.first(where: { $0.files.contains(url) }) {
+                    return sum + group.size
+                }
+                return sum
+            }
+            let selectedSizeStr = ByteCountFormatter.string(fromByteCount: totalSelectedBytes, countStyle: .file)
+            
+            HStack(spacing: 12) {
+                Button(action: {
+                    performDeleteDuplicates(permanently: false)
+                }) {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("安全移至回收站 (\(selectedSizeStr))")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 32)
+                    .background(
+                        LinearGradient(colors: selectedItems.isEmpty ? [.gray.opacity(0.3), .gray.opacity(0.3)] : [.cyan, .blue], startPoint: .leading, endPoint: .trailing)
+                    )
+                    .cornerRadius(6)
+                }
+                .disabled(selectedItems.isEmpty || isScanningDuplicates)
+                .buttonStyle(.plain)
+                
+                Button(action: {
+                    performDeleteDuplicates(permanently: true)
+                }) {
+                    HStack {
+                        Image(systemName: "xmark.shield")
+                        Text("物理永久删除")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 32)
+                    .background(
+                        LinearGradient(colors: selectedItems.isEmpty ? [.gray.opacity(0.3), .gray.opacity(0.3)] : [.red, .pink], startPoint: .leading, endPoint: .trailing)
+                    )
+                    .cornerRadius(6)
+                }
+                .disabled(selectedItems.isEmpty || isScanningDuplicates)
+                .buttonStyle(.plain)
+            }
+            
+            // Re-scan option
+            Button(action: {
+                scannedDuplicateGroups.removeAll()
+            }) {
+                Text("清除扫描结果以重新扫描")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
     }
     
     private var privacyGuardPageView: some View {
@@ -3526,6 +3957,187 @@ struct DashboardView: View {
         })
     }
     
+    private func triggerDiskScan() {
+        isScanningDisk = true
+        scanDiskProgress = 0.0
+        scanDiskStatusText = "正在准备扫描磁盘..."
+        scannedTrashItems.removeAll()
+        selectedTrashIds.removeAll()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let items = MemoryPurger.scanAppLeftoversAndCaches { pct, msg in
+                DispatchQueue.main.async {
+                    self.scanDiskProgress = pct
+                    self.scanDiskStatusText = msg
+                }
+            }
+            
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.scannedTrashItems = items
+                    self.selectedTrashIds = Set(items.map { $0.id })
+                    self.isScanningDisk = false
+                    self.scanDiskProgress = 1.0
+                }
+            }
+        }
+    }
+    
+    private func selectCustomFolderForDuplicateScan() {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = false
+        openPanel.canChooseDirectories = true
+        openPanel.allowsMultipleSelection = false
+        openPanel.message = "请选择要扫描重复文件的文件夹"
+        if openPanel.runModal() == .OK, let url = openPanel.url {
+            triggerDuplicateScan(folder: url)
+        }
+    }
+    
+    private func scanDownloadsDirectory() {
+        triggerDuplicateScan(folder: URL(fileURLWithPath: NSHomeDirectory() + "/Downloads"))
+    }
+    
+    private func triggerDuplicateScan(folder: URL) {
+        isScanningDuplicates = true
+        scanDupProgress = 0.0
+        scanDupStatusText = "正在扫描文件夹..."
+        scannedDuplicateGroups.removeAll()
+        selectedDuplicateFiles.removeAll()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let groups = MemoryPurger.scanForDuplicateFiles(in: folder) { pct, msg in
+                DispatchQueue.main.async {
+                    self.scanDupProgress = pct
+                    self.scanDupStatusText = msg
+                }
+            }
+            
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.scannedDuplicateGroups = groups
+                    self.isScanningDuplicates = false
+                    self.scanDupProgress = 1.0
+                    self.scanDupStatusText = ""
+                }
+            }
+        }
+    }
+    
+    private func performCleanCaches() {
+        isScanningDisk = true
+        scanDiskStatusText = "正在安全清理选中垃圾..."
+        
+        let targets = scannedTrashItems.filter { selectedTrashIds.contains($0.id) }
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            var successBytes: Int64 = 0
+            let fm = FileManager.default
+            
+            for (index, item) in targets.enumerated() {
+                let progress = Double(index) / Double(targets.count)
+                DispatchQueue.main.async {
+                    self.scanDiskProgress = progress
+                    self.scanDiskStatusText = "正在清理: \(item.name)..."
+                }
+                
+                do {
+                    if fm.fileExists(atPath: item.path) {
+                        try fm.removeItem(atPath: item.path)
+                    }
+                    successBytes += item.sizeBytes
+                } catch {
+                    print("Failed to delete \(item.path): \(error)")
+                }
+            }
+            
+            // Re-scan after cleaning to update numbers
+            let remaining = MemoryPurger.scanAppLeftoversAndCaches { pct, msg in
+                DispatchQueue.main.async {
+                    self.scanDiskProgress = pct
+                    self.scanDiskStatusText = msg
+                }
+            }
+            
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.scannedTrashItems = remaining
+                    self.selectedTrashIds = Set(remaining.map { $0.id })
+                    self.isScanningDisk = false
+                    self.scanDiskProgress = 1.0
+                    
+                    let formattedAmount = ByteCountFormatter.string(fromByteCount: successBytes, countStyle: .file)
+                    self.messagePrompt = "🎉 成功清理了 \(formattedAmount) 的系统垃圾与配置残留！"
+                }
+            }
+        }
+    }
+    
+    private func performDeleteDuplicates(permanently: Bool) {
+        isScanningDuplicates = true
+        scanDupStatusText = permanently ? "正在永久删除所选副本..." : "正在将选中副本移至回收站..."
+        
+        let targets = Array(selectedDuplicateFiles)
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            var deletedCount = 0
+            var reclaimedBytes: Int64 = 0
+            
+            for (index, url) in targets.enumerated() {
+                let progress = Double(index) / Double(targets.count)
+                DispatchQueue.main.async {
+                    self.scanDupProgress = progress
+                    self.scanDupStatusText = "处理中: \(url.lastPathComponent)..."
+                }
+                
+                // Get size of deleted file
+                var fileSize: Int64 = 0
+                if let attr = try? fm.attributesOfItem(atPath: url.path),
+                   let size = attr[.size] as? NSNumber {
+                    fileSize = size.int64Value
+                }
+                
+                do {
+                    if fm.fileExists(atPath: url.path) {
+                        if permanently {
+                            try fm.removeItem(at: url)
+                        } else {
+                            try fm.trashItem(at: url, resultingItemURL: nil)
+                        }
+                        deletedCount += 1
+                        reclaimedBytes += fileSize
+                    }
+                } catch {
+                    print("Failed to delete/trash duplicate at \(url.path): \(error)")
+                }
+            }
+            
+            // Refresh scanned duplicates lists by filtering out deleted files from existing groups
+            let finalGroups = self.scannedDuplicateGroups.map { group -> MemoryPurger.DuplicateFileGroup in
+                var g = group
+                g.files = g.files.filter { url in
+                    fm.fileExists(atPath: url.path)
+                }
+                return g
+            }.filter { $0.files.count >= 2 }
+            
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.scannedDuplicateGroups = finalGroups
+                    self.selectedDuplicateFiles.removeAll()
+                    self.isScanningDuplicates = false
+                    self.scanDupProgress = 1.0
+                    self.scanDupStatusText = ""
+                    
+                    let actionText = permanently ? "彻底物理删除" : "安全移至回收站"
+                    let formattedBytes = ByteCountFormatter.string(fromByteCount: reclaimedBytes, countStyle: .file)
+                    self.messagePrompt = "🎉 成功将 \(deletedCount) 个重复副本进行 \(actionText)，释放空间 \(formattedBytes)！"
+                }
+            }
+        }
+    }
+    
     private func initializeHardware() {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             // SMC init
@@ -3709,6 +4321,27 @@ struct DashboardView: View {
             let processes = currentTab == 0 ? MemoryPurger.getActiveProcessMemoryList() : []
             let ramPercent = self.getRAMUsage()
             
+            // Calculate real-time physical disk I/O speed (v1.9.0)
+            let ioBytes = self.getSystemDiskIOBytes()
+            let now = Date()
+            var readSpeedMBs: Double = 0.0
+            var writeSpeedMBs: Double = 0.0
+            
+            if let lastTime = Self.lastIOTime {
+                let dt = now.timeIntervalSince(lastTime)
+                if dt > 0.1 {
+                    let rDiff = ioBytes.read >= Self.lastReadBytes ? ioBytes.read - Self.lastReadBytes : 0
+                    let wDiff = ioBytes.write >= Self.lastWriteBytes ? ioBytes.write - Self.lastWriteBytes : 0
+                    readSpeedMBs = (Double(rDiff) / (1024.0 * 1024.0)) / dt
+                    writeSpeedMBs = (Double(wDiff) / (1024.0 * 1024.0)) / dt
+                }
+            }
+            if readSpeedMBs > 15000.0 { readSpeedMBs = 0.0 }
+            if writeSpeedMBs > 15000.0 { writeSpeedMBs = 0.0 }
+            Self.lastReadBytes = ioBytes.read
+            Self.lastWriteBytes = ioBytes.write
+            Self.lastIOTime = now
+            
             // Only fetch SSD SMART health logs if on tab 2 (System Health)
             let ssdData = currentTab == 2 ? self.fetchSSDHealthDataInBackground() : nil
             
@@ -3849,6 +4482,18 @@ struct DashboardView: View {
                     self.activeProcesses = processes
                 }
                 self.currentRAMUsagePercent = ramPercent
+                
+                // Set disk I/O speeds (v1.9.0)
+                self.diskReadSpeed = readSpeedMBs
+                self.diskWriteSpeed = writeSpeedMBs
+                self.diskReadHistory.append(readSpeedMBs)
+                if self.diskReadHistory.count > 18 {
+                    self.diskReadHistory.removeFirst()
+                }
+                self.diskWriteHistory.append(writeSpeedMBs)
+                if self.diskWriteHistory.count > 18 {
+                    self.diskWriteHistory.removeFirst()
+                }
                 
                 if currentTab == 2, let data = ssdData {
                     self.smartctlInstalled = data.smartctlInstalled
@@ -5689,6 +6334,239 @@ struct KeyboardBacklightVisualizerView: View {
                 }
             }
         }
+    }
+}
+
+// ── Real-Time Disk Speed Chart View (v1.9.0) ──
+struct DiskSpeedChartView: View {
+    let readHistory: [Double]
+    let writeHistory: [Double]
+    let currentRead: Double
+    let currentWrite: Double
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("实时磁盘吞吐速率 (I/O)")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.white.opacity(0.85))
+                    Text("直读 macOS 底层 IOKit Block Storage 物理统计，真实反映硬盘吞吐量")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.white.opacity(0.45))
+                }
+                Spacer()
+                
+                HStack(spacing: 12) {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.cyan).frame(width: 6, height: 6)
+                        Text(String(format: "读: %.1f MB/s", currentRead))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.cyan)
+                    }
+                    
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.purple).frame(width: 6, height: 6)
+                        Text(String(format: "写: %.1f MB/s", currentWrite))
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.purple)
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+            
+            // The Line Chart
+            GeometryReader { geo in
+                let width = geo.size.width
+                let height = geo.size.height
+                
+                let maxVal = max(10.0, max(readHistory.max() ?? 0, writeHistory.max() ?? 0))
+                
+                ZStack {
+                    // Background grid lines
+                    VStack(spacing: 0) {
+                        ForEach(0..<4) { i in
+                            Spacer()
+                            Path { path in
+                                path.move(to: CGPoint(x: 0, y: 0))
+                                path.addLine(to: CGPoint(x: width, y: 0))
+                            }
+                            .stroke(Color.white.opacity(0.04), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        }
+                    }
+                    
+                    // Draw Read Line (Cyan)
+                    chartPath(history: readHistory, width: width, height: height, maxVal: maxVal)
+                        .stroke(
+                            LinearGradient(colors: [.cyan, .cyan.opacity(0.6)], startPoint: .leading, endPoint: .trailing),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                        )
+                        .shadow(color: Color.cyan.opacity(0.3), radius: 4)
+                    
+                    // Draw Write Line (Purple)
+                    chartPath(history: writeHistory, width: width, height: height, maxVal: maxVal)
+                        .stroke(
+                            LinearGradient(colors: [.purple, .purple.opacity(0.6)], startPoint: .leading, endPoint: .trailing),
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                        )
+                        .shadow(color: Color.purple.opacity(0.3), radius: 4)
+                }
+            }
+            .frame(height: 90)
+            .background(Color.black.opacity(0.12))
+            .cornerRadius(8)
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+    }
+    
+    private func chartPath(history: [Double], width: CGFloat, height: CGFloat, maxVal: Double) -> Path {
+        var path = Path()
+        guard history.count >= 2 else { return path }
+        
+        let stepX = width / CGFloat(history.count - 1)
+        
+        for i in 0..<history.count {
+            let x = CGFloat(i) * stepX
+            let val = history[i]
+            let normalizedY = height - CGFloat(val / maxVal) * (height - 12) - 6 // inset by 6px
+            
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: normalizedY))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: normalizedY))
+            }
+        }
+        
+        return path
+    }
+}
+
+// ── Duplicate Files Group Card Subview (v1.9.0) ──
+struct DuplicateGroupCardView: View {
+    let group: MemoryPurger.DuplicateFileGroup
+    @Binding var selectedDuplicateFiles: Set<URL>
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 11))
+                    .foregroundColor(.purple)
+                Text(group.files.first?.lastPathComponent ?? "未知文件")
+                    .font(.system(size: 11.5, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                Spacer()
+                Text("大小: \(group.sizeString)")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundColor(.orange)
+                Text("(\(group.files.count)个副本)")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            
+            Divider().background(Color.white.opacity(0.04))
+            
+            VStack(spacing: 4) {
+                ForEach(group.files, id: \.self) { url in
+                    HStack {
+                        Button(action: {
+                            if selectedDuplicateFiles.contains(url) {
+                                selectedDuplicateFiles.remove(url)
+                            } else {
+                                selectedDuplicateFiles.insert(url)
+                            }
+                        }) {
+                            Image(systemName: selectedDuplicateFiles.contains(url) ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(selectedDuplicateFiles.contains(url) ? .purple : .white.opacity(0.3))
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Text(url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.45))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        Button(action: {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }) {
+                            Image(systemName: "magnifyingglass.circle.fill")
+                                .foregroundColor(.cyan.opacity(0.8))
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.plain)
+                        .help("在 Finder 中定位该副本")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.005))
+                    .cornerRadius(4)
+                }
+            }
+            .padding(.bottom, 6)
+        }
+        .background(Color.white.opacity(0.01))
+        .cornerRadius(10)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.04), lineWidth: 1))
+    }
+}
+
+// ── Trash Item Row Subview (v1.9.0) ──
+struct TrashItemRowView: View {
+    let item: MemoryPurger.TrashItem
+    @Binding var selectedTrashIds: Set<UUID>
+    
+    var body: some View {
+        HStack {
+            Button(action: {
+                if selectedTrashIds.contains(item.id) {
+                    selectedTrashIds.remove(item.id)
+                } else {
+                    selectedTrashIds.insert(item.id)
+                }
+            }) {
+                Image(systemName: selectedTrashIds.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(selectedTrashIds.contains(item.id) ? .cyan : .white.opacity(0.3))
+                    .font(.system(size: 14))
+            }
+            .buttonStyle(.plain)
+            
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(item.name)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundColor(.white)
+                    
+                    Text(item.typeLabel)
+                        .font(.system(size: 9))
+                        .foregroundColor(.cyan)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.cyan.opacity(0.12))
+                        .cornerRadius(3)
+                }
+                Text(item.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.white.opacity(0.4))
+                    .lineLimit(1)
+            }
+            Spacer()
+            
+            Text(item.sizeString)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.orange)
+        }
+        .padding(8)
+        .background(Color.white.opacity(0.01))
+        .cornerRadius(8)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.03), lineWidth: 1))
     }
 }
 

@@ -26,7 +26,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "showStatusBarNetSpeed": true,
             "showStatusBarGPUUsage": true,
             "enableStatusBar": true,
-            "showStatusBarOnOpen": false
+            "showStatusBarOnOpen": false,
+            "enableAutoIdlePurge": false,
+            "enableAutoIdleOptimize": false
         ])
         
         // 1. Popover（左键展开的主面板）
@@ -292,6 +294,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return usage
     }
 
+    // State machine trackers for idle purges and optimizations (v1.9.0)
+    private var hasAutoPurgedThisIdleSession = false
+    private var hasAutoOptimizedThisIdleSession = false
+    
+    private func checkAutoIdlePurgeAndOptimize(ramUsage: Double) {
+        let enableAutoPurge = UserDefaults.standard.bool(forKey: "enableAutoIdlePurge")
+        let enableAutoOptimize = UserDefaults.standard.bool(forKey: "enableAutoIdleOptimize")
+        
+        guard enableAutoPurge || enableAutoOptimize else { return }
+        
+        let idleSeconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        
+        if idleSeconds < 300.0 {
+            if hasAutoPurgedThisIdleSession {
+                print("[AutoIdlePurge] User returned. Resetting memory purge trigger.")
+                hasAutoPurgedThisIdleSession = false
+            }
+            if hasAutoOptimizedThisIdleSession {
+                print("[AutoIdleOptimize] User returned. Resetting disk optimize trigger.")
+                hasAutoOptimizedThisIdleSession = false
+            }
+        } else {
+            if enableAutoPurge && ramUsage >= 80.0 && !hasAutoPurgedThisIdleSession {
+                hasAutoPurgedThisIdleSession = true
+                print("[AutoIdlePurge] User idle for \(idleSeconds)s and RAM is \(ramUsage)%. Triggering silent memory clean...")
+                MemoryPurger.purge(progressHandler: { _ in }, completion: { reclaimedMB in
+                    print("[AutoIdlePurge] Background silent memory clean completed. Reclaimed \(reclaimedMB) MB.")
+                })
+            }
+            
+            if enableAutoOptimize && !hasAutoOptimizedThisIdleSession {
+                let powerStats = PowerMonitor.getPowerStats()
+                if powerStats.isConnected {
+                    hasAutoOptimizedThisIdleSession = true
+                    print("[AutoIdleOptimize] Connected to AC power and user idle for \(idleSeconds)s. Triggering APFS TRIM & Preboot rebuild...")
+                    
+                    let purgeProcess = Process()
+                    purgeProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/purge")
+                    try? purgeProcess.run()
+                    
+                    let optimizeProcess = Process()
+                    optimizeProcess.executableURL = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/com.hl.smchelper")
+                    optimizeProcess.arguments = ["optimize"]
+                    try? optimizeProcess.run()
+                }
+            }
+        }
+    }
+
     func updateTelemetryText() {
         guard !isUpdatingTelemetry else { return }
         
@@ -315,6 +366,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let ssdUsage = self.getSSDUsage()
             let gpuUsage = self.getGPUUsage()
             let (upSpeed, downSpeed) = self.networkMonitor.getSpeed()
+            
+            // Auto idle maintenance checks
+            self.checkAutoIdlePurgeAndOptimize(ramUsage: ramUsage)
             
             let cpuTemp = SMCController.shared.getCPUTemperature()
             let ramTemp = SMCController.shared.getMemoryTemperature()
@@ -627,6 +681,9 @@ struct SettingsView: View {
     @AppStorage("showStatusBarNetSpeed") private var showStatusBarNetSpeed: Bool = true
     @AppStorage("showStatusBarGPUUsage") private var showStatusBarGPUUsage: Bool = true
     
+    @AppStorage("enableAutoIdlePurge") private var enableAutoIdlePurge: Bool = false
+    @AppStorage("enableAutoIdleOptimize") private var enableAutoIdleOptimize: Bool = false
+    
     @State private var activeTab: Int = 0 // 0: 通用, 1: 状态栏
     
     @ObservedObject private var updateManager = UpdateManager.shared
@@ -685,6 +742,29 @@ struct SettingsView: View {
                     VStack(spacing: 12) {
                         SettingsSection(title: "基础设置") {
                             SettingsToggleRow(label: "开机时自动启动", icon: "play.circle", isOn: $launchAtLogin)
+                        }
+                        
+                        SettingsSection(title: "智能维护 (系统健康)") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                SettingsToggleRow(label: "物理内存碎片空闲自动整理", icon: "sparkles", isOn: $enableAutoIdlePurge)
+                                if enableAutoIdlePurge {
+                                    Text("💡 系统闲置 5 分钟以上且内存压力 > 80% 时，自动在后台静默发起深层垃圾清理，让您每次重新坐回 Mac 前都拥有充沛的内存！")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                        .padding(.leading, 36)
+                                        .padding(.bottom, 4)
+                                }
+                                
+                                Divider().padding(.leading, 36)
+                                
+                                SettingsToggleRow(label: "插电空闲时自动 TRIM 与引导优化", icon: "bolt.fill", isOn: $enableAutoIdleOptimize)
+                                if enableAutoIdleOptimize {
+                                    Text("⚡ 接入电源且闲置 5 分钟以上时，自动在后台静默重建 Preboot 引导辅助文件，并强制刷新 APFS 页面缓存唤醒 TRIM 整理，大幅度提升系统的读写及启动效率！")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                        .padding(.leading, 36)
+                                }
+                            }
                         }
                         
                         SettingsSection(title: "面板显示项目") {

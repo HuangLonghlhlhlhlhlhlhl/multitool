@@ -3,7 +3,7 @@ import Foundation
 func main() {
     let args = CommandLine.arguments
     guard args.count >= 2 else {
-        print("Usage: smchelper <manual|speed|charge|power|sleep> <params...>")
+        print("Usage: smchelper <manual|speed|charge|power|sleep|smart|optimize> <params...>")
         exit(1)
     }
     
@@ -164,6 +164,23 @@ func main() {
                 print(output)
             } else {
                 print("ERROR: Failed to read smartctl output")
+            }
+        } catch {
+            print("ERROR: \(error.localizedDescription)")
+        }
+    } else if command == "optimize" {
+        let task = Process()
+        task.launchPath = "/usr/sbin/diskutil"
+        task.arguments = ["apfs", "updatePreboot", "/"]
+        
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let status = task.terminationStatus
+            if status == 0 {
+                print("OPTIMIZE_OK")
+            } else {
+                print("ERROR: diskutil exit code \(status)")
             }
         } catch {
             print("ERROR: \(error.localizedDescription)")
