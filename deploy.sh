@@ -2,7 +2,7 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-VERSION="1.6.0"
+VERSION="1.7.0"
 TAG="v${VERSION}"
 DMG_PATH="/Users/h-l/Desktop/STATUS CTRL-v${VERSION}.dmg"
 
@@ -19,7 +19,7 @@ echo "📦 [Git] 正在暂存本地更改并提交..."
 git add AppDelegate.swift DashboardView.swift Makefile PowerMonitor.swift \
     SMCController.swift smchelper.swift MemoryPurger.swift UpdateManager.swift \
     README.md README.en.md CHANGELOG.md deploy.sh release_notes_v${VERSION}.md
-git commit -m "feat: 🚀 STATUS CTRL v${VERSION} — 智能在线升级与温度刻度标准化重构" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
+git commit -m "feat: 🚀 STATUS CTRL v${VERSION} — SMC 极速硬件元数据缓存与高精度电量算法修正" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
 
 # 2. 推送至 GitHub main 分支
 echo "📤 [Git] 正在推送代码至远程仓库 main 分支..."

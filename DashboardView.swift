@@ -15,7 +15,7 @@ struct DashboardView: View {
     @ObservedObject private var updateManager = UpdateManager.shared
     
     // Core Managers
-    private let smc = SMCController()
+    private let smc = SMCController.shared
     
     // Permanent fixed path for secure execution preventing breakage when moving the App bundle
     private var smcHelperPath: String {

@@ -120,7 +120,9 @@ class PowerMonitor {
                 }
             }
             
-            stats.currentCapacity = charge
+            let rawCharge = doubleValue(for: "AppleRawCurrentCapacity", in: dict)
+                       ?? (maxCap <= 100.0 ? (charge / 100.0) * rawMax : charge)
+            stats.currentCapacity = rawCharge
             stats.maxCapacity = rawMax
             stats.designCapacity = designCap
             

@@ -83,8 +83,12 @@ class SMCController {
     // Dynamic Blacklist for missing keys to reduce hardware IO errors
     private var unsupportedKeys = Set<String>()
     private var keyFailCount = [String: Int]()
+    private var keyInfoCache = [String: SMCKeyInfoData]()
     
     init() {
+        if let savedBlacklist = UserDefaults.standard.stringArray(forKey: "SMCUnsupportedKeys") {
+            unsupportedKeys = Set(savedBlacklist)
+        }
         doOpen()
     }
     
@@ -167,13 +171,17 @@ class SMCController {
     
     private func markKeyFailed(_ keyStr: String) {
         cacheLock.lock()
-        defer { cacheLock.unlock() }
         let current = keyFailCount[keyStr] ?? 0
         let next = current + 1
         keyFailCount[keyStr] = next
         if next >= 3 {
             unsupportedKeys.insert(keyStr)
+            let list = Array(unsupportedKeys)
+            cacheLock.unlock()
+            UserDefaults.standard.set(list, forKey: "SMCUnsupportedKeys")
             print("[SMC] Key '\(keyStr)' failed \(next) times. Blacklisting it to eliminate hardware delays.")
+        } else {
+            cacheLock.unlock()
         }
     }
     
@@ -201,23 +209,36 @@ class SMCController {
         
         let key = stringToFourCharCode(keyStr)
         
-        // 1. Get Key Info (size and type)
-        var inputInfo = SMCParamStruct()
-        inputInfo.key = key
-        inputInfo.data8 = 9 // kSMCGetKeyInfo
-        
-        let resInfo = callDriver(&inputInfo)
-        guard resInfo.success else {
-            if !resInfo.lockContention {
-                markKeyFailed(keyStr)
+        var keyInfo: SMCKeyInfoData
+        cacheLock.lock()
+        if let cachedInfo = keyInfoCache[keyStr] {
+            keyInfo = cachedInfo
+            cacheLock.unlock()
+        } else {
+            cacheLock.unlock()
+            // 1. Get Key Info (size and type)
+            var inputInfo = SMCParamStruct()
+            inputInfo.key = key
+            inputInfo.data8 = 9 // kSMCGetKeyInfo
+            
+            let resInfo = callDriver(&inputInfo)
+            guard resInfo.success else {
+                if !resInfo.lockContention {
+                    markKeyFailed(keyStr)
+                }
+                return nil
             }
-            return nil
+            keyInfo = inputInfo.keyInfo
+            
+            cacheLock.lock()
+            keyInfoCache[keyStr] = keyInfo
+            cacheLock.unlock()
         }
         
         // 2. Read the Key Value
         var inputRead = SMCParamStruct()
         inputRead.key = key
-        inputRead.keyInfo = inputInfo.keyInfo
+        inputRead.keyInfo = keyInfo
         inputRead.data8 = 5 // kSMCReadKey
         
         let resRead = callDriver(&inputRead)
@@ -234,19 +255,32 @@ class SMCController {
     func writeKey(_ keyStr: String, bytes: SMCBytes, size: UInt32) -> Bool {
         let key = stringToFourCharCode(keyStr)
         
-        // 1. Get Key Info
-        var inputInfo = SMCParamStruct()
-        inputInfo.key = key
-        inputInfo.data8 = 9 // kSMCGetKeyInfo
-        
-        let resInfo = callDriver(&inputInfo)
-        guard resInfo.success else { return false }
+        var keyInfo: SMCKeyInfoData
+        cacheLock.lock()
+        if let cachedInfo = keyInfoCache[keyStr] {
+            keyInfo = cachedInfo
+            cacheLock.unlock()
+        } else {
+            cacheLock.unlock()
+            // 1. Get Key Info
+            var inputInfo = SMCParamStruct()
+            inputInfo.key = key
+            inputInfo.data8 = 9 // kSMCGetKeyInfo
+            
+            let resInfo = callDriver(&inputInfo)
+            guard resInfo.success else { return false }
+            keyInfo = inputInfo.keyInfo
+            
+            cacheLock.lock()
+            keyInfoCache[keyStr] = keyInfo
+            cacheLock.unlock()
+        }
         
         // 2. Write the Key Value
         var inputWrite = SMCParamStruct()
         inputWrite.key = key
         inputWrite.bytes = bytes
-        inputWrite.keyInfo = inputInfo.keyInfo
+        inputWrite.keyInfo = keyInfo
         inputWrite.keyInfo.dataSize = size
         inputWrite.data8 = 6 // kSMCWriteKey
         
@@ -275,20 +309,33 @@ class SMCController {
         
         let key = stringToFourCharCode(keyStr)
         
-        var inputInfo = SMCParamStruct()
-        inputInfo.key = key
-        inputInfo.data8 = 9 // kSMCGetKeyInfo
-        let resInfo = callDriver(&inputInfo)
-        guard resInfo.success else {
-            if !resInfo.lockContention {
-                markKeyFailed(keyStr)
+        var keyInfo: SMCKeyInfoData
+        cacheLock.lock()
+        if let cachedInfo = keyInfoCache[keyStr] {
+            keyInfo = cachedInfo
+            cacheLock.unlock()
+        } else {
+            cacheLock.unlock()
+            var inputInfo = SMCParamStruct()
+            inputInfo.key = key
+            inputInfo.data8 = 9 // kSMCGetKeyInfo
+            let resInfo = callDriver(&inputInfo)
+            guard resInfo.success else {
+                if !resInfo.lockContention {
+                    markKeyFailed(keyStr)
+                }
+                return defaultVal
             }
-            return defaultVal
+            keyInfo = inputInfo.keyInfo
+            
+            cacheLock.lock()
+            keyInfoCache[keyStr] = keyInfo
+            cacheLock.unlock()
         }
         
         var inputRead = SMCParamStruct()
         inputRead.key = key
-        inputRead.keyInfo = inputInfo.keyInfo
+        inputRead.keyInfo = keyInfo
         inputRead.data8 = 5 // kSMCReadKey
         let resRead = callDriver(&inputRead)
         guard resRead.success else {
@@ -299,7 +346,7 @@ class SMCController {
         }
         
         let b = inputRead.bytes
-        let dataSize = inputInfo.keyInfo.dataSize
+        let dataSize = keyInfo.dataSize
         
         if dataSize == 4 {
             // IEEE 754 float32 (little-endian)
