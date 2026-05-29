@@ -28,8 +28,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "enableStatusBar": true,
             "showStatusBarOnOpen": false,
             "enableAutoIdlePurge": false,
-            "enableAutoIdleOptimize": false
+            "enableAutoIdleOptimize": false,
+            "statusBarDisplayOrder": ["CPU", "RAM", "SSD", "GPU", "Fan", "Net"],
+            "enableStatusBarPolling": false,
+            "statusBarPollingInterval": 3.0,
+            "statusBarPollingAnimation": "fade",
+            "statusBarDisplayLimit": 0
         ])
+        
+        // Listen for preference changes to update the menu bar layout instantly
+        NotificationCenter.default.addObserver(self, selector: #selector(handleDefaultsChange), name: UserDefaults.didChangeNotification, object: nil)
         
         // 1. Popover（左键展开的主面板）
         let popover = NSPopover()
@@ -264,7 +272,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateTelemetryText()
         }
         RunLoop.current.add(telemetryTimer!, forMode: .common)
+        
+        // Register for distributed power status notification to react instantly to plug/unplug (v1.9.6)
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(powerStatusChanged(_:)),
+            name: NSNotification.Name("com.apple.system.powermanagement.powerstatus"),
+            object: nil
+        )
+        
         updateTelemetryText()
+    }
+    
+    @objc private func powerStatusChanged(_ notification: Notification) {
+        print("[PowerStatus] Distributed power status changed notification received, updating telemetry instantly.")
+        updateTelemetryText()
+        // Post local notification to let DashboardView know it should refresh immediately
+        NotificationCenter.default.post(name: NSNotification.Name("com.statusctrl.powerstatuschanged"), object: nil)
     }
     
     private func getGPUUsage() -> Double {
@@ -294,6 +318,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return usage
     }
 
+    @objc private func handleDefaultsChange() {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateTelemetryText()
+        }
+    }
+    
+    // Polling and sequence states (v1.9.1)
+    private var pollingStartIndex: Int = 0
+    private var lastPollingTime: Date = Date()
+    private var lastDisplayedKeys: [String] = []
+
     // State machine trackers for idle purges and optimizations (v1.9.0)
     private var hasAutoPurgedThisIdleSession = false
     private var hasAutoOptimizedThisIdleSession = false
@@ -304,7 +339,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         guard enableAutoPurge || enableAutoOptimize else { return }
         
-        let idleSeconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        let idleSeconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0) ?? .null)
         
         if idleSeconds < 300.0 {
             if hasAutoPurgedThisIdleSession {
@@ -397,7 +432,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    private func padSpeedRight(_ speedStr: String, toLength length: Int = 7) -> String {
+    private func padSpeedRight(_ speedStr: String, toLength length: Int = 5) -> String {
         let paddingCount = length - speedStr.count
         if paddingCount > 0 {
             return speedStr + String(repeating: " ", count: paddingCount)
@@ -437,59 +472,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let displaySsd = min(ssdUsage, 99.0)
         let displayGpu = min(gpuUsage, 99.0)
         
+        // Build all active columns mapped by keys
+        var allActiveColumns: [(key: String, col: (top: String, bottom: String))] = []
+        let displayOrder = UserDefaults.standard.stringArray(forKey: "statusBarDisplayOrder") ?? ["CPU", "RAM", "SSD", "GPU", "Fan", "Net"]
+        
+        for key in displayOrder {
+            switch key {
+            case "CPU":
+                if showCPU || showCPUTemp {
+                    let topStr = showCPU ? String(format: "C:%2.0f%%", displayCpu) : "     "
+                    let bottomStr = showCPUTemp ? String(format: " %2.0f°C", cpuTemp) : "      "
+                    allActiveColumns.append((key, (topStr, bottomStr)))
+                }
+            case "RAM":
+                if showRAM {
+                    let topStr = String(format: "M:%2.0f%%", displayRam)
+                    let bottomStr = String(format: " %2.0f°C", ramTemp)
+                    allActiveColumns.append((key, (topStr, bottomStr)))
+                }
+            case "SSD":
+                if showSSD {
+                    let topStr = String(format: "S:%2.0f%%", displaySsd)
+                    let bottomStr = String(format: " %2.0f°C", ssdTemp)
+                    allActiveColumns.append((key, (topStr, bottomStr)))
+                }
+            case "GPU":
+                if showGPU {
+                    let topStr = String(format: "G:%2.0f%%", displayGpu)
+                    let bottomStr = String(format: " %2.0f°C", gpuTemp)
+                    allActiveColumns.append((key, (topStr, bottomStr)))
+                }
+            case "Fan":
+                if showFan && fanCount > 0 {
+                    let speed = fanSpeed.first ?? 0.0
+                    let topStr = String(format: "F:%4.0f", speed)
+                    let bottomStr = "   RPM"
+                    allActiveColumns.append((key, (topStr, bottomStr)))
+                }
+            case "Net":
+                if showNet {
+                    let upSpeedCompact = formatSpeedCompact(upSpeed)
+                    let upSpeedRaw = "⇡" + upSpeedCompact
+                    let topStr = padSpeedRight(upSpeedRaw, toLength: 5)
+                    
+                    let downSpeedCompact = formatSpeedCompact(downSpeed)
+                    let downSpeedRaw = "⇣" + downSpeedCompact
+                    let bottomStr = padSpeedRight(downSpeedRaw, toLength: 5)
+                    
+                    allActiveColumns.append((key, (topStr, bottomStr)))
+                }
+            default:
+                break
+            }
+        }
+        
+        let enablePolling = UserDefaults.standard.bool(forKey: "enableStatusBarPolling")
+        let pollingInterval = UserDefaults.standard.double(forKey: "statusBarPollingInterval") == 0 ? 3.0 : UserDefaults.standard.double(forKey: "statusBarPollingInterval")
+        let displayLimit = UserDefaults.standard.integer(forKey: "statusBarDisplayLimit")
+        
         var columns: [(top: String, bottom: String)] = []
+        var displayedKeys: [String] = []
         
-        // 1. CPU Slot
-        if showCPU || showCPUTemp {
-            let topStr = showCPU ? String(format: "C:%2.0f%%", displayCpu) : "     "
-            let bottomStr = showCPUTemp ? String(format: " %2.0f°C", cpuTemp) : "      "
-            columns.append((topStr, bottomStr))
-        }
-        
-        // 2. RAM Slot
-        if showRAM {
-            let topStr = String(format: "M:%2.0f%%", displayRam)
-            let bottomStr = String(format: " %2.0f°C", ramTemp)
-            columns.append((topStr, bottomStr))
-        }
-        
-        // 3. SSD Slot
-        if showSSD {
-            let topStr = String(format: "S:%2.0f%%", displaySsd)
-            let bottomStr = String(format: " %2.0f°C", ssdTemp)
-            columns.append((topStr, bottomStr))
-        }
-        
-        // 4. GPU Slot
-        if showGPU {
-            let topStr = String(format: "G:%2.0f%%", displayGpu)
-            let bottomStr = String(format: " %2.0f°C", gpuTemp)
-            columns.append((topStr, bottomStr))
-        }
-        
-        // 5. Fan Slot
-        if showFan && fanCount > 0 {
-            let speed = fanSpeed.first ?? 0.0
-            let topStr = String(format: "F:%4.0f", speed)
-            let bottomStr = "   RPM"
-            columns.append((topStr, bottomStr))
-        }
-        
-        // 6. Network Slot
-        if showNet {
-            let upSpeedCompact = formatSpeedCompact(upSpeed)
-            let upSpeedRaw = "⇡" + upSpeedCompact
-            let topStr = padSpeedRight(upSpeedRaw, toLength: 7)
-            
-            let downSpeedCompact = formatSpeedCompact(downSpeed)
-            let downSpeedRaw = "⇣" + downSpeedCompact
-            let bottomStr = padSpeedRight(downSpeedRaw, toLength: 7)
-            
-            columns.append((topStr, bottomStr))
-        }
-        
-        if columns.isEmpty {
+        if allActiveColumns.isEmpty {
             columns.append(("CTRL ", "STAT "))
+            displayedKeys.append("EMPTY")
+        } else {
+            if displayLimit > 0 && displayLimit < allActiveColumns.count {
+                if enablePolling {
+                    let now = Date()
+                    if now.timeIntervalSince(self.lastPollingTime) >= pollingInterval {
+                        self.pollingStartIndex = (self.pollingStartIndex + 1) % allActiveColumns.count
+                        self.lastPollingTime = now
+                    }
+                    for i in 0..<displayLimit {
+                        let idx = (self.pollingStartIndex + i) % allActiveColumns.count
+                        columns.append(allActiveColumns[idx].col)
+                        displayedKeys.append(allActiveColumns[idx].key)
+                    }
+                } else {
+                    for i in 0..<displayLimit {
+                        columns.append(allActiveColumns[i].col)
+                        displayedKeys.append(allActiveColumns[i].key)
+                    }
+                }
+            } else {
+                columns = allActiveColumns.map { $0.col }
+                displayedKeys = allActiveColumns.map { $0.key }
+            }
         }
         
         let line1 = columns.map { $0.top }.joined(separator: " ")
@@ -513,7 +582,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let requiredWidth = ceil(totalSize.width) + (showLogo ? 30 : 10)
         self.statusBarItem?.length = requiredWidth
         
-        self.statusBarCustomView?.attributedString = attrString
+        let animationType = UserDefaults.standard.string(forKey: "statusBarPollingAnimation") ?? "fade"
+        
+        if displayedKeys != lastDisplayedKeys {
+            lastDisplayedKeys = displayedKeys
+            self.statusBarCustomView?.setAttributedStringAnimated(attrString, animationType: animationType)
+        } else {
+            if self.statusBarCustomView?.currentAnimationTimer == nil {
+                self.statusBarCustomView?.attributedString = attrString
+            } else {
+                self.statusBarCustomView?.updateTargetStringDuringAnimation(attrString)
+            }
+        }
     }
     
     func getRAMUsage() -> Double {
@@ -1033,7 +1113,7 @@ struct SettingsView: View {
 // MARK: - About View
 
 struct AboutView: View {
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.0"
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.1"
     
     var body: some View {
         VStack(spacing: 20) {
@@ -1239,6 +1319,90 @@ class StatusBarCustomView: NSView {
     // 缓存精致的程序 Logo 图像
     var logoImage: NSImage?
     
+    // 轮询动画属性 (v1.9.1)
+    private var targetAttributedString: NSAttributedString?
+    var currentAnimationTimer: Timer?
+    var drawOpacity: CGFloat = 1.0
+    var drawOffsetY: CGFloat = 0.0
+    
+    func setAttributedStringAnimated(_ newAttrStr: NSAttributedString, animationType: String) {
+        guard animationType != "none" else {
+            self.attributedString = newAttrStr
+            self.drawOpacity = 1.0
+            self.drawOffsetY = 0.0
+            return
+        }
+        
+        currentAnimationTimer?.invalidate()
+        currentAnimationTimer = nil
+        
+        self.targetAttributedString = newAttrStr
+        let steps = 12
+        let stepInterval = 0.016
+        var currentStep = 0
+        
+        if animationType == "fade" {
+            currentAnimationTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] t in
+                guard let self = self else {
+                    t.invalidate()
+                    return
+                }
+                currentStep += 1
+                if currentStep <= steps {
+                    self.drawOpacity = CGFloat(steps - currentStep) / CGFloat(steps)
+                    self.needsDisplay = true
+                } else if currentStep == steps + 1 {
+                    self.attributedString = self.targetAttributedString
+                    self.drawOpacity = 0.0
+                    self.needsDisplay = true
+                } else if currentStep <= 2 * steps + 1 {
+                    self.drawOpacity = CGFloat(currentStep - (steps + 1)) / CGFloat(steps)
+                    self.needsDisplay = true
+                } else {
+                    self.drawOpacity = 1.0
+                    t.invalidate()
+                    self.currentAnimationTimer = nil
+                }
+            }
+        } else if animationType == "slide" {
+            currentAnimationTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] t in
+                guard let self = self else {
+                    t.invalidate()
+                    return
+                }
+                currentStep += 1
+                if currentStep <= steps {
+                    self.drawOffsetY = -CGFloat(currentStep) * (20.0 / CGFloat(steps))
+                    self.drawOpacity = CGFloat(steps - currentStep) / CGFloat(steps)
+                    self.needsDisplay = true
+                } else if currentStep == steps + 1 {
+                    self.attributedString = self.targetAttributedString
+                    self.drawOffsetY = 20.0
+                    self.drawOpacity = 0.0
+                    self.needsDisplay = true
+                } else if currentStep <= 2 * steps + 1 {
+                    let progress = CGFloat(currentStep - (steps + 1)) / CGFloat(steps)
+                    self.drawOffsetY = 20.0 - (progress * 20.0)
+                    self.drawOpacity = progress
+                    self.needsDisplay = true
+                } else {
+                    self.drawOffsetY = 0.0
+                    self.drawOpacity = 1.0
+                    t.invalidate()
+                    self.currentAnimationTimer = nil
+                }
+            }
+        }
+        
+        if let timer = currentAnimationTimer {
+            RunLoop.current.add(timer, forMode: .common)
+        }
+    }
+    
+    func updateTargetStringDuringAnimation(_ newAttrStr: NSAttributedString) {
+        self.targetAttributedString = newAttrStr
+    }
+    
     // 允许点击穿透，让下方的 NSStatusBarButton 正常接收所有鼠标点击和高亮状态切换
     override func hitTest(_ point: NSPoint) -> NSView? {
         return nil
@@ -1266,17 +1430,21 @@ class StatusBarCustomView: NSView {
         guard let attrStr = attributedString else { return }
         let totalSize = attrStr.size()
         
-        // 状态栏高度通常为 22pt，文字总高度约 16.8pt。
-        // 原绝对垂直居中 y 是 (bounds.height - totalSize.height) / 2.0
-        // 按照用户指示“向下靠下显示”，我们在此基础上在 y 轴向下挪动 1.5pt，使其完美贴合且具有阅读沉淀感
-        let y = (bounds.height - totalSize.height) / 2.0 - 1.5
-        
-        // 文字的起始 x 坐标紧接在 Logo 区域右侧
+        let y = (bounds.height - totalSize.height) / 2.0 - 1.5 + drawOffsetY
         let x: CGFloat = showLogo ? 24.0 : 4.0
         
         let drawRect = NSRect(x: x, y: y, width: totalSize.width, height: totalSize.height)
         
-        // 渲染文本
+        if drawOpacity < 1.0 {
+            NSGraphicsContext.current?.saveGraphicsState()
+            let context = NSGraphicsContext.current?.cgContext
+            context?.setAlpha(drawOpacity)
+        }
+        
         attrStr.draw(in: drawRect)
+        
+        if drawOpacity < 1.0 {
+            NSGraphicsContext.current?.restoreGraphicsState()
+        }
     }
 }

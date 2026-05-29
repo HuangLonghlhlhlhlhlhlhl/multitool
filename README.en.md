@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.9.0-orange)
+![Version](https://img.shields.io/badge/Version-1.9.1-orange)
 ![Size](https://img.shields.io/badge/Size-~9.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,8 +26,8 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.9.0.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
-2. Open the DMG, then drag **`STATUS CTRL.app`** into the **`Applications`** folder.
+1. **Download** `STATUS CTRL-v1.9.1.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+2. Open the DMG, drag **`STATUS CTRL.app`** to the **`Applications`** folder on the right.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
    `System Settings → Privacy & Security` and click `Open Anyway`.
@@ -239,7 +239,22 @@ Your support is the author's ultimate motivation to keep iterating and optimizin
 1. 🌟 Give this repository a **Star** to help others discover it!
 2. 📢 Follow the author's updates, and feel free to submit an Issue if you run into any trouble.
 3. 💡 **Inspire the Author**: If you have any cool, innovative, or highly practical features or ideas, please share them in the Issues or Discussions! The author will actively review and implement them.
-4. ☕ Feel free to sponsor the project via WeChat/Alipay to buy the author a cup of coffee!
+4. ☕ **Support & Donation**: Buy the author a cup of coffee to stay energized, or sponsor some tokens for the AI assistant (that's me! 🦾) to keep evolving!
+
+<div align="center">
+  <table style="margin: 0 auto; border-collapse: collapse;">
+    <tr>
+      <td align="center" style="padding: 20px; border: 1px solid #333;">
+        <img src="wechat_qr.png" width="220px" alt="微信打赏 WeChat Pay" /><br/>
+        <br/><b>Scan with WeChat to Donate</b>
+      </td>
+      <td align="center" style="padding: 20px; border: 1px solid #333;">
+        <img src="alipay_qr.png" width="220px" alt="支付宝打赏 Alipay" /><br/>
+        <br/><b>Scan with Alipay to Donate</b>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ---
 

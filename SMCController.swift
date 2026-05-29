@@ -905,21 +905,33 @@ class SMCController {
     
     // Enable/Disable battery charging limit
     func setBatteryChargeLimit(_ limit: Int, active: Bool) -> Bool {
-        let isAppleSilicon = readKey("FS! ") == nil
         var success = false
         
-        if isAppleSilicon {
-            let key = "CHWA"
-            var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        // 1. Try BCLM (standard on Intel and supported on M1 Macbooks)
+        let bclmKey = "BCLM"
+        var bclmBytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-            bytes.0 = active ? 1 : 0
-            success = writeKey(key, bytes: bytes, size: 1)
-        } else {
-            let key = "BCLM"
-            var bytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        bclmBytes.0 = active ? UInt8(limit) : 100
+        if writeKey(bclmKey, bytes: bclmBytes, size: 1) {
+            success = true
+        }
+        
+        // 2. Try CHWA (supported on newer M-series Macbooks)
+        let chwaKey = "CHWA"
+        var chwaBytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-            bytes.0 = active ? UInt8(limit) : 100
-            success = writeKey(key, bytes: bytes, size: 1)
+        chwaBytes.0 = active ? 1 : 0
+        if writeKey(chwaKey, bytes: chwaBytes, size: 1) {
+            success = true
+        }
+        
+        // 3. Try CH0B (supported on M1/M2/M3 newer hardware)
+        let ch0bKey = "CH0B"
+        var ch0bBytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        ch0bBytes.0 = active ? 1 : 0
+        if writeKey(ch0bKey, bytes: ch0bBytes, size: 1) {
+            success = true
         }
         
         if success {
@@ -932,20 +944,10 @@ class SMCController {
     
     // Read current battery charge limit setting
     func getBatteryChargeLimit() -> (limit: Int, active: Bool) {
-        let isAppleSilicon = readKey("FS! ") == nil
-        
-        if isAppleSilicon {
-            if let bytes = readKey("CHWA") {
-                let enabled = bytes.0 != 0
-                let val = (limit: 80, active: enabled)
-                cacheLock.lock()
-                _cachedBatteryLimit = val
-                cacheLock.unlock()
-                return val
-            }
-        } else {
-            if let bytes = readKey("BCLM") {
-                let val = Int(bytes.0)
+        // 1. Try BCLM
+        if let bytes = readKey("BCLM") {
+            let val = Int(bytes.0)
+            if val > 0 && val <= 100 {
                 let active = val < 100
                 let limitVal = (limit: val, active: active)
                 cacheLock.lock()
@@ -953,6 +955,26 @@ class SMCController {
                 cacheLock.unlock()
                 return limitVal
             }
+        }
+        
+        // 2. Try CHWA
+        if let bytes = readKey("CHWA") {
+            let enabled = bytes.0 != 0
+            let limitVal = (limit: 80, active: enabled)
+            cacheLock.lock()
+            _cachedBatteryLimit = limitVal
+            cacheLock.unlock()
+            return limitVal
+        }
+        
+        // 3. Try CH0B
+        if let bytes = readKey("CH0B") {
+            let enabled = bytes.0 != 0
+            let limitVal = (limit: 80, active: enabled)
+            cacheLock.lock()
+            _cachedBatteryLimit = limitVal
+            cacheLock.unlock()
+            return limitVal
         }
         
         cacheLock.lock()

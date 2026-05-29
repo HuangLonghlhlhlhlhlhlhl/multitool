@@ -3,7 +3,7 @@ import Foundation
 func main() {
     let args = CommandLine.arguments
     guard args.count >= 2 else {
-        print("Usage: smchelper <manual|speed|charge|power|sleep|smart|optimize> <params...>")
+        print("Usage: smchelper <manual|speed|charge|readcharge|power|sleep|smart|optimize> <params...>")
         exit(1)
     }
     
@@ -61,6 +61,10 @@ func main() {
         
         let ok = smc.setBatteryChargeLimit(limit, active: active != 0)
         print(ok ? "OK" : "ERROR")
+        
+    } else if command == "readcharge" {
+        let current = smc.getBatteryChargeLimit()
+        print("\(current.limit) \(current.active ? 1 : 0)")
         
     } else if command == "power" {
         guard args.count >= 4 else {

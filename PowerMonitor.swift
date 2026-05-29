@@ -157,6 +157,7 @@ class PowerMonitor {
             stats.hardwareModel = rawModel
             stats.friendlyModelName = getFriendlyModelName(model: rawModel)
             
+            var foundUsbCPower = false
             if let portInfo = dict["PortControllerInfo"] as? [[String: Any]] {
                 stats.rightPortCount = max(0, portInfo.count - 2)
                 stats.hasRightPorts = stats.rightPortCount > 0
@@ -169,13 +170,9 @@ class PowerMonitor {
                         // Detect port actively negotiating power or hosting downstream delivery
                         if maxPower > 0 || dnSt > 0 {
                             stats.activePortIndex = index
+                            foundUsbCPower = true
                             break
                         }
-                    }
-                    
-                    // Fallback to L1 if no port reported power contract but adapter is connected
-                    if stats.activePortIndex == -1 && !portInfo.isEmpty {
-                        stats.activePortIndex = 0
                     }
                 }
             } else {
@@ -195,9 +192,17 @@ class PowerMonitor {
                     stats.rightPortCount = 0
                 }
                 stats.hasRightPorts = stats.rightPortCount > 0
+            }
+            
+            if stats.isConnected {
+                // Smart MagSafe detection
+                let adapterNameLower = stats.adapterName.lowercased()
+                let isMagSafe = adapterNameLower.contains("magsafe") || !foundUsbCPower
                 
-                if stats.isConnected {
-                    stats.activePortIndex = 0
+                if isMagSafe {
+                    stats.activePortIndex = 99 // 99 represents MagSafe!
+                } else if stats.activePortIndex == -1 {
+                    stats.activePortIndex = 0 // Fallback to L1
                 }
             }
         }

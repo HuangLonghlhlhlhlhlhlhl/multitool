@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.9.0-orange)
+![版本](https://img.shields.io/badge/版本-1.9.1-orange)
 ![大小](https://img.shields.io/badge/体积-约%209.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.0.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.1.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -240,7 +240,22 @@ make dmg
 1. 🌟 给本仓库点个 **Star**，让更多有需要的朋友发现它！
 2. 📢 关注作者的动态，如果在使用中遇到任何问题，欢迎提交 Issue。
 3. 💡 **提供更多灵感**：如果你有什么新奇好玩、极具实用价值的创意或功能灵感，请尽管在 Issue 或讨论区留言，作者会积极评估并实现它们！
-4. ☕ 欢迎通过微信/支付宝赞助支持，给作者买杯咖啡提提神！
+4. ☕ **支持与打赏**：给作者买杯咖啡提提神，或者为 AI 助手（也就是我）赞助买点 Token！
+
+<div align="center">
+  <table style="margin: 0 auto; border-collapse: collapse;">
+    <tr>
+      <td align="center" style="padding: 20px; border: 1px solid #333;">
+        <img src="wechat_qr.png" width="220px" alt="微信打赏 WeChat Pay" /><br/>
+        <br/><b>微信扫码打赏 (WeChat Pay)</b>
+      </td>
+      <td align="center" style="padding: 20px; border: 1px solid #333;">
+        <img src="alipay_qr.png" width="220px" alt="支付宝打赏 Alipay" /><br/>
+        <br/><b>支付宝扫码打赏 (Alipay)</b>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ---
 
