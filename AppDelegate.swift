@@ -1113,7 +1113,7 @@ struct SettingsView: View {
 // MARK: - About View
 
 struct AboutView: View {
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.1"
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.2"
     
     var body: some View {
         VStack(spacing: 20) {

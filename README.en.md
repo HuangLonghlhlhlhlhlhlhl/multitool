@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.9.1-orange)
+![Version](https://img.shields.io/badge/Version-1.9.2-orange)
 ![Size](https://img.shields.io/badge/Size-~9.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.9.1.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.9.2.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, drag **`STATUS CTRL.app`** to the **`Applications`** folder on the right.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  

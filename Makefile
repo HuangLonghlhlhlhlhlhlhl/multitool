@@ -5,7 +5,7 @@ DESKTOP_APP=/Users/h-l/Desktop/$(DESKTOP_APP_NAME).app
 CONTENTS_DIR=$(APP_BUNDLE)/Contents
 MACOS_DIR=$(CONTENTS_DIR)/MacOS
 RESOURCES_DIR=$(CONTENTS_DIR)/Resources
-VERSION=1.9.1
+VERSION=1.9.2
 DMG_NAME=$(DESKTOP_APP_NAME)-v$(VERSION).dmg
 DMG_STAGING=dmg_staging
 
@@ -94,6 +94,8 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo '    <string>© 2026 HL. All rights reserved.</string>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <key>CFBundleIconFile</key>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '    <string>AppIcon</string>' >> $(CONTENTS_DIR)/Info.plist
+	@echo '    <key>NSBluetoothAlwaysUsageDescription</key>' >> $(CONTENTS_DIR)/Info.plist
+	@echo '    <string>STATUS CTRL 需要使用蓝牙扫描并显示周边的蓝牙设备与空间物理分布雷达。</string>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '</dict>' >> $(CONTENTS_DIR)/Info.plist
 	@echo '</plist>' >> $(CONTENTS_DIR)/Info.plist
 	@echo "[Build] ✅ $(APP_BUNDLE) compiled — $$(lipo -info $(MACOS_DIR)/$(APP_NAME))"
