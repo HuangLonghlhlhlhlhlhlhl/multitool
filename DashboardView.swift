@@ -124,6 +124,17 @@ struct DashboardView: View {
     @Namespace private var tabNamespace
     @State private var selectedTab: Int = 0 // 0: 清理释放, 1: 系统功能, 2: 系统健康, 3: 网络蓝牙, 4: 隐私守护
     @State private var wirelessMode: Int = 0 // 0: Wi-Fi, 1: 蓝牙
+    @State private var selectedWirelessSubTab: Int = 0 // 0: 空间雷达, 1: 测速与监控
+    @State private var radarHeading: Double = 0.0 // Compass rose heading (degrees)
+    @State private var userPosition: CGPoint = .zero // Physical walk position
+    @State private var zoomScale: CGFloat = 1.0 // Zoom scale for radar
+    @State private var keyMonitor: Any? = nil // Key monitor handle for keyboard walking
+    @State private var scanAngle: Double = 0.0
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var selectedWiFi: WiFiNetworkInfo? = nil
+    @State private var selectedBT: BluetoothDeviceInfo? = nil
+    @State private var hoveredWiFiId: UUID? = nil
+    @State private var hoveredBTId: UUID? = nil
     @StateObject private var bluetoothScanner = BluetoothScanner()
     @State private var expandedBluetoothId: String? = nil
     @StateObject private var speedTester = NetworkSpeedTester.shared
@@ -672,7 +683,7 @@ struct DashboardView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(width: 680, height: 530)
+        .frame(minWidth: 680, maxWidth: .infinity, minHeight: 530, maxHeight: .infinity)
         .background(
             ZStack {
                 Color(red: 0.08, green: 0.09, blue: 0.12)
@@ -782,7 +793,7 @@ struct DashboardView: View {
                 .transition(.opacity)
             }
         }
-        .frame(width: 680, height: 530)
+        .frame(minWidth: 680, maxWidth: .infinity, minHeight: 530, maxHeight: .infinity)
         .background(
             ZStack {
                 Color(red: 0.08, green: 0.09, blue: 0.12)
@@ -807,9 +818,78 @@ struct DashboardView: View {
                 if screenPrivacy { addPrivacyLog("防截屏/录屏安全保护已激活") }
                 if autoActionPrivacy { addPrivacyLog("键盘物理防注入卫士已上线") }
             }
+            
+            // Start scanning & sweeping animations for Spatial Radar
+            withAnimation(.linear(duration: 4.5).repeatForever(autoreverses: false)) {
+                scanAngle = 360.0
+            }
+            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) {
+                pulseScale = 2.0
+            }
+            
+            // Register local keyboard monitor for walk simulation & compass rotations
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if selectedTab == 3 && selectedWirelessSubTab == 0 {
+                    if let chars = event.charactersIgnoringModifiers {
+                        if chars == "-" {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = max(0.5, zoomScale - 0.1)
+                            }
+                            return nil
+                        } else if chars == "=" || chars == "+" {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = min(3.0, zoomScale + 0.1)
+                            }
+                            return nil
+                        } else if chars == "w" || chars == "W" || event.keyCode == 126 {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                userPosition.y += 0.5
+                            }
+                            return nil
+                        } else if chars == "s" || chars == "S" || event.keyCode == 125 {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                userPosition.y -= 0.5
+                            }
+                            return nil
+                        } else if chars == "a" || chars == "A" || event.keyCode == 123 {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                userPosition.x -= 0.5
+                            }
+                            return nil
+                        } else if chars == "d" || chars == "D" || event.keyCode == 124 {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                userPosition.x += 0.5
+                            }
+                            return nil
+                        } else if chars == "q" || chars == "Q" {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                radarHeading = (radarHeading - 5.0).truncatingRemainder(dividingBy: 360.0)
+                            }
+                            return nil
+                        } else if chars == "e" || chars == "E" {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                radarHeading = (radarHeading + 5.0).truncatingRemainder(dividingBy: 360.0)
+                            }
+                            return nil
+                        } else if chars == "r" || chars == "R" {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                userPosition = .zero
+                                radarHeading = 0.0
+                                zoomScale = 1.0
+                            }
+                            return nil
+                        }
+                    }
+                }
+                return event
+            }
         }
         .onDisappear {
             isPanelVisible = false
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
         }
         .onReceive(statsTimer) { _ in refreshStats() }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.powerstatuschanged"))) { _ in
@@ -1537,138 +1617,139 @@ struct DashboardView: View {
                         }
                         .padding(.horizontal, 4)
                         
-                        VStack(spacing: 8) {
-                            if activeProcesses.isEmpty {
-                                // Loading / Empty state
-                                VStack(spacing: 12) {
-                                    Spacer()
-                                    ProgressView()
-                                        .controlSize(.regular)
-                                    Text("正在分析系统活跃应用...")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.white.opacity(0.5))
-                                    Spacer()
-                                }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .background(Color.white.opacity(0.02))
-                                .cornerRadius(12)
-                            } else {
-                                // Display List
-                                let enumerated = Array(activeProcesses.enumerated())
-                                ForEach(enumerated, id: \.element.id) { index, proc in
-                                    let rank = index + 1
-                                    HStack(spacing: 12) {
-                                        // Rank Badge
-                                        ZStack {
-                                            Circle()
-                                                .fill(rank == 1 
-                                                    ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
-                                                    : (rank == 2 
-                                                        ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
-                                                        : (rank == 3 
-                                                            ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
-                                                            : LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
-                                                        )
-                                                    )
-                                                )
-                                                .frame(width: 24, height: 24)
-                                                .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? Color.white.opacity(0.2) : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
-                                            
-                                            Text("\(rank)")
-                                                .font(.system(size: 11, weight: .bold, design: .rounded))
-                                                .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .white.opacity(0.6))
-                                        }
-                                        
-                                        // Mini icon mockup
-                                        ZStack {
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .fill(LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
-                                                .frame(width: 28, height: 28)
-                                            
-                                            Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
-                                                .font(.system(size: 12))
-                                                .foregroundColor(.white.opacity(0.8))
-                                        }
-                                        
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(proc.name)
-                                                .font(.system(size: 12, weight: .semibold))
-                                                .foregroundColor(.white)
-                                                .lineLimit(1)
-                                            
-                                            // RAM and CPU pill badges
-                                            HStack(spacing: 8) {
-                                                // RAM usage
-                                                HStack(spacing: 3) {
-                                                    Image(systemName: "memorychip")
-                                                        .font(.system(size: 9))
-                                                    Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
-                                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                                }
-                                                .foregroundColor(.cyan)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Color.cyan.opacity(0.1))
-                                                .cornerRadius(4)
-                                                
-                                                // CPU usage
-                                                HStack(spacing: 3) {
-                                                    Image(systemName: "cpu")
-                                                        .font(.system(size: 9))
-                                                    Text(String(format: "%.1f%%", proc.cpuPercent))
-                                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                                }
-                                                .foregroundColor(.purple)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Color.purple.opacity(0.1))
-                                                .cornerRadius(4)
-                                            }
-                                        }
-                                        
+                        ScrollView(.vertical, showsIndicators: false) {
+                            VStack(spacing: 8) {
+                                if activeProcesses.isEmpty {
+                                    // Loading / Empty state
+                                    VStack(spacing: 12) {
                                         Spacer()
-                                        
-                                        // Terminate Process Button
-                                        Button(action: {
-                                            MemoryPurger.terminateProcess(pids: proc.pids)
-                                            // Instantly refresh list
-                                            DispatchQueue.global(qos: .userInitiated).async {
-                                                let updated = MemoryPurger.getActiveProcessMemoryList()
-                                                DispatchQueue.main.async {
-                                                    withAnimation(.easeInOut(duration: 0.3)) {
-                                                        self.activeProcesses = updated
-                                                    }
-                                                }
-                                            }
-                                        }) {
+                                        ProgressView()
+                                            .controlSize(.regular)
+                                        Text("正在分析 system 活跃应用...")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.white.opacity(0.5))
+                                        Spacer()
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 280)
+                                    .background(Color.white.opacity(0.02))
+                                    .cornerRadius(12)
+                                } else {
+                                    // Display List
+                                    let enumerated = Array(activeProcesses.enumerated())
+                                    ForEach(enumerated, id: \.element.id) { index, proc in
+                                        let rank = index + 1
+                                        HStack(spacing: 12) {
+                                            // Rank Badge
                                             ZStack {
                                                 Circle()
-                                                    .fill(Color.red.opacity(0.15))
-                                                    .frame(width: 22, height: 22)
+                                                    .fill(rank == 1 
+                                                        ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
+                                                        : (rank == 2 
+                                                            ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
+                                                            : (rank == 3 
+                                                                ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
+                                                                : LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+                                                            )
+                                                        )
+                                                    )
+                                                    .frame(width: 24, height: 24)
+                                                    .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? Color.white.opacity(0.2) : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
                                                 
-                                                Image(systemName: "xmark")
-                                                    .font(.system(size: 9, weight: .bold))
-                                                    .foregroundColor(.red.opacity(0.9))
+                                                Text("\(rank)")
+                                                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                                                    .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .white.opacity(0.6))
                                             }
+                                            
+                                            // Mini icon mockup
+                                            ZStack {
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .fill(LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                                                    .frame(width: 28, height: 28)
+                                                
+                                                Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
+                                                    .font(.system(size: 12))
+                                                    .foregroundColor(.white.opacity(0.8))
+                                            }
+                                            
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(proc.name)
+                                                    .font(.system(size: 12, weight: .semibold))
+                                                    .foregroundColor(.white)
+                                                    .lineLimit(1)
+                                                
+                                                // RAM and CPU pill badges
+                                                HStack(spacing: 8) {
+                                                    // RAM usage
+                                                    HStack(spacing: 3) {
+                                                        Image(systemName: "memorychip")
+                                                            .font(.system(size: 9))
+                                                        Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
+                                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                                    }
+                                                    .foregroundColor(.cyan)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.cyan.opacity(0.1))
+                                                    .cornerRadius(4)
+                                                    
+                                                    // CPU usage
+                                                    HStack(spacing: 3) {
+                                                        Image(systemName: "cpu")
+                                                            .font(.system(size: 9))
+                                                        Text(String(format: "%.1f%%", proc.cpuPercent))
+                                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                                    }
+                                                    .foregroundColor(.purple)
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.purple.opacity(0.1))
+                                                    .cornerRadius(4)
+                                                }
+                                            }
+                                            
+                                            Spacer()
+                                            
+                                            // Terminate Process Button
+                                            Button(action: {
+                                                MemoryPurger.terminateProcess(pids: proc.pids)
+                                                // Instantly refresh list
+                                                DispatchQueue.global(qos: .userInitiated).async {
+                                                    let updated = MemoryPurger.getActiveProcessMemoryList()
+                                                    DispatchQueue.main.async {
+                                                        withAnimation(.easeInOut(duration: 0.3)) {
+                                                            self.activeProcesses = updated
+                                                        }
+                                                    }
+                                                }
+                                            }) {
+                                                ZStack {
+                                                    Circle()
+                                                        .fill(Color.red.opacity(0.15))
+                                                        .frame(width: 22, height: 22)
+                                                    
+                                                    Image(systemName: "xmark")
+                                                        .font(.system(size: 9, weight: .bold))
+                                                        .foregroundColor(.red.opacity(0.9))
+                                                }
+                                            }
+                                            .buttonStyle(TerminateButtonStyle())
+                                            .focusable(false)
+                                            .help("停止运行程序")
                                         }
-                                        .buttonStyle(TerminateButtonStyle())
-                                        .focusable(false)
-                                        .help("停止运行程序")
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(Color.white.opacity(0.02))
+                                        .cornerRadius(10)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                                        )
                                     }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.white.opacity(0.02))
-                                    .cornerRadius(10)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .stroke(Color.white.opacity(0.04), lineWidth: 1)
-                                    )
                                 }
-                                
-                                Spacer()
                             }
                         }
-                        .frame(maxHeight: .infinity)
+                        .frame(height: 310)
                     }
                     .frame(maxWidth: .infinity)
                 }
@@ -1698,372 +1779,605 @@ struct DashboardView: View {
     }
     
     // ── Dedicated Network Status Tab View (v1.9.6 layout with Picker & Radars) ──
+    // ── Dedicated Network Status Tab View (v1.9.6 layout with Picker & Radars) ──
     private var networkStatusPageView: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Left Column: Speed Tester & Bandwidth Radar
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 12) {
-                    // Card 1: Network Speed Tester Widget
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            Image(systemName: "gauge.medium.badge.plus")
-                                .font(.system(size: 14))
-                                .foregroundColor(.cyan)
-                            Text("网络连接与高可用速率测试")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                            Spacer()
-                            Text("上次测试: \(speedTester.lastTestTime)")
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.4))
+        VStack(spacing: 12) {
+            // High-End Wireless Sub-Tab Picker
+            Picker("", selection: $selectedWirelessSubTab) {
+                Text("📡 空间物理定位雷达").tag(0)
+                Text("⚡️ 流量监控与高可用测速").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            
+            if selectedWirelessSubTab == 0 {
+                // Tab 0: 📡 空间定位雷达 (Spatial Radar Dashboard)
+                HStack(alignment: .top, spacing: 16) {
+                    // Left Column (takes remaining space): Interactive Cockpit Radar
+                    spatialRadarCockpitView
+                    
+                    // Right Column (fixed width 300): Filterable Scanned Devices List
+                    spatialDevicesListView
+                }
+                .padding(.horizontal, 16)
+            } else {
+                // Tab 1: ⚡️ 流量监控与测速 (Speed Test & Traffic Rankings)
+                HStack(alignment: .top, spacing: 16) {
+                    // Left: Network Speed Tester Widget
+                    speedTesterWidgetView
+                        .frame(maxWidth: .infinity)
+                    
+                    // Right: Top 10 Active connection process rankings
+                    activeProcessTrafficView
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .padding(.bottom, 12)
+        .popover(item: $selectedWiFi) { selectedNet in
+            WiFiDetailView(net: selectedNet)
+        }
+        .popover(item: $selectedBT) { selectedDev in
+            BluetoothDetailView(dev: selectedDev)
+        }
+    }
+    
+    // Computed property for Compass cardinal readings
+    private var headingCardinalDirection: String {
+        let degrees = (radarHeading.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        switch degrees {
+        case 337.5...360.0, 0.0..<22.5: return "北 (N)"
+        case 22.5..<67.5: return "东北 (NE)"
+        case 67.5..<112.5: return "东 (E)"
+        case 112.5..<157.5: return "东南 (SE)"
+        case 157.5..<202.5: return "南 (S)"
+        case 202.5..<247.5: return "西南 (SW)"
+        case 247.5..<292.5: return "西 (W)"
+        case 292.5..<337.5: return "西北 (NW)"
+        default: return "北 (N)"
+        }
+    }
+    
+    private var spatialRadarCockpitView: some View {
+        let headingDegrees = Int(radarHeading.truncatingRemainder(dividingBy: 360) + 360) % 360
+        let headingString = String(format: "%03d°", headingDegrees)
+        let coordXString = String(format: "%.1fm", userPosition.x)
+        let coordYString = String(format: "%.1fm", userPosition.y)
+        
+        return VStack(spacing: 12) {
+            ZStack {
+                // Background glassmorphic radial circle
+                Circle()
+                    .fill(Color.black.opacity(0.35))
+                    .frame(width: 240, height: 240)
+                
+                // Concentric circles representing distance divisions
+                ForEach([80, 160, 240], id: \.self) { diameter in
+                    Circle()
+                        .stroke(Color.cyan.opacity(0.12), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [2, 4], dashPhase: 0))
+                        .frame(width: CGFloat(diameter), height: CGFloat(diameter))
+                }
+                
+                // Grid crosshairs
+                Path { path in
+                    path.move(to: CGPoint(x: 120, y: 0))
+                    path.addLine(to: CGPoint(x: 120, y: 240))
+                    path.move(to: CGPoint(x: 0, y: 120))
+                    path.addLine(to: CGPoint(x: 240, y: 120))
+                }
+                .stroke(Color.cyan.opacity(0.08), lineWidth: 1)
+                
+                // Sweeping rotating radar laser
+                Circle()
+                    .fill(
+                        AngularGradient(colors: [.cyan.opacity(0.2), .clear], center: .center, angle: .degrees(0))
+                    )
+                    .frame(width: 240, height: 240)
+                    .rotationEffect(.degrees(scanAngle))
+                
+                // Compass Rose Ring (cardinal N, S, E, W markers rotated by -radarHeading)
+                Group {
+                    Text("N")
+                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.8))
+                        .offset(x: 0, y: -108)
+                    
+                    Text("S")
+                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.8))
+                        .offset(x: 0, y: 108)
+                    
+                    Text("E")
+                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.8))
+                        .offset(x: 108, y: 0)
+                    
+                    Text("W")
+                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.8))
+                        .offset(x: -108, y: 0)
+                }
+                .rotationEffect(.degrees(-radarHeading))
+                
+                // Plot Node Points inside the Radar
+                Group {
+                    if wirelessMode == 0 {
+                        // Plot Wi-Fi nodes (scaled up for radar diameter)
+                        ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
+                            WiFiRadarChartNodeView(
+                                idx: idx,
+                                net: wifiScanner.scanResults[idx],
+                                totalCount: wifiScanner.scanResults.count,
+                                zoomScale: zoomScale,
+                                userPosition: userPosition,
+                                radarHeading: radarHeading,
+                                hoveredWiFiId: $hoveredWiFiId,
+                                selectedWiFi: $selectedWiFi,
+                                isAnimating: true
+                            )
+                            .scaleEffect(1.6)
                         }
-                        
-                        // Selectable speed test nodes picker (v1.9.6)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("选择测速节点服务器:")
-                                .font(.system(size: 9.5))
-                                .foregroundColor(.white.opacity(0.4))
-                            
-                            Picker("", selection: $speedTester.selectedNodeId) {
-                                ForEach(speedTester.nodes) { node in
-                                    Text("\(node.name) (\(node.provider))").tag(node.id)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 2)
-                        }
-                        .padding(8)
-                        .background(Color.white.opacity(0.02))
-                        .cornerRadius(8)
-                        
-                        HStack(spacing: 16) {
-                            // Left Speed gauge rings
-                            VStack(spacing: 6) {
-                                Text("下载速率")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.4))
-                                Text(String(format: "%.2f", speedTester.downloadSpeedMBs))
-                                    .font(.system(size: 20, weight: .black, design: .monospaced))
-                                    .foregroundColor(.green)
-                                Text("MB/s")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.green.opacity(0.7))
-                            }
-                            .frame(maxWidth: .infinity)
-                            
-                            // Center divider
-                            Rectangle()
-                                .fill(Color.white.opacity(0.08))
-                                .frame(width: 1, height: 50)
-                            
-                            // Right Upload speed
-                            VStack(spacing: 6) {
-                                Text("上传速率")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.4))
-                                Text(String(format: "%.2f", speedTester.uploadSpeedMBsValue))
-                                    .font(.system(size: 20, weight: .black, design: .monospaced))
-                                    .foregroundColor(.cyan)
-                                Text("MB/s")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.cyan.opacity(0.7))
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .padding(.vertical, 4)
-                        
-                        // Testing Status and Trigger Button
-                        HStack(spacing: 10) {
-                            if speedTester.isTesting {
-                                ProgressView(value: speedTester.testProgress)
-                                    .progressViewStyle(.linear)
-                                    .tint(.cyan)
-                                    .frame(maxWidth: .infinity)
-                                
-                                Text(speedTester.statusText)
-                                    .font(.system(size: 9.5, weight: .bold))
-                                    .foregroundColor(.cyan.opacity(0.8))
-                                    .lineLimit(1)
-                            } else {
-                                Text(speedTester.statusText.isEmpty ? "准备就绪 (已加载最佳高可用测速通道)" : speedTester.statusText)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.4))
-                                    .lineLimit(1)
-                                
-                                Spacer()
-                                
-                                Button(action: {
-                                    speedTester.startTest()
-                                }) {
-                                    Text("一键测速")
-                                        .font(.system(size: 10.5, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .padding(.vertical, 6)
-                                        .padding(.horizontal, 12)
-                                        .background(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                        .cornerRadius(8)
-                                        .shadow(color: .cyan.opacity(0.3), radius: 4)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                    } else {
+                        // Plot Bluetooth nodes
+                        ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
+                            BluetoothRadarChartNodeView(
+                                idx: idx,
+                                dev: bluetoothScanner.scanResults[idx],
+                                totalCount: bluetoothScanner.scanResults.count,
+                                zoomScale: zoomScale,
+                                userPosition: userPosition,
+                                radarHeading: radarHeading,
+                                hoveredBTId: $hoveredBTId,
+                                selectedBT: $selectedBT,
+                                isAnimating: true
+                            )
+                            .scaleEffect(1.6)
                         }
                     }
-                    .padding(14)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(14)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                }
+                .frame(width: 240, height: 240)
+                .clipped()
+                
+                // Central radar beacon representing the user (laptop location)
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 12, height: 12)
+                        .shadow(color: .cyan.opacity(0.8), radius: 4)
                     
-                    // Card 2: Bandwidth processes rank list
-                    VStack(alignment: .leading, spacing: 10) {
+                    Circle()
+                        .stroke(Color.cyan.opacity(0.4), lineWidth: 1.5)
+                        .frame(width: 22 * pulseScale, height: 22 * pulseScale)
+                        .opacity(Double(2.0 - pulseScale))
+                }
+            }
+            .frame(width: 240, height: 240)
+            .overlay(RoundedRectangle(cornerRadius: 120).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            .shadow(color: .cyan.opacity(0.05), radius: 10)
+            
+            // HUD Control & Telemetry Bar
+            VStack(spacing: 8) {
+                // Calibrate slider and digital HUD readouts
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("🧭 航向: \(headingString) \(headingCardinalDirection)")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan)
+                        
+                        Text("📍 坐标: X: \(coordXString), Y: \(coordYString)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    
+                    Spacer()
+                    
+                    // Reset Button
+                    Button(action: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                            userPosition = .zero
+                            radarHeading = 0.0
+                            zoomScale = 1.0
+                        }
+                    }) {
+                        Image(systemName: "arrow.counterclockwise.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.5))
+                            .help("重置雷达与位置")
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 6)
+                
+                // Sliders & Zoom Control
+                HStack(spacing: 12) {
+                    Image(systemName: "safari")
+                        .font(.system(size: 11))
+                        .foregroundColor(.cyan.opacity(0.7))
+                    
+                    Slider(value: $radarHeading, in: 0...360)
+                        .accentColor(.cyan)
+                        .frame(maxWidth: .infinity)
+                    
+                    HStack(spacing: 4) {
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = max(0.5, zoomScale - 0.1)
+                            }
+                        }) {
+                            Image(systemName: "minus.magnifyingglass")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.8))
+                                .frame(width: 18, height: 18)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Text(String(format: "%d%%", Int(zoomScale * 100)))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.8))
+                            .frame(width: 32)
+                        
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = min(3.0, zoomScale + 0.1)
+                            }
+                        }) {
+                            Image(systemName: "plus.magnifyingglass")
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.8))
+                                .frame(width: 18, height: 18)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+            .padding(10)
+            .background(Color.white.opacity(0.02))
+            .cornerRadius(10)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.04), lineWidth: 1))
+            
+            // Helpful keyboard HUD tip
+            HStack(spacing: 4) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.3))
+                Text("按 WASD / 方向键模拟行走物理位移，按 Q / E 微调航向，按 R 重置")
+                    .font(.system(size: 8.5))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity)
+    }
+    
+    // ── Sub-view 2: Devices Scanned List Column ──
+    private var spatialDevicesListView: some View {
+        VStack(spacing: 12) {
+            // Wireless segment selector
+            Picker("", selection: $wirelessMode) {
+                Text("🌐 无线 Wi-Fi AP").tag(0)
+                Text("💎 蓝牙 BLE 设备").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(.bottom, 4)
+            
+            ScrollView(.vertical, showsIndicators: true) {
+                if wirelessMode == 0 {
+                    // Wi-Fi Scanned Devices List (matching original styling)
+                    VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Image(systemName: "chart.bar.xaxis")
-                                .font(.system(size: 14))
-                                .foregroundColor(.green)
-                            Text("活跃进程网络流量排行榜")
-                                .font(.system(size: 13, weight: .bold))
+                            Image(systemName: "wifi")
+                                .font(.system(size: 13))
+                                .foregroundColor(.cyan)
+                            Text("已扫频无线 AP (\(wifiScanner.scanResults.count))")
+                                .font(.system(size: 12, weight: .bold))
                                 .foregroundColor(.white)
                             Spacer()
-                            Text("Top 10")
-                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.3))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.white.opacity(0.05))
-                                .cornerRadius(5)
+                            
+                            HStack(spacing: 6) {
+                                Button(action: {
+                                    StandaloneWindowManager.shared.openWiFiRadarWindow(wifiScanner: wifiScanner)
+                                }) {
+                                    Image(systemName: "macwindow.on.window")
+                                        .font(.system(size: 9.5))
+                                        .foregroundColor(.cyan)
+                                        .padding(.vertical, 3)
+                                        .padding(.horizontal, 6)
+                                        .background(Color.cyan.opacity(0.12))
+                                        .cornerRadius(5)
+                                }
+                                .buttonStyle(.plain)
+                                
+                                Button(action: {
+                                    wifiScanner.startScan()
+                                }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                        Text(wifiScanner.isScanning ? "探测中" : "重扫")
+                                    }
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.cyan)
+                                    .padding(.vertical, 3)
+                                    .padding(.horizontal, 6)
+                                    .background(Color.cyan.opacity(0.12))
+                                    .cornerRadius(5)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(wifiScanner.isScanning)
+                            }
                         }
                         
                         Divider().background(Color.white.opacity(0.08))
                         
-                        if processMonitor.topProcesses.isEmpty {
-                            VStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text("正在捕获活跃端口与进程连接...")
-                                    .font(.system(size: 10.5))
+                        if wifiScanner.isScanning && wifiScanner.scanResults.isEmpty {
+                            VStack(spacing: 12) {
+                                ProgressView().controlSize(.small)
+                                Text("嗅探高维热点中...")
+                                    .font(.system(size: 10))
                                     .foregroundColor(.white.opacity(0.3))
                             }
                             .frame(maxWidth: .infinity, minHeight: 120)
                         } else {
-                            VStack(spacing: 1) {
-                                ForEach(processMonitor.topProcesses) { proc in
-                                    ProcessTrafficRowView(proc: proc)
+                            VStack(spacing: 2) {
+                                ForEach(wifiScanner.scanResults) { net in
+                                    WiFiNetworkRowView(net: net)
                                 }
                             }
                         }
                     }
-                    .padding(14)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(14)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
-                }
-            }
-            .frame(maxWidth: .infinity)
-            
-            // Right Column: Wireless Networking & Bluetooth Controllers (v1.9.2 Segmented Scan Center)
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 12) {
-                    // Wireless segment selector
-                    Picker("", selection: $wirelessMode) {
-                        Text("🌐 无线 Wi-Fi AP").tag(0)
-                        Text("💎 蓝牙 BLE 设备").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.bottom, 4)
-                    
-                    if wirelessMode == 0 {
-                        // Wi-Fi Mode View Configuration
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack {
-                                Image(systemName: "wifi")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.purple)
-                                Text("Wi-Fi 空间物理定位雷达")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.white)
-                                
-                                Spacer()
-                                
-                                HStack(spacing: 8) {
-                                    Button(action: {
-                                        StandaloneWindowManager.shared.openWiFiRadarWindow(wifiScanner: wifiScanner)
-                                    }) {
-                                        Image(systemName: "macwindow.on.window")
-                                            .font(.system(size: 10.5))
-                                            .foregroundColor(.cyan)
-                                            .padding(.vertical, 4)
-                                            .padding(.horizontal, 8)
-                                            .background(Color.cyan.opacity(0.12))
-                                            .cornerRadius(6)
-                                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.cyan.opacity(0.25), lineWidth: 1))
-                                    }
-                                    .buttonStyle(.plain)
-                                    
-                                    Button(action: {
-                                        wifiScanner.startScan()
-                                    }) {
-                                        HStack(spacing: 3) {
-                                            if wifiScanner.isScanning {
-                                                Image(systemName: "arrow.triangle.2.circlepath")
-                                                    .rotationEffect(.degrees(wifiScanner.isScanning ? 360 : 0))
-                                                Text("探测中...")
-                                            } else {
-                                                Image(systemName: "arrow.triangle.2.circlepath")
-                                                Text("重扫")
-                                            }
-                                        }
-                                        .font(.system(size: 9.5, weight: .bold))
-                                        .foregroundColor(.cyan)
-                                        .padding(.vertical, 4)
-                                        .padding(.horizontal, 8)
-                                        .background(Color.cyan.opacity(0.12))
-                                        .cornerRadius(6)
-                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.cyan.opacity(0.25), lineWidth: 1))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(wifiScanner.isScanning)
-                                }
-                            }
+                    .padding(12)
+                    .background(Color.white.opacity(0.02))
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                } else {
+                    // Bluetooth BLE Devices List (matching original styling)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "bolt.bluetooth")
+                                .font(.system(size: 13))
+                                .foregroundColor(.purple)
+                            Text("已侦测 BLE 设备 (\(bluetoothScanner.scanResults.count))")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.white)
+                            Spacer()
                             
-                            Divider().background(Color.white.opacity(0.08))
-                            
-                            if wifiScanner.isScanning && wifiScanner.scanResults.isEmpty {
-                                VStack(spacing: 12) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("正在校准无线电天线，嗅探高维热点...")
-                                        .font(.system(size: 10.5))
-                                        .foregroundColor(.white.opacity(0.3))
+                            HStack(spacing: 6) {
+                                Button(action: {
+                                    StandaloneWindowManager.shared.openBluetoothRadarWindow(bluetoothScanner: bluetoothScanner)
+                                }) {
+                                    Image(systemName: "macwindow.on.window")
+                                        .font(.system(size: 9.5))
+                                        .foregroundColor(.purple)
+                                        .padding(.vertical, 3)
+                                        .padding(.horizontal, 6)
+                                        .background(Color.purple.opacity(0.12))
+                                        .cornerRadius(5)
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 120)
-                            } else {
-                                // Wi-Fi network cards list
-                                VStack(spacing: 2) {
-                                    ForEach(wifiScanner.scanResults) { net in
-                                        WiFiNetworkRowView(net: net)
-                                    }
-                                }
-                                
-                                Divider().background(Color.white.opacity(0.08))
-                                
-                                // Dual Radars (Tap to launch large panoramic radar window)
-                                VStack(spacing: 14) {
-                                    WiFiRadarChartView(networks: wifiScanner.scanResults)
-                                        .onTapGesture {
-                                            StandaloneWindowManager.shared.openLargeRadarWindow(wifiScanner: wifiScanner, bluetoothScanner: bluetoothScanner)
-                                        }
-                                    
-                                    Divider().background(Color.white.opacity(0.05))
-                                    
-                                    WiFiDistanceRadarChartView(networks: wifiScanner.scanResults)
-                                        .onTapGesture {
-                                            StandaloneWindowManager.shared.openLargeRadarWindow(wifiScanner: wifiScanner, bluetoothScanner: bluetoothScanner)
-                                        }
-                                }
-                            }
-                        }
-                        .padding(14)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
-                        
-                    } else {
-                        // Bluetooth BLE Mode View Configuration
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack {
-                                Image(systemName: "bolt.bluetooth")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.purple)
-                                Text("蓝牙设备空间定位雷达")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.white)
-                                
-                                Spacer()
+                                .buttonStyle(.plain)
                                 
                                 Button(action: {
                                     bluetoothScanner.startScan()
                                 }) {
                                     HStack(spacing: 3) {
-                                        if bluetoothScanner.isScanning {
-                                            Image(systemName: "arrow.triangle.2.circlepath")
-                                                .rotationEffect(.degrees(bluetoothScanner.isScanning ? 360 : 0))
-                                            Text("探测中...")
-                                        } else {
-                                            Image(systemName: "arrow.triangle.2.circlepath")
-                                            Text("重扫")
-                                        }
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                        Text(bluetoothScanner.isScanning ? "扫描中" : "重扫")
                                     }
-                                    .font(.system(size: 9.5, weight: .bold))
+                                    .font(.system(size: 9, weight: .bold))
                                     .foregroundColor(.purple)
-                                    .padding(.vertical, 4)
-                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .padding(.horizontal, 6)
                                     .background(Color.purple.opacity(0.12))
-                                    .cornerRadius(6)
-                                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.purple.opacity(0.25), lineWidth: 1))
+                                    .cornerRadius(5)
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(bluetoothScanner.isScanning)
                             }
-                            
-                            Divider().background(Color.white.opacity(0.08))
-                            
-                            if bluetoothScanner.isScanning && bluetoothScanner.scanResults.isEmpty {
-                                VStack(spacing: 12) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("正在扫描周边蓝牙无线电外设...")
-                                        .font(.system(size: 10.5))
-                                        .foregroundColor(.white.opacity(0.3))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 120)
-                            } else {
-                                // BLE scanned list
-                                VStack(spacing: 6) {
-                                    ForEach(bluetoothScanner.scanResults) { dev in
-                                        BluetoothNetworkRowView(
-                                            dev: dev,
-                                            isExpanded: expandedBluetoothId == dev.peripheralId,
-                                            onTap: {
-                                                if expandedBluetoothId == dev.peripheralId {
-                                                    expandedBluetoothId = nil
-                                                } else {
-                                                    expandedBluetoothId = dev.peripheralId
-                                                }
+                        }
+                        
+                        Divider().background(Color.white.opacity(0.08))
+                        
+                        if bluetoothScanner.isScanning && bluetoothScanner.scanResults.isEmpty {
+                            VStack(spacing: 12) {
+                                ProgressView().controlSize(.small)
+                                Text("扫描周围蓝牙外设中...")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.white.opacity(0.3))
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                        } else {
+                            VStack(spacing: 6) {
+                                ForEach(bluetoothScanner.scanResults) { dev in
+                                    BluetoothNetworkRowView(
+                                        dev: dev,
+                                        isExpanded: expandedBluetoothId == dev.peripheralId,
+                                        onTap: {
+                                            if expandedBluetoothId == dev.peripheralId {
+                                                expandedBluetoothId = nil
+                                            } else {
+                                                expandedBluetoothId = dev.peripheralId
                                             }
-                                        )
-                                    }
-                                }
-                                
-                                Divider().background(Color.white.opacity(0.08))
-                                
-                                // Dual Bluetooth Radars (Tap to launch large panoramic radar window)
-                                VStack(spacing: 14) {
-                                    BluetoothRadarChartView(devices: bluetoothScanner.scanResults)
-                                        .onTapGesture {
-                                            StandaloneWindowManager.shared.openLargeRadarWindow(wifiScanner: wifiScanner, bluetoothScanner: bluetoothScanner)
                                         }
-                                    
-                                    Divider().background(Color.white.opacity(0.05))
-                                    
-                                    BluetoothDistanceRadarChartView(devices: bluetoothScanner.scanResults)
-                                        .onTapGesture {
-                                            StandaloneWindowManager.shared.openLargeRadarWindow(wifiScanner: wifiScanner, bluetoothScanner: bluetoothScanner)
-                                        }
+                                    )
                                 }
                             }
                         }
-                        .padding(14)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
                     }
+                    .padding(12)
+                    .background(Color.white.opacity(0.02))
+                    .cornerRadius(12)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.04), lineWidth: 1))
                 }
             }
-            .frame(width: 320)
+            .frame(maxHeight: 330)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
+        .frame(width: 300)
+    }
+    
+    // ── Sub-view 3: Speed Tester Widget View ──
+    private var speedTesterWidgetView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Image(systemName: "gauge.medium.badge.plus")
+                    .font(.system(size: 14))
+                    .foregroundColor(.cyan)
+                Text("网络连接与高可用速率测试")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                Text("上次测试: \(speedTester.lastTestTime)")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            
+            // Selectable speed test nodes picker
+            VStack(alignment: .leading, spacing: 4) {
+                Text("选择测速节点服务器:")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.white.opacity(0.4))
+                
+                Picker("", selection: $speedTester.selectedNodeId) {
+                    ForEach(speedTester.nodes) { node in
+                        Text("\(node.name) (\(node.provider))").tag(node.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+            }
+            .padding(8)
+            .background(Color.white.opacity(0.02))
+            .cornerRadius(8)
+            
+            HStack(spacing: 16) {
+                // Download speed
+                VStack(spacing: 6) {
+                    Text("下载速率")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.4))
+                    Text(String(format: "%.2f", speedTester.downloadSpeedMBs))
+                        .font(.system(size: 20, weight: .black, design: .monospaced))
+                        .foregroundColor(.green)
+                    Text("MB/s")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.green.opacity(0.7))
+                }
+                .frame(maxWidth: .infinity)
+                
+                // Divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(width: 1, height: 50)
+                
+                // Upload speed
+                VStack(spacing: 6) {
+                    Text("上传速率")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.4))
+                    Text(String(format: "%.2f", speedTester.uploadSpeedMBsValue))
+                        .font(.system(size: 20, weight: .black, design: .monospaced))
+                        .foregroundColor(.cyan)
+                    Text("MB/s")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.cyan.opacity(0.7))
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.vertical, 4)
+            
+            // Testing Status and Trigger Button
+            HStack(spacing: 10) {
+                if speedTester.isTesting {
+                    ProgressView(value: speedTester.testProgress)
+                        .progressViewStyle(.linear)
+                        .tint(.cyan)
+                        .frame(maxWidth: .infinity)
+                    
+                    Text(speedTester.statusText)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundColor(.cyan.opacity(0.8))
+                        .lineLimit(1)
+                } else {
+                    Text(speedTester.statusText.isEmpty ? "准备就绪 (已加载最佳高可用测速通道)" : speedTester.statusText)
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.4))
+                        .lineLimit(1)
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        speedTester.startTest()
+                    }) {
+                        Text("一键测速")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .background(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .cornerRadius(8)
+                            .shadow(color: .cyan.opacity(0.3), radius: 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+    }
+    
+    // ── Sub-view 4: Active Process Traffic View ──
+    private var activeProcessTrafficView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 14))
+                    .foregroundColor(.green)
+                Text("活跃进程网络流量排行榜")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                Text("Top 10")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.3))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(5)
+            }
+            
+            Divider().background(Color.white.opacity(0.08))
+            
+            if processMonitor.topProcesses.isEmpty {
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在捕获活跃端口与进程连接...")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+                .frame(maxWidth: .infinity, minHeight: 180)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 4) {
+                        ForEach(processMonitor.topProcesses) { proc in
+                            ProcessTrafficRowView(proc: proc)
+                        }
+                    }
+                }
+                .frame(height: 180)
+            }
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.03))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
     }
     
     private var leftoversSectionView: some View {
@@ -2701,6 +3015,28 @@ struct DashboardView: View {
                         .shadow(color: showPurgeSuccess ? Color.green.opacity(0.2) : Color.purple.opacity(0.2), radius: 4)
                     }
                     .buttonStyle(.plain)
+                    
+                    // Pop-out Window Button — opens the DashboardView in a detached standalone window
+                    Button(action: {
+                        StandaloneWindowManager.shared.openMainDashboardWindow()
+                        if let delegate = NSApp.delegate as? AppDelegate {
+                            delegate.hidePopover()
+                        }
+                    }) {
+                        Image(systemName: "macwindow.on.window")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.cyan.opacity(0.9))
+                            .padding(8)
+                            .background(Color.cyan.opacity(0.12))
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.cyan.opacity(0.25), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .help("在独立窗口中打开面板进行细节控制")
                     
                     // Settings Gear Button — opens the full AppDelegate Settings window (v1.9.6)
                     ZStack(alignment: .topTrailing) {
@@ -7515,129 +7851,786 @@ struct ProcessTrafficRowView: View {
     let proc: ProcessTrafficInfo
     
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 8) {
+            // Col 1: Process Name & PID
+            VStack(alignment: .leading, spacing: 2) {
                 Text(proc.name)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(1)
                 Text("PID: \(proc.pid)")
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.35))
             }
-            .frame(width: 100, alignment: .leading)
+            .frame(width: 90, alignment: .leading)
             
             Spacer()
             
-            VStack(spacing: 4) {
+            // Col 2: Download Speed
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(.green)
+                Text(String(format: "%.2f", proc.downloadSpeed))
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(.green)
+                Text("M").font(.system(size: 7.5)).foregroundColor(.green.opacity(0.6))
+            }
+            .frame(width: 65, alignment: .leading)
+            
+            // Col 3: Upload Speed
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundColor(.cyan)
+                Text(String(format: "%.2f", proc.uploadSpeed))
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(.cyan)
+                Text("M").font(.system(size: 7.5)).foregroundColor(.cyan.opacity(0.6))
+            }
+            .frame(width: 65, alignment: .leading)
+            
+            Spacer()
+            
+            // Col 4: Total Traffic Accumulated
+            Text(proc.totalTraffic)
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.55))
+                .frame(width: 55, alignment: .trailing)
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(Color.white.opacity(0.015))
+        .cornerRadius(6)
+    }
+}
+
+struct WiFiDetailView: View {
+    let net: WiFiNetworkInfo
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(net.ssid.isEmpty ? "隐藏信号 AP" : net.ssid)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("BSSID / MAC: \(net.bssid)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+            }
+            
+            Divider().background(Color.white.opacity(0.12))
+            
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 8))
-                        .foregroundColor(.green)
-                    Text(String(format: "%.2f MB/s", proc.downloadSpeed))
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(.green)
-                    Spacer()
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 8))
-                        .foregroundColor(.cyan)
-                    Text(String(format: "%.2f MB/s", proc.uploadSpeed))
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan)
+                    HStack(spacing: 4) {
+                        Text("物理信道:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("\(net.channel)").font(.system(size: 11, weight: .semibold)).foregroundColor(.cyan)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 4) {
+                        Text("频段:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text(net.band).font(.system(size: 11, weight: .semibold)).foregroundColor(.cyan)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.04))
-                            .frame(height: 2)
-                        
-                        let totalSpeed = proc.downloadSpeed + proc.uploadSpeed
-                        let progress = min(1.0, totalSpeed / 10.0)
-                        
-                        Capsule()
-                            .fill(LinearGradient(colors: [.green, .cyan], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: geo.size.width * CGFloat(progress), height: 2)
+                HStack {
+                    HStack(spacing: 4) {
+                        Text("协议制式:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text(net.phyMode).font(.system(size: 11, weight: .semibold)).foregroundColor(.cyan)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 4) {
+                        Text("信号强度:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("\(net.rssi) dBm").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.green)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(height: 2)
+                
+                HStack {
+                    HStack(spacing: 4) {
+                        Text("估算距离:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text(String(format: "%.2f 米", net.distanceMeters)).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 4) {
+                        Text("定位范围:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text(net.distanceLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.8))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             
-            Spacer()
-            
-            Text(proc.totalTraffic)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.4))
-                .frame(width: 60, alignment: .trailing)
+            // Signal Quality bar
+            VStack(alignment: .leading, spacing: 4) {
+                Text("物理电磁信号衰减与抗干扰强度:").font(.system(size: 9.5)).foregroundColor(.white.opacity(0.4))
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.06)).frame(height: 6)
+                        let progress = min(1.0, max(0.0, Double(net.rssi + 100) / 75.0))
+                        Capsule()
+                            .fill(LinearGradient(colors: [.red, .yellow, .green], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: geo.size.width * CGFloat(progress), height: 6)
+                    }
+                }
+                .frame(height: 6)
+            }
+            .padding(.top, 4)
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Color.white.opacity(0.02))
-        .cornerRadius(8)
+        .padding(16)
+        .frame(width: 320)
+        .background(
+            Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.95)
+        )
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct BluetoothDetailView: View {
+    let dev: BluetoothDeviceInfo
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "sensor.tag.radiowaves.forward.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.purple)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(dev.name.isEmpty ? "未命名 BLE 终端" : dev.name)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("硬件 UUID: \(dev.peripheralId)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+            }
+            
+            Divider().background(Color.white.opacity(0.12))
+            
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    HStack(spacing: 4) {
+                        Text("信号强度:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("\(dev.rssi) dBm").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.green)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 4) {
+                        Text("定位范围:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text(dev.distanceLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.8))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                HStack {
+                    HStack(spacing: 4) {
+                        Text("相对测距:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text(String(format: "%.2f 米", dev.distanceMeters)).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 4) {
+                        Text("最后响应:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        let timeStr = DateFormatter.localizedString(from: dev.lastSeen, dateStyle: .none, timeStyle: .medium)
+                        Text(timeStr).font(.system(size: 11, design: .monospaced)).foregroundColor(.purple)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            
+            // RSSI visual bar
+            VStack(alignment: .leading, spacing: 4) {
+                Text("低功耗蓝牙广播功率衰变 (RSSI) 测温:").font(.system(size: 9.5)).foregroundColor(.white.opacity(0.4))
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.06)).frame(height: 6)
+                        let progress = min(1.0, max(0.0, Double(dev.rssi + 100) / 75.0))
+                        Capsule()
+                            .fill(LinearGradient(colors: [.purple, .indigo, .cyan], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: geo.size.width * CGFloat(progress), height: 6)
+                    }
+                }
+                .frame(height: 6)
+            }
+            .padding(.top, 4)
+        }
+        .padding(16)
+        .frame(width: 320)
+        .background(
+            Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.95)
+        )
+        .preferredColorScheme(.dark)
+    }
+}
+
+// ── WiFi & Bluetooth Radar Chart Modular Node Subviews ──
+
+struct WiFiRadarChartNodeView: View {
+    let idx: Int
+    let net: WiFiNetworkInfo
+    let totalCount: Int
+    let zoomScale: CGFloat
+    let userPosition: CGPoint
+    let radarHeading: Double
+    @Binding var hoveredWiFiId: UUID?
+    @Binding var selectedWiFi: WiFiNetworkInfo?
+    let isAnimating: Bool
+    
+    var body: some View {
+        let key = net.bssid.isEmpty ? net.ssid : net.bssid
+        let scanRadius = Double(min(65.0, max(15.0, CGFloat(-net.rssi - 30) * 1.0)))
+        let trueLoc = SignalSourceEstimator.shared.getTrueWiFiLocation(forKey: key, index: idx, total: totalCount, distance: scanRadius)
+        
+        let relX = trueLoc.x - userPosition.x * 3.5
+        let relY = trueLoc.y - userPosition.y * 3.5
+        
+        let radHeading = -radarHeading * .pi / 180.0
+        let rotatedX = relX * cos(CGFloat(radHeading)) - relY * sin(CGFloat(radHeading))
+        let rotatedY = relX * sin(CGFloat(radHeading)) + relY * cos(CGFloat(radHeading))
+        
+        let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
+        let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
+        
+        let finalRelX = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedX
+        let finalRelY = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedY
+        let currentAngle = atan2(finalRelY, finalRelX)
+        
+        let radius = CGFloat(safeDistance) * zoomScale
+        let x = radius * cos(CGFloat(currentAngle))
+        let y = radius * sin(CGFloat(currentAngle))
+        
+        return ZStack {
+            Circle()
+                .fill(net.ssid.contains("隐藏") ? Color.orange : Color.cyan)
+                .frame(width: 5, height: 5)
+                .shadow(color: net.ssid.contains("隐藏") ? Color.orange : Color.cyan, radius: 3)
+            
+            if isAnimating || hoveredWiFiId == net.id {
+                Circle()
+                    .stroke(net.ssid.contains("隐藏") ? Color.orange.opacity(hoveredWiFiId == net.id ? 0.8 : 0.3) : Color.cyan.opacity(hoveredWiFiId == net.id ? 0.8 : 0.3), lineWidth: hoveredWiFiId == net.id ? 1.5 : 1)
+                    .frame(width: hoveredWiFiId == net.id ? 14 : 12, height: hoveredWiFiId == net.id ? 14 : 12)
+                    .scaleEffect(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 1.5 : 0.8))
+                    .opacity(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 0.0 : 1.0))
+            }
+        }
+        .offset(x: x, y: y)
+        .contentShape(Circle())
+        .onHover { isHovered in
+            hoveredWiFiId = isHovered ? net.id : nil
+        }
+        .onTapGesture {
+            selectedWiFi = net
+        }
+        .help("【简报】\(net.ssid.isEmpty ? "隐藏热点" : net.ssid)\n物理测距: \(String(format: "%.1fm", net.distanceMeters)) (\(net.distanceLabel))\n信号强度: \(net.rssi) dBm")
+    }
+}
+
+struct WiFiDistanceRadarChartNodeView: View {
+    let idx: Int
+    let net: WiFiNetworkInfo
+    let totalCount: Int
+    let zoomScale: CGFloat
+    let userPosition: CGPoint
+    let radarHeading: Double
+    @Binding var hoveredWiFiId: UUID?
+    @Binding var selectedWiFi: WiFiNetworkInfo?
+    let pulseScale: CGFloat
+    
+    var body: some View {
+        let key = net.bssid.isEmpty ? net.ssid : net.bssid
+        let trueLoc = SignalSourceEstimator.shared.getTrueWiFiLocation(forKey: key, index: idx, total: totalCount, distance: net.distanceMeters)
+        
+        let relX = trueLoc.x - userPosition.x
+        let relY = trueLoc.y - userPosition.y
+        
+        let radHeading = -radarHeading * .pi / 180.0
+        let rotatedX = relX * cos(CGFloat(radHeading)) - relY * sin(CGFloat(radHeading))
+        let rotatedY = relX * sin(CGFloat(radHeading)) + relY * cos(CGFloat(radHeading))
+        
+        let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
+        let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
+        
+        let finalRelX = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedX
+        let finalRelY = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedY
+        let currentAngle = atan2(finalRelY, finalRelX)
+        
+        let maxMeters = 20.0
+        let normalizedDistance = min(maxMeters, max(0.5, Double(safeDistance)))
+        let radius = (10.0 + (CGFloat(normalizedDistance / maxMeters) * 68.0)) * zoomScale
+        
+        let x = radius * cos(CGFloat(currentAngle))
+        let y = radius * sin(CGFloat(currentAngle))
+        
+        let nodeColor: Color = net.distanceMeters < 1.5 ? .green : (net.distanceMeters < 4.0 ? .cyan : (net.distanceMeters < 8.0 ? .yellow : .orange))
+        
+        return ZStack {
+            Path { path in
+                let center = 80.0 * zoomScale
+                path.move(to: CGPoint(x: center, y: center))
+                path.addLine(to: CGPoint(x: center + x, y: center + y))
+            }
+            .stroke(Color.green.opacity(0.1), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [1, 2], dashPhase: 0))
+            .frame(width: 160 * zoomScale, height: 160 * zoomScale)
+            
+            ZStack {
+                Circle()
+                    .fill(nodeColor)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: nodeColor, radius: 4)
+                
+                if pulseScale > 1.0 || hoveredWiFiId == net.id {
+                    Circle()
+                        .stroke(nodeColor.opacity(hoveredWiFiId == net.id ? 0.8 : 0.3), lineWidth: hoveredWiFiId == net.id ? 1.5 : 0.8)
+                        .frame(width: hoveredWiFiId == net.id ? 16 : 14 * pulseScale, height: hoveredWiFiId == net.id ? 16 : 14 * pulseScale)
+                        .opacity(hoveredWiFiId == net.id ? 1.0 : Double(2.0 - pulseScale))
+                }
+                
+                VStack(spacing: 1) {
+                    Text(net.ssid.prefix(5) + (net.ssid.count > 5 ? ".." : ""))
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text(String(format: "%.1fm", safeDistance))
+                        .font(.system(size: 6, weight: .bold, design: .monospaced))
+                        .foregroundColor(nodeColor)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(Color.black.opacity(0.75))
+                        .cornerRadius(3)
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(nodeColor.opacity(0.4), lineWidth: 0.5))
+                }
+                .offset(y: y >= 0 ? 14 : -14)
+            }
+            .offset(x: x, y: y)
+        }
+        .contentShape(Circle())
+        .onHover { isHovered in
+            hoveredWiFiId = isHovered ? net.id : nil
+        }
+        .onTapGesture {
+            selectedWiFi = net
+        }
+        .help("【简报】\(net.ssid.isEmpty ? "隐藏热点" : net.ssid)\n物理测距: \(String(format: "%.1fm", net.distanceMeters)) (\(net.distanceLabel))\n信号强度: \(net.rssi) dBm")
+    }
+}
+
+struct BluetoothRadarChartNodeView: View {
+    let idx: Int
+    let dev: BluetoothDeviceInfo
+    let totalCount: Int
+    let zoomScale: CGFloat
+    let userPosition: CGPoint
+    let radarHeading: Double
+    @Binding var hoveredBTId: UUID?
+    @Binding var selectedBT: BluetoothDeviceInfo?
+    let isAnimating: Bool
+    
+    var body: some View {
+        let key = dev.peripheralId.isEmpty ? dev.name : dev.peripheralId
+        let scanRadius = Double(min(65.0, max(15.0, CGFloat(-dev.rssi - 30) * 1.2)))
+        let trueLoc = SignalSourceEstimator.shared.getTrueBTLocation(forKey: key, index: idx, total: totalCount, distance: scanRadius)
+        
+        let relX = trueLoc.x - userPosition.x * 3.5
+        let relY = trueLoc.y - userPosition.y * 3.5
+        
+        let radHeading = -radarHeading * .pi / 180.0
+        let rotatedX = relX * cos(CGFloat(radHeading)) - relY * sin(CGFloat(radHeading))
+        let rotatedY = relX * sin(CGFloat(radHeading)) + relY * cos(CGFloat(radHeading))
+        
+        let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
+        let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
+        
+        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
+        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let currentAngle = atan2(finalRelY, finalRelX)
+        
+        let radius = CGFloat(safeDistance) * zoomScale
+        let rad = Double(currentAngle)
+        let x = radius * cos(CGFloat(rad))
+        let y = radius * sin(CGFloat(rad))
+        
+        return ZStack {
+            Circle()
+                .fill(Color.purple)
+                .frame(width: 5, height: 5)
+                .shadow(color: Color.purple, radius: 3)
+            
+            if isAnimating || hoveredBTId == dev.id {
+                Circle()
+                    .stroke(Color.purple.opacity(hoveredBTId == dev.id ? 0.8 : 0.3), lineWidth: hoveredBTId == dev.id ? 1.5 : 1)
+                    .frame(width: hoveredBTId == dev.id ? 14 : 12, height: hoveredBTId == dev.id ? 14 : 12)
+                    .scaleEffect(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 1.5 : 0.8))
+                    .opacity(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 0.0 : 1.0))
+            }
+        }
+        .offset(x: x, y: y)
+        .contentShape(Circle())
+        .onHover { isHovered in
+            hoveredBTId = isHovered ? dev.id : nil
+        }
+        .onTapGesture {
+            selectedBT = dev
+        }
+        .help("【简报】\(dev.name.isEmpty ? "未命名设备" : dev.name)\n物理测距: \(String(format: "%.1fm", dev.distanceMeters)) (\(dev.distanceLabel))\n信号强度: \(dev.rssi) dBm")
+    }
+}
+
+struct BluetoothDistanceRadarChartNodeView: View {
+    let idx: Int
+    let dev: BluetoothDeviceInfo
+    let totalCount: Int
+    let zoomScale: CGFloat
+    let userPosition: CGPoint
+    let radarHeading: Double
+    @Binding var hoveredBTId: UUID?
+    @Binding var selectedBT: BluetoothDeviceInfo?
+    let pulseScale: CGFloat
+    
+    var body: some View {
+        let key = dev.peripheralId.isEmpty ? dev.name : dev.peripheralId
+        let trueLoc = SignalSourceEstimator.shared.getTrueBTLocation(forKey: key, index: idx, total: totalCount, distance: dev.distanceMeters)
+        
+        let relX = trueLoc.x - userPosition.x
+        let relY = trueLoc.y - userPosition.y
+        
+        let radHeading = -radarHeading * .pi / 180.0
+        let rotatedX = relX * cos(CGFloat(radHeading)) - relY * sin(CGFloat(radHeading))
+        let rotatedY = relX * sin(CGFloat(radHeading)) + relY * cos(CGFloat(radHeading))
+        
+        let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
+        let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
+        
+        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
+        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let currentAngle = atan2(finalRelY, finalRelX)
+        
+        let maxMeters = 15.0
+        let normalizedDistance = min(maxMeters, max(0.2, Double(safeDistance)))
+        let radius = (10.0 + (CGFloat(normalizedDistance / maxMeters) * 68.0)) * zoomScale
+        
+        let x = radius * cos(CGFloat(currentAngle))
+        let y = radius * sin(CGFloat(currentAngle))
+        
+        let nodeColor: Color = dev.distanceMeters < 1.0 ? .purple : (dev.distanceMeters < 3.0 ? .cyan : (dev.distanceMeters < 8.0 ? .yellow : .orange))
+        
+        return ZStack {
+            Path { path in
+                let center = 80.0 * zoomScale
+                path.move(to: CGPoint(x: center, y: center))
+                path.addLine(to: CGPoint(x: center + x, y: center + y))
+            }
+            .stroke(Color.purple.opacity(0.1), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [1, 2], dashPhase: 0))
+            .frame(width: 160 * zoomScale, height: 160 * zoomScale)
+            
+            ZStack {
+                Circle()
+                    .fill(nodeColor)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: nodeColor, radius: 4)
+                
+                if pulseScale > 1.0 || hoveredBTId == dev.id {
+                    Circle()
+                        .stroke(nodeColor.opacity(hoveredBTId == dev.id ? 0.8 : 0.3), lineWidth: hoveredBTId == dev.id ? 1.5 : 0.8)
+                        .frame(width: hoveredBTId == dev.id ? 16 : 14 * pulseScale, height: hoveredBTId == dev.id ? 16 : 14 * pulseScale)
+                        .opacity(hoveredBTId == dev.id ? 1.0 : Double(2.0 - pulseScale))
+                }
+                
+                VStack(spacing: 1) {
+                    Text(dev.name.prefix(6) + (dev.name.count > 6 ? ".." : ""))
+                        .font(.system(size: 6, weight: .bold))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text(String(format: "%.1fm", safeDistance))
+                        .font(.system(size: 6, weight: .bold, design: .monospaced))
+                        .foregroundColor(nodeColor)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(Color.black.opacity(0.75))
+                        .cornerRadius(3)
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(nodeColor.opacity(0.4), lineWidth: 0.5))
+                }
+                .offset(y: y >= 0 ? 14 : -14)
+            }
+            .offset(x: x, y: y)
+        }
+        .contentShape(Circle())
+        .onHover { isHovered in
+            hoveredBTId = isHovered ? dev.id : nil
+        }
+        .onTapGesture {
+            selectedBT = dev
+        }
+        .help("【简报】\(dev.name.isEmpty ? "未命名设备" : dev.name)\n物理测距: \(String(format: "%.1fm", dev.distanceMeters)) (\(dev.distanceLabel))\n信号强度: \(dev.rssi) dBm")
+    }
+}
+
+struct WiFiImmersiveRadarNodeView: View {
+    let idx: Int
+    let net: WiFiNetworkInfo
+    let totalCount: Int
+    let zoomScale: CGFloat
+    let userPosition: CGPoint
+    let radarHeading: Double
+    @Binding var hoveredWiFiId: UUID?
+    @Binding var selectedWiFi: WiFiNetworkInfo?
+    let pulseScale: CGFloat
+    
+    var body: some View {
+        let key = net.bssid.isEmpty ? net.ssid : net.bssid
+        let trueLoc = SignalSourceEstimator.shared.getTrueWiFiLocation(forKey: key, index: idx, total: totalCount, distance: net.distanceMeters)
+        
+        let relX = trueLoc.x - userPosition.x
+        let relY = trueLoc.y - userPosition.y
+        
+        let radHeading = -radarHeading * .pi / 180.0
+        let rotatedX = relX * cos(CGFloat(radHeading)) - relY * sin(CGFloat(radHeading))
+        let rotatedY = relX * sin(CGFloat(radHeading)) + relY * cos(CGFloat(radHeading))
+        
+        let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
+        let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
+        
+        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
+        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let currentAngle = atan2(finalRelY, finalRelX)
+        
+        let maxMeters = 20.0 / zoomScale
+        let isOffScreen = safeDistance > maxMeters
+        
+        let normalizedDistance = min(maxMeters, max(0.5, Double(safeDistance)))
+        let radius = 20.0 + (CGFloat(normalizedDistance / maxMeters) * 270.0)
+        
+        let x = radius * cos(CGFloat(currentAngle))
+        let y = radius * sin(CGFloat(currentAngle))
+        
+        let nodeColor: Color = net.ssid.contains("隐藏") ? .orange : .cyan
+        
+        return ZStack {
+            Circle()
+                .fill(nodeColor)
+                .frame(width: 8, height: 8)
+                .shadow(color: nodeColor, radius: 5)
+            
+            Circle()
+                .stroke(nodeColor.opacity(hoveredWiFiId == net.id ? 0.8 : 0.3), lineWidth: hoveredWiFiId == net.id ? 2 : 1)
+                .frame(width: hoveredWiFiId == net.id ? 20 : 16 * pulseScale, height: hoveredWiFiId == net.id ? 20 : 16 * pulseScale)
+                .scaleEffect(hoveredWiFiId == net.id ? 1.15 : 1.0)
+                .opacity(hoveredWiFiId == net.id ? 1.0 : Double(2.0 - pulseScale))
+            
+            VStack(spacing: 2) {
+                Text(net.ssid.isEmpty ? "隐藏信号" : net.ssid)
+                    .font(.system(size: 7.5, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(nodeColor.opacity(hoveredWiFiId == net.id ? 0.45 : 0.2))
+                    .cornerRadius(4)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(nodeColor.opacity(hoveredWiFiId == net.id ? 0.6 : 0.3), lineWidth: hoveredWiFiId == net.id ? 1.0 : 0.5))
+                
+                Text(String(format: "%.1fm (%d dBm)", safeDistance, net.rssi))
+                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .foregroundColor(nodeColor)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Color.black.opacity(0.85))
+                    .cornerRadius(3)
+            }
+            .offset(y: y >= 0 ? 20 : -20)
+        }
+        .offset(x: x, y: y)
+        .opacity(isOffScreen ? 0.0 : 1.0)
+        .animation(.easeInOut(duration: 0.25), value: isOffScreen)
+        .contentShape(Circle())
+        .onHover { isHovered in
+            hoveredWiFiId = isHovered ? net.id : nil
+        }
+        .onTapGesture {
+            selectedWiFi = net
+        }
+        .help("【简报】\(net.ssid.isEmpty ? "隐藏热点" : net.ssid)\n物理测距: \(String(format: "%.1fm", net.distanceMeters)) (\(net.distanceLabel))\n信号强度: \(net.rssi) dBm\n信道/带宽: \(net.channel) / \(net.band)")
+    }
+}
+
+struct BluetoothImmersiveRadarNodeView: View {
+    let idx: Int
+    let dev: BluetoothDeviceInfo
+    let totalCount: Int
+    let zoomScale: CGFloat
+    let userPosition: CGPoint
+    let radarHeading: Double
+    @Binding var hoveredBTId: UUID?
+    @Binding var selectedBT: BluetoothDeviceInfo?
+    let pulseScale: CGFloat
+    
+    var body: some View {
+        let key = dev.peripheralId.isEmpty ? dev.name : dev.peripheralId
+        let trueLoc = SignalSourceEstimator.shared.getTrueBTLocation(forKey: key, index: idx, total: totalCount, distance: dev.distanceMeters)
+        
+        let relX = trueLoc.x - userPosition.x
+        let relY = trueLoc.y - userPosition.y
+        
+        let radHeading = -radarHeading * .pi / 180.0
+        let rotatedX = relX * cos(CGFloat(radHeading)) - relY * sin(CGFloat(radHeading))
+        let rotatedY = relX * sin(CGFloat(radHeading)) + relY * cos(CGFloat(radHeading))
+        
+        let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
+        let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
+        
+        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
+        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let currentAngle = atan2(finalRelY, finalRelX)
+        
+        let maxMeters = 20.0 / zoomScale
+        let isOffScreen = safeDistance > maxMeters
+        
+        let normalizedDistance = min(maxMeters, max(0.2, Double(safeDistance)))
+        let radius = 20.0 + (CGFloat(normalizedDistance / maxMeters) * 270.0)
+        
+        let x = radius * cos(CGFloat(currentAngle))
+        let y = radius * sin(CGFloat(currentAngle))
+        
+        let nodeColor: Color = .purple
+        
+        return ZStack {
+            Circle()
+                .fill(nodeColor)
+                .frame(width: 8, height: 8)
+                .shadow(color: nodeColor, radius: 5)
+            
+            Circle()
+                .stroke(nodeColor.opacity(hoveredBTId == dev.id ? 0.8 : 0.3), lineWidth: hoveredBTId == dev.id ? 2 : 1)
+                .frame(width: hoveredBTId == dev.id ? 20 : 16 * pulseScale, height: hoveredBTId == dev.id ? 20 : 16 * pulseScale)
+                .scaleEffect(hoveredBTId == dev.id ? 1.15 : 1.0)
+                .opacity(hoveredBTId == dev.id ? 1.0 : Double(2.0 - pulseScale))
+            
+            VStack(spacing: 2) {
+                Text(dev.name.isEmpty ? "未命名 BLE 终端" : dev.name)
+                    .font(.system(size: 7.5, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(nodeColor.opacity(hoveredBTId == dev.id ? 0.45 : 0.2))
+                    .cornerRadius(4)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(nodeColor.opacity(hoveredBTId == dev.id ? 0.6 : 0.3), lineWidth: hoveredBTId == dev.id ? 1.0 : 0.5))
+                
+                Text(String(format: "%.1fm (%d dBm)", safeDistance, dev.rssi))
+                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .foregroundColor(nodeColor)
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 1)
+                    .background(Color.black.opacity(0.85))
+                    .cornerRadius(3)
+            }
+            .offset(y: y >= 0 ? 20 : -20)
+        }
+        .offset(x: x, y: y)
+        .opacity(isOffScreen ? 0.0 : 1.0)
+        .animation(.easeInOut(duration: 0.25), value: isOffScreen)
+        .contentShape(Circle())
+        .onHover { isHovered in
+            hoveredBTId = isHovered ? dev.id : nil
+        }
+        .onTapGesture {
+            selectedBT = dev
+        }
+        .help("【简报】\(dev.name.isEmpty ? "未命名 BLE 终端" : dev.name)\n物理测距: \(String(format: "%.1fm", dev.distanceMeters)) (\(dev.distanceLabel))\n信号强度: \(dev.rssi) dBm\nUUID: \(dev.peripheralId)")
     }
 }
 
 struct WiFiRadarChartView: View {
     let networks: [WiFiNetworkInfo]
+    var zoomScale: CGFloat = 1.0
+    var userPosition: CGPoint = .zero
+    var radarHeading: Double = 0.0
     @State private var scanAngle: Double = 0.0
     @State private var isAnimating = false
+    @State private var selectedWiFi: WiFiNetworkInfo? = nil
+    @State private var hoveredWiFiId: UUID? = nil
     
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
                 Circle()
                     .stroke(Color.purple.opacity(0.15), lineWidth: 1.5)
-                    .frame(width: 140, height: 140)
+                    .frame(width: 140 * zoomScale, height: 140 * zoomScale)
                 
                 Circle()
                     .stroke(Color.purple.opacity(0.08), lineWidth: 1)
-                    .frame(width: 90, height: 90)
+                    .frame(width: 90 * zoomScale, height: 90 * zoomScale)
                 
                 Circle()
                     .fill(RadialGradient(colors: [.purple.opacity(0.4), .clear], center: .center, startRadius: 0, endRadius: 15))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 30 * zoomScale, height: 30 * zoomScale)
                 
                 Path { path in
-                    path.move(to: CGPoint(x: 70, y: 0))
-                    path.addLine(to: CGPoint(x: 70, y: 140))
-                    path.move(to: CGPoint(x: 0, y: 70))
-                    path.addLine(to: CGPoint(x: 140, y: 70))
+                    let size = 140.0 * zoomScale
+                    let half = size / 2.0
+                    path.move(to: CGPoint(x: half, y: 0))
+                    path.addLine(to: CGPoint(x: half, y: size))
+                    path.move(to: CGPoint(x: 0, y: half))
+                    path.addLine(to: CGPoint(x: size, y: half))
                 }
                 .stroke(Color.purple.opacity(0.12), lineWidth: 1)
-                .frame(width: 140, height: 140)
+                .frame(width: 140 * zoomScale, height: 140 * zoomScale)
+                
+                // N, S, E, W orientation markers - dynamically rotate to keep locked to absolute physical directions!
+                Group {
+                    Text("N")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: 0, y: -65 * zoomScale)
+                    
+                    Text("S")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: 0, y: 65 * zoomScale)
+                    
+                    Text("E")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: 65 * zoomScale, y: 0)
+                    
+                    Text("W")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: -65 * zoomScale, y: 0)
+                }
+                .rotationEffect(.degrees(-radarHeading))
                 
                 Circle()
                     .fill(
                         AngularGradient(colors: [.purple.opacity(0.35), .clear], center: .center, angle: .degrees(0))
                     )
-                    .frame(width: 140, height: 140)
+                    .frame(width: 140 * zoomScale, height: 140 * zoomScale)
                     .rotationEffect(.degrees(scanAngle))
                 
-                ForEach(networks) { net in
-                    let angle = Double(abs(net.bssid.hashValue) % 360)
-                    let radius: CGFloat = CGFloat(min(65.0, max(15.0, CGFloat(-net.rssi - 30) * 1.0)))
-                    let rad = angle * .pi / 180.0
-                    let x = radius * cos(CGFloat(rad))
-                    let y = radius * sin(CGFloat(rad))
-                    
-                    ZStack {
-                        Circle()
-                            .fill(net.ssid.contains("隐藏") ? Color.orange : Color.cyan)
-                            .frame(width: 5, height: 5)
-                            .shadow(color: net.ssid.contains("隐藏") ? Color.orange : Color.cyan, radius: 3)
-                        
-                        if isAnimating {
-                            Circle()
-                                .stroke(net.ssid.contains("隐藏") ? Color.orange.opacity(0.3) : Color.cyan.opacity(0.3), lineWidth: 1)
-                                .frame(width: 12, height: 12)
-                                .scaleEffect(isAnimating ? 1.5 : 0.8)
-                                .opacity(isAnimating ? 0.0 : 1.0)
-                        }
-                    }
-                    .offset(x: x, y: y)
+                ForEach(0..<networks.count, id: \.self) { idx in
+                    WiFiRadarChartNodeView(
+                        idx: idx,
+                        net: networks[idx],
+                        totalCount: networks.count,
+                        zoomScale: zoomScale,
+                        userPosition: userPosition,
+                        radarHeading: radarHeading,
+                        hoveredWiFiId: $hoveredWiFiId,
+                        selectedWiFi: $selectedWiFi,
+                        isAnimating: isAnimating
+                    )
                 }
             }
-            .frame(width: 140, height: 140)
+            .frame(width: 140 * zoomScale, height: 140 * zoomScale)
+            .clipped()
+            .popover(item: $selectedWiFi) { selectedNet in
+                WiFiDetailView(net: selectedNet)
+            }
             .onAppear {
                 isAnimating = true
                 withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
@@ -7658,8 +8651,13 @@ struct WiFiRadarChartView: View {
 
 struct WiFiDistanceRadarChartView: View {
     let networks: [WiFiNetworkInfo]
+    var zoomScale: CGFloat = 1.0
+    var userPosition: CGPoint = .zero
+    var radarHeading: Double = 0.0
     @State private var pulseScale: CGFloat = 1.0
     @State private var scanAngle: Double = 0.0
+    @State private var selectedWiFi: WiFiNetworkInfo? = nil
+    @State private var hoveredWiFiId: UUID? = nil
     
     var body: some View {
         VStack(spacing: 8) {
@@ -7667,18 +8665,42 @@ struct WiFiDistanceRadarChartView: View {
                 ForEach([20, 50, 85, 120, 155], id: \.self) { width in
                     Circle()
                         .stroke(Color.green.opacity(0.08), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [2, 3], dashPhase: 0))
-                        .frame(width: CGFloat(width), height: CGFloat(width))
+                        .frame(width: CGFloat(width) * zoomScale, height: CGFloat(width) * zoomScale)
                     
                     let label: String = width == 20 ? "1m" : (width == 50 ? "3m" : (width == 85 ? "6m" : (width == 120 ? "12m" : "20m")))
                     Text(label)
                         .font(.system(size: 6.5, weight: .bold, design: .monospaced))
                         .foregroundColor(.green.opacity(0.25))
-                        .offset(x: 0, y: -CGFloat(width) / 2.0 + 1)
+                        .offset(x: 0, y: -CGFloat(width) * zoomScale / 2.0 + 1)
                 }
+                
+                // N, S, E, W orientation markers - dynamically rotate to keep locked to absolute physical directions!
+                Group {
+                    Text("N")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.green.opacity(0.45))
+                        .offset(x: 0, y: -75 * zoomScale)
+                    
+                    Text("S")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.green.opacity(0.45))
+                        .offset(x: 0, y: 75 * zoomScale)
+                    
+                    Text("E")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.green.opacity(0.45))
+                        .offset(x: 75 * zoomScale, y: 0)
+                    
+                    Text("W")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.green.opacity(0.45))
+                        .offset(x: -75 * zoomScale, y: 0)
+                }
+                .rotationEffect(.degrees(-radarHeading))
                 
                 Circle()
                     .fill(AngularGradient(colors: [.green.opacity(0.15), .clear], center: .center, angle: .degrees(0)))
-                    .frame(width: 160, height: 160)
+                    .frame(width: 160 * zoomScale, height: 160 * zoomScale)
                     .rotationEffect(.degrees(scanAngle))
                 
                 ZStack {
@@ -7695,58 +8717,25 @@ struct WiFiDistanceRadarChartView: View {
                 
                 if !networks.isEmpty {
                     ForEach(0..<networks.count, id: \.self) { idx in
-                        let net = networks[idx]
-                        let totalNodes = networks.count
-                        let angle = Double(idx) * (360.0 / Double(totalNodes))
-                        let rad = angle * .pi / 180.0
-                        
-                        let maxMeters = 20.0
-                        let normalizedDistance = min(maxMeters, max(0.5, net.distanceMeters))
-                        let radius: CGFloat = 10.0 + (CGFloat(normalizedDistance / maxMeters) * 68.0)
-                        
-                        let x = radius * cos(CGFloat(rad))
-                        let y = radius * sin(CGFloat(rad))
-                        
-                        Path { path in
-                            path.move(to: CGPoint(x: 80, y: 80))
-                            path.addLine(to: CGPoint(x: 80 + x, y: 80 + y))
-                        }
-                        .stroke(Color.green.opacity(0.1), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [1, 2], dashPhase: 0))
-                        .frame(width: 160, height: 160)
-                        
-                        ZStack {
-                            let nodeColor: Color = net.distanceMeters < 1.5 ? .green : (net.distanceMeters < 4.0 ? .cyan : (net.distanceMeters < 8.0 ? .yellow : .orange))
-                            
-                            Circle()
-                                .fill(nodeColor)
-                                .frame(width: 6, height: 6)
-                                .shadow(color: nodeColor, radius: 4)
-                            
-                            Circle()
-                                .stroke(nodeColor.opacity(0.3), lineWidth: 0.8)
-                                .frame(width: 14 * pulseScale, height: 14 * pulseScale)
-                                .opacity(Double(2.0 - pulseScale))
-                            
-                            VStack(spacing: 1) {
-                                Text(net.ssid.prefix(5) + (net.ssid.count > 5 ? ".." : ""))
-                                    .font(.system(size: 6, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.6))
-                                Text(String(format: "%.1fm", net.distanceMeters))
-                                    .font(.system(size: 6, weight: .bold, design: .monospaced))
-                                    .foregroundColor(nodeColor)
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 1)
-                                    .background(Color.black.opacity(0.75))
-                                    .cornerRadius(3)
-                                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(nodeColor.opacity(0.4), lineWidth: 0.5))
-                            }
-                            .offset(y: y >= 0 ? 14 : -14)
-                        }
-                        .offset(x: x, y: y)
+                        WiFiDistanceRadarChartNodeView(
+                            idx: idx,
+                            net: networks[idx],
+                            totalCount: networks.count,
+                            zoomScale: zoomScale,
+                            userPosition: userPosition,
+                            radarHeading: radarHeading,
+                            hoveredWiFiId: $hoveredWiFiId,
+                            selectedWiFi: $selectedWiFi,
+                            pulseScale: pulseScale
+                        )
                     }
                 }
             }
-            .frame(width: 160, height: 160)
+            .frame(width: 160 * zoomScale, height: 160 * zoomScale)
+            .clipped()
+            .popover(item: $selectedWiFi) { selectedNet in
+                WiFiDetailView(net: selectedNet)
+            }
             .onAppear {
                 withAnimation(.linear(duration: 5.0).repeatForever(autoreverses: false)) {
                     scanAngle = 360.0
@@ -8073,65 +9062,89 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
 
 struct BluetoothRadarChartView: View {
     let devices: [BluetoothDeviceInfo]
+    var zoomScale: CGFloat = 1.0
+    var userPosition: CGPoint = .zero
+    var radarHeading: Double = 0.0
     @State private var scanAngle: Double = 0.0
     @State private var isAnimating = false
+    @State private var selectedBT: BluetoothDeviceInfo? = nil
+    @State private var hoveredBTId: UUID? = nil
     
     var body: some View {
         VStack(spacing: 8) {
             ZStack {
                 Circle()
                     .stroke(Color.purple.opacity(0.15), lineWidth: 1.5)
-                    .frame(width: 140, height: 140)
+                    .frame(width: 140 * zoomScale, height: 140 * zoomScale)
                 
                 Circle()
                     .stroke(Color.purple.opacity(0.08), lineWidth: 1)
-                    .frame(width: 90, height: 90)
+                    .frame(width: 90 * zoomScale, height: 90 * zoomScale)
                 
                 Circle()
                     .fill(RadialGradient(colors: [.purple.opacity(0.4), .clear], center: .center, startRadius: 0, endRadius: 15))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 30 * zoomScale, height: 30 * zoomScale)
                 
                 Path { path in
-                    path.move(to: CGPoint(x: 70, y: 0))
-                    path.addLine(to: CGPoint(x: 70, y: 140))
-                    path.move(to: CGPoint(x: 0, y: 70))
-                    path.addLine(to: CGPoint(x: 140, y: 70))
+                    let size = 140.0 * zoomScale
+                    let half = size / 2.0
+                    path.move(to: CGPoint(x: half, y: 0))
+                    path.addLine(to: CGPoint(x: half, y: size))
+                    path.move(to: CGPoint(x: 0, y: half))
+                    path.addLine(to: CGPoint(x: size, y: half))
                 }
                 .stroke(Color.purple.opacity(0.12), lineWidth: 1)
-                .frame(width: 140, height: 140)
+                .frame(width: 140 * zoomScale, height: 140 * zoomScale)
+                
+                // N, S, E, W orientation markers - dynamically rotate to keep locked to absolute physical directions!
+                Group {
+                    Text("N")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: 0, y: -65 * zoomScale)
+                    
+                    Text("S")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: 0, y: 65 * zoomScale)
+                    
+                    Text("E")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: 65 * zoomScale, y: 0)
+                    
+                    Text("W")
+                        .font(.system(size: 8, weight: .black, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.5))
+                        .offset(x: -65 * zoomScale, y: 0)
+                }
+                .rotationEffect(.degrees(-radarHeading))
                 
                 Circle()
                     .fill(
                         AngularGradient(colors: [.purple.opacity(0.35), .clear], center: .center, angle: .degrees(0))
                     )
-                    .frame(width: 140, height: 140)
+                    .frame(width: 140 * zoomScale, height: 140 * zoomScale)
                     .rotationEffect(.degrees(scanAngle))
                 
-                ForEach(devices) { dev in
-                    let angle = Double(abs(dev.peripheralId.hashValue) % 360)
-                    let radius: CGFloat = CGFloat(min(65.0, max(15.0, CGFloat(-dev.rssi - 30) * 1.2)))
-                    let rad = angle * .pi / 180.0
-                    let x = radius * cos(CGFloat(rad))
-                    let y = radius * sin(CGFloat(rad))
-                    
-                    ZStack {
-                        Circle()
-                            .fill(Color.purple)
-                            .frame(width: 5, height: 5)
-                            .shadow(color: Color.purple, radius: 3)
-                        
-                        if isAnimating {
-                            Circle()
-                                .stroke(Color.purple.opacity(0.3), lineWidth: 1)
-                                .frame(width: 12, height: 12)
-                                .scaleEffect(isAnimating ? 1.5 : 0.8)
-                                .opacity(isAnimating ? 0.0 : 1.0)
-                        }
-                    }
-                    .offset(x: x, y: y)
+                ForEach(0..<devices.count, id: \.self) { idx in
+                    BluetoothRadarChartNodeView(
+                        idx: idx,
+                        dev: devices[idx],
+                        totalCount: devices.count,
+                        zoomScale: zoomScale,
+                        userPosition: userPosition,
+                        radarHeading: radarHeading,
+                        hoveredBTId: $hoveredBTId,
+                        selectedBT: $selectedBT,
+                        isAnimating: isAnimating
+                    )
                 }
             }
-            .frame(width: 140, height: 140)
+            .frame(width: 140 * zoomScale, height: 140 * zoomScale)
+            .popover(item: $selectedBT) { selectedDev in
+                BluetoothDetailView(dev: selectedDev)
+            }
             .onAppear {
                 isAnimating = true
                 withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
@@ -8152,8 +9165,13 @@ struct BluetoothRadarChartView: View {
 
 struct BluetoothDistanceRadarChartView: View {
     let devices: [BluetoothDeviceInfo]
+    var zoomScale: CGFloat = 1.0
+    var userPosition: CGPoint = .zero
+    var radarHeading: Double = 0.0
     @State private var pulseScale: CGFloat = 1.0
     @State private var scanAngle: Double = 0.0
+    @State private var selectedBT: BluetoothDeviceInfo? = nil
+    @State private var hoveredBTId: UUID? = nil
     
     var body: some View {
         VStack(spacing: 8) {
@@ -8161,18 +9179,42 @@ struct BluetoothDistanceRadarChartView: View {
                 ForEach([20, 50, 85, 120, 155], id: \.self) { width in
                     Circle()
                         .stroke(Color.purple.opacity(0.08), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [2, 3], dashPhase: 0))
-                        .frame(width: CGFloat(width), height: CGFloat(width))
+                        .frame(width: CGFloat(width) * zoomScale, height: CGFloat(width) * zoomScale)
                     
                     let label: String = width == 20 ? "1m" : (width == 50 ? "3m" : (width == 85 ? "5m" : (width == 120 ? "8m" : "15m")))
                     Text(label)
                         .font(.system(size: 6.5, weight: .bold, design: .monospaced))
                         .foregroundColor(.purple.opacity(0.25))
-                        .offset(x: 0, y: -CGFloat(width) / 2.0 + 1)
+                        .offset(x: 0, y: -CGFloat(width) * zoomScale / 2.0 + 1)
                 }
+                
+                // N, S, E, W orientation markers - dynamically rotate to keep locked to absolute physical directions!
+                Group {
+                    Text("N")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.45))
+                        .offset(x: 0, y: -75 * zoomScale)
+                    
+                    Text("S")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.45))
+                        .offset(x: 0, y: 75 * zoomScale)
+                    
+                    Text("E")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.45))
+                        .offset(x: 75 * zoomScale, y: 0)
+                    
+                    Text("W")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.purple.opacity(0.45))
+                        .offset(x: -75 * zoomScale, y: 0)
+                }
+                .rotationEffect(.degrees(-radarHeading))
                 
                 Circle()
                     .fill(AngularGradient(colors: [.purple.opacity(0.15), .clear], center: .center, angle: .degrees(0)))
-                    .frame(width: 160, height: 160)
+                    .frame(width: 160 * zoomScale, height: 160 * zoomScale)
                     .rotationEffect(.degrees(scanAngle))
                 
                 ZStack {
@@ -8189,58 +9231,24 @@ struct BluetoothDistanceRadarChartView: View {
                 
                 if !devices.isEmpty {
                     ForEach(0..<devices.count, id: \.self) { idx in
-                        let dev = devices[idx]
-                        let totalNodes = devices.count
-                        let angle = Double(idx) * (360.0 / Double(totalNodes))
-                        let rad = angle * .pi / 180.0
-                        
-                        let maxMeters = 15.0
-                        let normalizedDistance = min(maxMeters, max(0.2, dev.distanceMeters))
-                        let radius: CGFloat = 10.0 + (CGFloat(normalizedDistance / maxMeters) * 68.0)
-                        
-                        let x = radius * cos(CGFloat(rad))
-                        let y = radius * sin(CGFloat(rad))
-                        
-                        Path { path in
-                            path.move(to: CGPoint(x: 80, y: 80))
-                            path.addLine(to: CGPoint(x: 80 + x, y: 80 + y))
-                        }
-                        .stroke(Color.purple.opacity(0.1), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [1, 2], dashPhase: 0))
-                        .frame(width: 160, height: 160)
-                        
-                        ZStack {
-                            let nodeColor: Color = dev.distanceMeters < 1.0 ? .purple : (dev.distanceMeters < 3.0 ? .cyan : (dev.distanceMeters < 8.0 ? .yellow : .orange))
-                            
-                            Circle()
-                                .fill(nodeColor)
-                                .frame(width: 6, height: 6)
-                                .shadow(color: nodeColor, radius: 4)
-                            
-                            Circle()
-                                .stroke(nodeColor.opacity(0.3), lineWidth: 0.8)
-                                .frame(width: 14 * pulseScale, height: 14 * pulseScale)
-                                .opacity(Double(2.0 - pulseScale))
-                            
-                            VStack(spacing: 1) {
-                                Text(dev.name.prefix(6) + (dev.name.count > 6 ? ".." : ""))
-                                    .font(.system(size: 6, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.6))
-                                Text(String(format: "%.1fm", dev.distanceMeters))
-                                    .font(.system(size: 6, weight: .bold, design: .monospaced))
-                                    .foregroundColor(nodeColor)
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 1)
-                                    .background(Color.black.opacity(0.75))
-                                    .cornerRadius(3)
-                                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(nodeColor.opacity(0.4), lineWidth: 0.5))
-                            }
-                            .offset(y: y >= 0 ? 14 : -14)
-                        }
-                        .offset(x: x, y: y)
+                        BluetoothDistanceRadarChartNodeView(
+                            idx: idx,
+                            dev: devices[idx],
+                            totalCount: devices.count,
+                            zoomScale: zoomScale,
+                            userPosition: userPosition,
+                            radarHeading: radarHeading,
+                            hoveredBTId: $hoveredBTId,
+                            selectedBT: $selectedBT,
+                            pulseScale: pulseScale
+                        )
                     }
                 }
             }
-            .frame(width: 160, height: 160)
+            .frame(width: 160 * zoomScale, height: 160 * zoomScale)
+            .popover(item: $selectedBT) { selectedDev in
+                BluetoothDetailView(dev: selectedDev)
+            }
             .onAppear {
                 withAnimation(.linear(duration: 5.0).repeatForever(autoreverses: false)) {
                     scanAngle = 360.0
@@ -8381,10 +9389,14 @@ class StandaloneWindowManager {
     static let shared = StandaloneWindowManager()
     
     private var wifiWindow: NSWindow?
+    private var bluetoothWindow: NSWindow?
     private var largeRadarWindow: NSWindow?
+    private var mainDashboardWindow: NSWindow?
     
     private var wifiDelegate: WindowDelegate?
+    private var bluetoothDelegate: WindowDelegate?
     private var largeRadarDelegate: WindowDelegate?
+    private var mainDashboardDelegate: WindowDelegate?
     
     private init() {}
     
@@ -8403,6 +9415,7 @@ class StandaloneWindowManager {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.title = "WiFi 空间物理定位雷达系统"
         window.center()
         window.titlebarAppearsTransparent = true
@@ -8439,6 +9452,57 @@ class StandaloneWindowManager {
         NSApp.activate(ignoringOtherApps: true)
     }
     
+    func openBluetoothRadarWindow(bluetoothScanner: BluetoothScanner) {
+        if let window = bluetoothWindow {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        
+        let view = BluetoothRadarStandaloneView(bluetoothScanner: bluetoothScanner)
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.title = "蓝牙 BLE 空间物理定位雷达系统"
+        window.center()
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        
+        let visualEffect = NSVisualEffectView()
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.material = .hudWindow
+        
+        window.contentView = visualEffect
+        
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        visualEffect.addSubview(hostingView)
+        
+        NSLayoutConstraint.activate([
+            hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor)
+        ])
+        
+        bluetoothWindow = window
+        let delegate = WindowDelegate { [weak self] in
+            self?.bluetoothWindow = nil
+            self?.bluetoothDelegate = nil
+        }
+        self.bluetoothDelegate = delegate
+        window.delegate = delegate
+        
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
     func openLargeRadarWindow(wifiScanner: WiFiScanner, bluetoothScanner: BluetoothScanner) {
         if let window = largeRadarWindow {
             window.makeKeyAndOrderFront(nil)
@@ -8453,6 +9517,7 @@ class StandaloneWindowManager {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.title = "极客高维无线电全景雷达监控"
         window.center()
         window.titlebarAppearsTransparent = true
@@ -8488,6 +9553,58 @@ class StandaloneWindowManager {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+    
+    func openMainDashboardWindow() {
+        if let window = mainDashboardWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        
+        let view = DashboardView()
+        
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 580),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.title = "STATUS CTRL 独立控制面板"
+        window.center()
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        
+        let visualEffect = NSVisualEffectView()
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.material = .hudWindow
+        
+        window.contentView = visualEffect
+        
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        visualEffect.addSubview(hostingView)
+        
+        NSLayoutConstraint.activate([
+            hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor)
+        ])
+        
+        mainDashboardWindow = window
+        let delegate = WindowDelegate { [weak self] in
+            self?.mainDashboardWindow = nil
+            self?.mainDashboardDelegate = nil
+        }
+        self.mainDashboardDelegate = delegate
+        window.delegate = delegate
+        
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
 
 class WindowDelegate: NSObject, NSWindowDelegate {
@@ -8503,10 +9620,52 @@ class WindowDelegate: NSObject, NSWindowDelegate {
     }
 }
 
+// ── Signal Source Azimuth & Distance Triangulation Estimator ──
+
+class SignalSourceEstimator {
+    static let shared = SignalSourceEstimator()
+    
+    private var trueWiFiLocations: [String: CGPoint] = [:]
+    private var trueBTLocations: [String: CGPoint] = [:]
+    
+    private init() {}
+    
+    func getTrueWiFiLocation(forKey key: String, index: Int, total: Int, distance: Double) -> CGPoint {
+        if let pos = trueWiFiLocations[key] {
+            return pos
+        }
+        let angle = Double(index) * (360.0 / Double(total)) + 25.0
+        let rad = angle * .pi / 180.0
+        let pos = CGPoint(x: CGFloat(cos(rad)) * CGFloat(distance), y: CGFloat(sin(rad)) * CGFloat(distance))
+        trueWiFiLocations[key] = pos
+        return pos
+    }
+    
+    func getTrueBTLocation(forKey key: String, index: Int, total: Int, distance: Double) -> CGPoint {
+        if let pos = trueBTLocations[key] {
+            return pos
+        }
+        let angle = Double(index) * (360.0 / Double(total)) + 200.0
+        let rad = angle * .pi / 180.0
+        let pos = CGPoint(x: CGFloat(cos(rad)) * CGFloat(distance), y: CGFloat(sin(rad)) * CGFloat(distance))
+        trueBTLocations[key] = pos
+        return pos
+    }
+    
+    func clearHistory() {
+        trueWiFiLocations.removeAll()
+        trueBTLocations.removeAll()
+    }
+}
+
 // ── Window 1 View: WiFi Spatial Standalone Panel (800x600) ──
 
 struct WiFiRadarStandaloneView: View {
     @ObservedObject var wifiScanner: WiFiScanner
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var lastMagnification: CGFloat = 1.0
+    @State private var keyMonitor: Any? = nil
+    @State private var userPosition: CGPoint = .zero
     
     var body: some View {
         VStack(spacing: 0) {
@@ -8638,28 +9797,428 @@ struct WiFiRadarStandaloneView: View {
                     .frame(width: 1)
                 
                 // Right side: Radar Views
-                VStack(spacing: 24) {
+                VStack(spacing: 0) {
                     Text("无线电物理场相对坐标测绘")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.white.opacity(0.6))
                         .padding(.top, 14)
+                        .padding(.bottom, 10)
                     
-                    WiFiRadarChartView(networks: wifiScanner.scanResults)
-                        .scaleEffect(1.2)
-                        .frame(width: 180, height: 180)
-                    
-                    WiFiDistanceRadarChartView(networks: wifiScanner.scanResults)
-                        .scaleEffect(1.1)
-                        .frame(width: 200, height: 200)
+                    // Radar Chart container with clipping & gesture support
+                    ZStack {
+                        VStack(spacing: 24) {
+                            WiFiRadarChartView(networks: wifiScanner.scanResults, zoomScale: zoomScale, userPosition: userPosition)
+                                .scaleEffect(1.2)
+                                .frame(width: 180, height: 180)
+                            
+                            WiFiDistanceRadarChartView(networks: wifiScanner.scanResults, zoomScale: zoomScale, userPosition: userPosition)
+                                .scaleEffect(1.1)
+                                .frame(width: 200, height: 200)
+                        }
+                    }
+                    .frame(width: 320, height: 430)
+                    .clipped()
+                    .contentShape(Rectangle())
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let delta = value / lastMagnification
+                                lastMagnification = value
+                                zoomScale = max(0.5, min(3.0, zoomScale * delta))
+                            }
+                            .onEnded { _ in
+                                lastMagnification = 1.0
+                            }
+                    )
                     
                     Spacer()
+                    
+                    // Walking HUD Indicator (Coordinates display)
+                    VStack(spacing: 2) {
+                        Text("物理步测模拟 [W A S D / 方向键]")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.35))
+                        Text(String(format: "物理坐标: X: %.1fm, Y: %.1fm", userPosition.x, userPosition.y))
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan)
+                    }
+                    .padding(.bottom, 8)
+                    
+                    // Floating-style Premium Zoom Controller Toolbar
+                    HStack(spacing: 10) {
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = max(0.5, zoomScale - 0.1)
+                            }
+                        }) {
+                            Image(systemName: "minus.magnifyingglass")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Text(String(format: "%d%%", Int(zoomScale * 100)))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.9))
+                            .frame(width: 38)
+                        
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = min(3.0, zoomScale + 0.1)
+                            }
+                        }) {
+                            Image(systemName: "plus.magnifyingglass")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Button(action: {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                zoomScale = 1.0
+                                userPosition = .zero
+                            }
+                        }) {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white.opacity(0.7))
+                                .frame(width: 22, height: 22)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.45))
+                    .cornerRadius(18)
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                    .shadow(color: Color.black.opacity(0.35), radius: 5, x: 0, y: 2)
+                    .padding(.bottom, 20)
                 }
                 .frame(width: 320)
                 .background(Color.black.opacity(0.1))
             }
         }
         .frame(width: 800, height: 600)
+        .background(
+            ZStack {
+                Color(red: 0.08, green: 0.09, blue: 0.12)
+                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 350)
+                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 350)
+            }
+        )
         .preferredColorScheme(.dark)
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if let chars = event.charactersIgnoringModifiers {
+                    if chars == "-" {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = max(0.5, zoomScale - 0.1)
+                        }
+                        return nil
+                    } else if chars == "=" || chars == "+" {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = min(3.0, zoomScale + 0.1)
+                        }
+                        return nil
+                    } else if chars == "w" || chars == "W" || event.keyCode == 126 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.y += 0.5
+                        }
+                        return nil
+                    } else if chars == "s" || chars == "S" || event.keyCode == 125 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.y -= 0.5
+                        }
+                        return nil
+                    } else if chars == "a" || chars == "A" || event.keyCode == 123 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.x -= 0.5
+                        }
+                        return nil
+                    } else if chars == "d" || chars == "D" || event.keyCode == 124 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.x += 0.5
+                        }
+                        return nil
+                    }
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
+        }
+    }
+}
+
+// ── Window 3 View: Bluetooth Spatial Standalone Panel (800x600) ──
+
+struct BluetoothRadarStandaloneView: View {
+    @ObservedObject var bluetoothScanner: BluetoothScanner
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var lastMagnification: CGFloat = 1.0
+    @State private var keyMonitor: Any? = nil
+    @State private var userPosition: CGPoint = .zero
+    @State private var expandedBluetoothId: String? = nil
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header Bar
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Image(systemName: "bolt.bluetooth")
+                            .font(.system(size: 16))
+                            .foregroundColor(.purple)
+                        Text("蓝牙 BLE 空间物理定位扫频系统")
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundColor(.white)
+                    }
+                    Text("IOKit / CoreBluetooth 驱动级低功耗无线电寻址与极坐标定位靶向图")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                
+                Spacer()
+                
+                Button(action: {
+                    bluetoothScanner.startScan()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .rotationEffect(.degrees(bluetoothScanner.isScanning ? 360 : 0))
+                        Text(bluetoothScanner.isScanning ? "正在扫描..." : "触发空间重扫")
+                    }
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 14)
+                    .background(Color.purple.opacity(0.2))
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.purple.opacity(0.4), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(bluetoothScanner.isScanning)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 16)
+            
+            Divider().background(Color.white.opacity(0.08))
+            
+            HStack(spacing: 0) {
+                // Left side: Detailed Table
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("已扫描到的低功耗蓝牙外设列表 (\(bluetoothScanner.scanResults.count))")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+                    
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 8) {
+                            ForEach(bluetoothScanner.scanResults) { dev in
+                                BluetoothNetworkRowView(
+                                    dev: dev,
+                                    isExpanded: expandedBluetoothId == dev.peripheralId,
+                                    onTap: {
+                                        if expandedBluetoothId == dev.peripheralId {
+                                            expandedBluetoothId = nil
+                                        } else {
+                                            expandedBluetoothId = dev.peripheralId
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                
+                // Vertical divider
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(width: 1)
+                
+                // Right side: Radar Views
+                VStack(spacing: 0) {
+                    Text("无线电物理场相对坐标测绘")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white.opacity(0.6))
+                        .padding(.top, 14)
+                        .padding(.bottom, 10)
+                    
+                    // Radar Chart container with clipping & gesture support
+                    ZStack {
+                        VStack(spacing: 24) {
+                            BluetoothRadarChartView(devices: bluetoothScanner.scanResults, zoomScale: zoomScale, userPosition: userPosition)
+                                .scaleEffect(1.2)
+                                .frame(width: 180, height: 180)
+                            
+                            BluetoothDistanceRadarChartView(devices: bluetoothScanner.scanResults, zoomScale: zoomScale, userPosition: userPosition)
+                                .scaleEffect(1.1)
+                                .frame(width: 200, height: 200)
+                        }
+                    }
+                    .frame(width: 320, height: 430)
+                    .clipped()
+                    .contentShape(Rectangle())
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { value in
+                                let delta = value / lastMagnification
+                                lastMagnification = value
+                                zoomScale = max(0.5, min(3.0, zoomScale * delta))
+                            }
+                            .onEnded { _ in
+                                lastMagnification = 1.0
+                            }
+                    )
+                    
+                    Spacer()
+                    
+                    // Walking HUD Indicator (Coordinates display)
+                    VStack(spacing: 2) {
+                        Text("物理步测模拟 [W A S D / 方向键]")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.35))
+                        Text(String(format: "物理坐标: X: %.1fm, Y: %.1fm", userPosition.x, userPosition.y))
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.purple)
+                    }
+                    .padding(.bottom, 8)
+                    
+                    // Floating-style Premium Zoom Controller Toolbar
+                    HStack(spacing: 10) {
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = max(0.5, zoomScale - 0.1)
+                            }
+                        }) {
+                            Image(systemName: "minus.magnifyingglass")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Text(String(format: "%d%%", Int(zoomScale * 100)))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.9))
+                            .frame(width: 38)
+                        
+                        Button(action: {
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                zoomScale = min(3.0, zoomScale + 0.1)
+                            }
+                        }) {
+                            Image(systemName: "plus.magnifyingglass")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Button(action: {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                                zoomScale = 1.0
+                                userPosition = .zero
+                            }
+                        }) {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.white.opacity(0.7))
+                                .frame(width: 22, height: 22)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.45))
+                    .cornerRadius(18)
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                    .shadow(color: Color.black.opacity(0.35), radius: 5, x: 0, y: 2)
+                    .padding(.bottom, 20)
+                }
+                .frame(width: 320)
+                .background(Color.black.opacity(0.1))
+            }
+        }
+        .frame(width: 800, height: 600)
+        .background(
+            ZStack {
+                Color(red: 0.08, green: 0.09, blue: 0.12)
+                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 350)
+                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 350)
+            }
+        )
+        .preferredColorScheme(.dark)
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if let chars = event.charactersIgnoringModifiers {
+                    if chars == "-" {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = max(0.5, zoomScale - 0.1)
+                        }
+                        return nil
+                    } else if chars == "=" || chars == "+" {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = min(3.0, zoomScale + 0.1)
+                        }
+                        return nil
+                    } else if chars == "w" || chars == "W" || event.keyCode == 126 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.y += 0.5
+                        }
+                        return nil
+                    } else if chars == "s" || chars == "S" || event.keyCode == 125 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.y -= 0.5
+                        }
+                        return nil
+                    } else if chars == "a" || chars == "A" || event.keyCode == 123 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.x -= 0.5
+                        }
+                        return nil
+                    } else if chars == "d" || chars == "D" || event.keyCode == 124 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.x += 0.5
+                        }
+                        return nil
+                    }
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
+        }
     }
 }
 
@@ -8671,6 +10230,16 @@ struct LargeRadarImmersiveView: View {
     @State private var scanAngle: Double = 0.0
     @State private var pulseScale: CGFloat = 1.0
     @State private var autoScanTimer: Timer?
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var lastMagnification: CGFloat = 1.0
+    @State private var keyMonitor: Any? = nil
+    @State private var userPosition: CGPoint = .zero
+    @State private var radarHeading: Double = 0.0
+    
+    @State private var selectedWiFi: WiFiNetworkInfo? = nil
+    @State private var selectedBT: BluetoothDeviceInfo? = nil
+    @State private var hoveredWiFiId: UUID? = nil
+    @State private var hoveredBTId: UUID? = nil
     
     var body: some View {
         VStack(spacing: 0) {
@@ -8720,156 +10289,215 @@ struct LargeRadarImmersiveView: View {
             
             // Core Interactive Large Radar Canvas
             ZStack {
-                // 1. concentric target circles
-                ForEach([100, 220, 340, 460, 580], id: \.self) { diameter in
-                    Circle()
-                        .stroke(Color.purple.opacity(0.05), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [4, 6], dashPhase: 0))
-                        .frame(width: CGFloat(diameter), height: CGFloat(diameter))
-                    
-                    let distanceLabel: String = diameter == 100 ? "0.5m" : (diameter == 220 ? "2.0m" : (diameter == 340 ? "5.0m" : (diameter == 460 ? "10.0m" : "20.0m")))
-                    Text(distanceLabel)
-                        .font(.system(size: 8, weight: .black, design: .monospaced))
-                        .foregroundColor(.purple.opacity(0.18))
-                        .offset(x: 0, y: -CGFloat(diameter) / 2.0 + 1)
-                }
-                
-                // 2. Crosshairs
-                Path { path in
-                    path.move(to: CGPoint(x: 450, y: 50))
-                    path.addLine(to: CGPoint(x: 450, y: 650))
-                    path.move(to: CGPoint(x: 150, y: 350))
-                    path.addLine(to: CGPoint(x: 750, y: 350))
-                }
-                .stroke(Color.purple.opacity(0.06), lineWidth: 1.5)
-                .frame(width: 900, height: 700)
-                
-                // 3. Sweeping rotating pointer
-                Circle()
-                    .fill(AngularGradient(colors: [.purple.opacity(0.18), .cyan.opacity(0.05), .clear], center: .center, angle: .degrees(0)))
-                    .frame(width: 600, height: 600)
-                    .rotationEffect(.degrees(scanAngle))
-                
-                // 4. Center sensor module
                 ZStack {
-                    Circle()
-                        .fill(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 24, height: 24)
-                        .shadow(color: .purple.opacity(0.6), radius: 8)
+                    // 1. concentric target circles
+                    ForEach([100, 220, 340, 460, 580], id: \.self) { diameter in
+                        Circle()
+                            .stroke(Color.purple.opacity(0.05), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [4, 6], dashPhase: 0))
+                            .frame(width: CGFloat(diameter) * zoomScale, height: CGFloat(diameter) * zoomScale)
+                        
+                        let distance = (CGFloat(diameter / 2) - 20.0) / 270.0 * (20.0 / zoomScale)
+                        let label = String(format: "%.1fm", distance)
+                        
+                        Text(label)
+                            .font(.system(size: 8, weight: .black, design: .monospaced))
+                            .foregroundColor(.purple.opacity(0.18))
+                            .offset(x: 0, y: -CGFloat(diameter) * zoomScale / 2.0 + 1)
+                    }
                     
-                    Circle()
-                        .stroke(Color.cyan.opacity(0.3), lineWidth: 2)
-                        .frame(width: 40 * pulseScale, height: 40 * pulseScale)
-                        .opacity(Double(2.0 - pulseScale))
+                    // N, S, E, W Orientation Compass Overlay
+                    Group {
+                        Text("N")
+                            .font(.system(size: 13, weight: .black, design: .monospaced))
+                            .foregroundColor(.purple.opacity(0.55))
+                            .offset(x: 0, y: -290 * zoomScale)
+                        
+                        Text("S")
+                            .font(.system(size: 13, weight: .black, design: .monospaced))
+                            .foregroundColor(.purple.opacity(0.55))
+                            .offset(x: 0, y: 290 * zoomScale)
+                        
+                        Text("E")
+                            .font(.system(size: 13, weight: .black, design: .monospaced))
+                            .foregroundColor(.purple.opacity(0.55))
+                            .offset(x: 290 * zoomScale, y: 0)
+                        
+                        Text("W")
+                            .font(.system(size: 13, weight: .black, design: .monospaced))
+                            .foregroundColor(.purple.opacity(0.55))
+                            .offset(x: -290 * zoomScale, y: 0)
+                    }
+                    .rotationEffect(.degrees(-radarHeading))
                     
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white)
-                }
-                
-                // 5. Render WiFi Nodes
-                if !wifiScanner.scanResults.isEmpty {
-                    ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
-                        let net = wifiScanner.scanResults[idx]
-                        let angle = Double(idx) * (360.0 / Double(wifiScanner.scanResults.count)) + 25.0
-                        let rad = angle * .pi / 180.0
+                    // 2. Crosshairs
+                    Path { path in
+                        path.move(to: CGPoint(x: 450, y: 50))
+                        path.addLine(to: CGPoint(x: 450, y: 650))
+                        path.move(to: CGPoint(x: 150, y: 350))
+                        path.addLine(to: CGPoint(x: 750, y: 350))
+                    }
+                    .stroke(Color.purple.opacity(0.06), lineWidth: 1.5)
+                    .frame(width: 900, height: 700)
+                    
+                    // 3. Sweeping rotating pointer
+                    Circle()
+                        .fill(AngularGradient(colors: [.purple.opacity(0.18), .cyan.opacity(0.05), .clear], center: .center, angle: .degrees(0)))
+                        .frame(width: 600 * zoomScale, height: 600 * zoomScale)
+                        .rotationEffect(.degrees(scanAngle))
+                    
+                    // 4. Center sensor module
+                    ZStack {
+                        Circle()
+                            .fill(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 24, height: 24)
+                            .shadow(color: .purple.opacity(0.6), radius: 8)
                         
-                        let maxMeters = 20.0
-                        let normalizedDistance = min(maxMeters, max(0.5, net.distanceMeters))
-                        let radius: CGFloat = 20.0 + (CGFloat(normalizedDistance / maxMeters) * 270.0)
+                        Circle()
+                            .stroke(Color.cyan.opacity(0.3), lineWidth: 2)
+                            .frame(width: 40 * pulseScale, height: 40 * pulseScale)
+                            .opacity(Double(2.0 - pulseScale))
                         
-                        let x = radius * cos(CGFloat(rad))
-                        let y = radius * sin(CGFloat(rad))
-                        
-                        let nodeColor: Color = net.ssid.contains("隐藏") ? .orange : .cyan
-                        
-                        ZStack {
-                            Circle()
-                                .fill(nodeColor)
-                                .frame(width: 8, height: 8)
-                                .shadow(color: nodeColor, radius: 5)
-                            
-                            Circle()
-                                .stroke(nodeColor.opacity(0.3), lineWidth: 1)
-                                .frame(width: 16 * pulseScale, height: 16 * pulseScale)
-                                .opacity(Double(2.0 - pulseScale))
-                            
-                            VStack(spacing: 2) {
-                                Text(net.ssid.isEmpty ? "隐藏信号" : net.ssid)
-                                    .font(.system(size: 7.5, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(Color.cyan.opacity(0.2))
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.cyan.opacity(0.3), lineWidth: 0.5))
-                                
-                                Text(String(format: "%.1fm (%d dBm)", net.distanceMeters, net.rssi))
-                                    .font(.system(size: 7, weight: .bold, design: .monospaced))
-                                    .foregroundColor(nodeColor)
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 1)
-                                    .background(Color.black.opacity(0.8))
-                                    .cornerRadius(3)
-                            }
-                            .offset(y: y >= 0 ? 20 : -20)
+                        Image(systemName: "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white)
+                    }
+                    
+                    // 5. Render WiFi Nodes
+                    if !wifiScanner.scanResults.isEmpty {
+                        ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
+                            WiFiImmersiveRadarNodeView(
+                                idx: idx,
+                                net: wifiScanner.scanResults[idx],
+                                totalCount: wifiScanner.scanResults.count,
+                                zoomScale: zoomScale,
+                                userPosition: userPosition,
+                                radarHeading: radarHeading,
+                                hoveredWiFiId: $hoveredWiFiId,
+                                selectedWiFi: $selectedWiFi,
+                                pulseScale: pulseScale
+                            )
                         }
-                        .offset(x: x, y: y)
+                    }
+                    
+                    // 6. Render Bluetooth BLE Nodes
+                    if !bluetoothScanner.scanResults.isEmpty {
+                        ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
+                            BluetoothImmersiveRadarNodeView(
+                                idx: idx,
+                                dev: bluetoothScanner.scanResults[idx],
+                                totalCount: bluetoothScanner.scanResults.count,
+                                zoomScale: zoomScale,
+                                userPosition: userPosition,
+                                radarHeading: radarHeading,
+                                hoveredBTId: $hoveredBTId,
+                                selectedBT: $selectedBT,
+                                pulseScale: pulseScale
+                            )
+                        }
                     }
                 }
+                .frame(width: 900, height: 600)
                 
-                // 6. Render Bluetooth BLE Nodes
-                if !bluetoothScanner.scanResults.isEmpty {
-                    ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
-                        let dev = bluetoothScanner.scanResults[idx]
-                        let angle = Double(idx) * (360.0 / Double(bluetoothScanner.scanResults.count)) + 200.0
-                        let rad = angle * .pi / 180.0
-                        
-                        let maxMeters = 15.0
-                        let normalizedDistance = min(maxMeters, max(0.2, dev.distanceMeters))
-                        let radius: CGFloat = 20.0 + (CGFloat(normalizedDistance / maxMeters) * 270.0)
-                        
-                        let x = radius * cos(CGFloat(rad))
-                        let y = radius * sin(CGFloat(rad))
-                        
-                        let nodeColor: Color = .purple
-                        
-                        ZStack {
-                            Circle()
-                                .fill(nodeColor)
-                                .frame(width: 8, height: 8)
-                                .shadow(color: nodeColor, radius: 5)
-                            
-                            Circle()
-                                .stroke(nodeColor.opacity(0.3), lineWidth: 1)
-                                .frame(width: 16 * pulseScale, height: 16 * pulseScale)
-                                .opacity(Double(2.0 - pulseScale))
-                            
-                            VStack(spacing: 2) {
-                                Text(dev.name)
-                                    .font(.system(size: 7.5, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(Color.purple.opacity(0.2))
-                                    .cornerRadius(4)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.purple.opacity(0.3), lineWidth: 0.5))
-                                
-                                Text(String(format: "%.1fm (%d dBm)", dev.distanceMeters, dev.rssi))
-                                    .font(.system(size: 7, weight: .bold, design: .monospaced))
-                                    .foregroundColor(nodeColor)
-                                    .padding(.horizontal, 3)
-                                    .padding(.vertical, 1)
-                                    .background(Color.black.opacity(0.8))
-                                    .cornerRadius(3)
-                            }
-                            .offset(y: y >= 0 ? 20 : -20)
-                        }
-                        .offset(x: x, y: y)
+                // Keyboard Navigation HUD (Bottom Left)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "keyboard")
+                            .foregroundColor(.purple)
+                        Text("空间定位雷达步测指南:")
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundColor(.white)
                     }
+                    Text("• 按 [↑ ↓ ← →] 或 [W A S D] 模拟您的物理位置移动")
+                        .font(.system(size: 8.5))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text("• 随着移动，信号源的相对方位和测距将智能重算")
+                        .font(.system(size: 8.5))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text(String(format: "• 当前用户物理坐标: X: %.1fm, Y: %.1fm", userPosition.x, userPosition.y))
+                        .font(.system(size: 8.5, design: .monospaced))
+                        .foregroundColor(.cyan)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .padding(.leading, 24)
+                .padding(.bottom, 24)
+                
+                // Floating Zoom Toolbar overlay (bottom right)
+                HStack(spacing: 12) {
+                    Button(action: {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = max(0.5, zoomScale - 0.1)
+                        }
+                    }) {
+                        Image(systemName: "minus.magnifyingglass")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Text(String(format: "%d%%", Int(zoomScale * 100)))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 42)
+                    
+                    Button(action: {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = min(3.0, zoomScale + 0.1)
+                        }
+                    }) {
+                        Image(systemName: "plus.magnifyingglass")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                            zoomScale = 1.0
+                            userPosition = .zero
+                        }
+                    }) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(width: 24, height: 24)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(.trailing, 24)
+                .padding(.bottom, 24)
             }
             .frame(width: 900, height: 600)
             .background(Color.black.opacity(0.12))
+            .clipped()
+            .contentShape(Rectangle())
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { value in
+                        let delta = value / lastMagnification
+                        lastMagnification = value
+                        zoomScale = max(0.5, min(3.0, zoomScale * delta))
+                    }
+                    .onEnded { _ in
+                        lastMagnification = 1.0
+                    }
+            )
+            .popover(item: $selectedWiFi) { selectedNet in
+                WiFiDetailView(net: selectedNet)
+            }
+            .popover(item: $selectedBT) { selectedDev in
+                BluetoothDetailView(dev: selectedDev)
+            }
             
             Divider().background(Color.white.opacity(0.08))
             
@@ -8893,6 +10521,13 @@ struct LargeRadarImmersiveView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 900, height: 750)
+        .background(
+            ZStack {
+                Color(red: 0.08, green: 0.09, blue: 0.12)
+                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 400)
+                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 400)
+            }
+        )
         .preferredColorScheme(.dark)
         .onAppear {
             withAnimation(.linear(duration: 4.5).repeatForever(autoreverses: false)) {
@@ -8910,10 +10545,68 @@ struct LargeRadarImmersiveView: View {
                 wifiScanner.startScan()
                 bluetoothScanner.startScan()
             }
+            
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if let chars = event.charactersIgnoringModifiers {
+                    if chars == "-" {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = max(0.5, zoomScale - 0.1)
+                        }
+                        return nil
+                    } else if chars == "=" || chars == "+" {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            zoomScale = min(3.0, zoomScale + 0.1)
+                        }
+                        return nil
+                    } else if chars == "w" || chars == "W" || event.keyCode == 126 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.y += 0.5
+                        }
+                        return nil
+                    } else if chars == "s" || chars == "S" || event.keyCode == 125 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.y -= 0.5
+                        }
+                        return nil
+                    } else if chars == "a" || chars == "A" || event.keyCode == 123 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.x -= 0.5
+                        }
+                        return nil
+                    } else if chars == "d" || chars == "D" || event.keyCode == 124 {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition.x += 0.5
+                        }
+                        return nil
+                    } else if chars == "q" || chars == "Q" {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            radarHeading = (radarHeading - 5.0).truncatingRemainder(dividingBy: 360.0)
+                        }
+                        return nil
+                    } else if chars == "e" || chars == "E" {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            radarHeading = (radarHeading + 5.0).truncatingRemainder(dividingBy: 360.0)
+                        }
+                        return nil
+                    } else if chars == "r" || chars == "R" {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            userPosition = .zero
+                            radarHeading = 0.0
+                        }
+                        return nil
+                    }
+                }
+                return event
+            }
         }
         .onDisappear {
             autoScanTimer?.invalidate()
             autoScanTimer = nil
+            
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
         }
     }
 }

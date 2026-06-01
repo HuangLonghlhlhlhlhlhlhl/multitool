@@ -144,9 +144,9 @@ class SMCController {
         return false
     }
     
-    private func callDriver(_ input: inout SMCParamStruct, selector: UInt8 = 2) -> (success: Bool, lockContention: Bool) {
-        if Thread.isMainThread {
-            // Main UI thread: non-blocking try-lock to protect UI responsiveness
+    private func callDriver(_ input: inout SMCParamStruct, selector: UInt8 = 2, forceSync: Bool = false) -> (success: Bool, lockContention: Bool) {
+        if Thread.isMainThread && !forceSync {
+            // Main UI thread: non-blocking try-lock to protect UI responsiveness for reads
             guard lock.try() else {
                 return (false, true) // Lock is held by background thread, instantly bail to fallback cache
             }
@@ -154,7 +154,7 @@ class SMCController {
             let ok = runDriverCall(&input, selector: selector)
             return (ok, false)
         } else {
-            // Background thread: synchronous lock, perfectly safe to wait here
+            // Background thread OR forced write operation: synchronous lock, perfectly safe to wait here
             lock.lock()
             defer { lock.unlock() }
             let ok = runDriverCall(&input, selector: selector)
@@ -267,7 +267,7 @@ class SMCController {
             inputInfo.key = key
             inputInfo.data8 = 9 // kSMCGetKeyInfo
             
-            let resInfo = callDriver(&inputInfo)
+            let resInfo = callDriver(&inputInfo, forceSync: true)
             guard resInfo.success else { return false }
             keyInfo = inputInfo.keyInfo
             
@@ -284,7 +284,7 @@ class SMCController {
         inputWrite.keyInfo.dataSize = size
         inputWrite.data8 = 6 // kSMCWriteKey
         
-        let resWrite = callDriver(&inputWrite)
+        let resWrite = callDriver(&inputWrite, forceSync: true)
         return resWrite.success
     }
     
@@ -863,7 +863,7 @@ class SMCController {
         var inputInfo = SMCParamStruct()
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
-        let resInfo = callDriver(&inputInfo)
+        let resInfo = callDriver(&inputInfo, forceSync: true)
         guard resInfo.success else { return false }
         
         let dataSize = inputInfo.keyInfo.dataSize
@@ -891,7 +891,7 @@ class SMCController {
         inputWrite.keyInfo.dataSize = dataSize
         inputWrite.data8 = 6 // kSMCWriteKey
         
-        let resWrite = callDriver(&inputWrite)
+        let resWrite = callDriver(&inputWrite, forceSync: true)
         let success = resWrite.success
         if success {
             cacheLock.lock()
@@ -975,6 +975,33 @@ class SMCController {
             _cachedBatteryLimit = limitVal
             cacheLock.unlock()
             return limitVal
+        }
+        
+        // 4. Fallback: Try reading via authorized smchelper readcharge to bypass sandbox limits
+        let helperPath = "/Library/PrivilegedHelperTools/com.hl.smchelper"
+        if FileManager.default.fileExists(atPath: helperPath) {
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sudo"
+            proc.arguments = ["-n", helperPath, "readcharge"]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                if proc.terminationStatus == 0 {
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                        let parts = output.components(separatedBy: " ")
+                        if parts.count >= 2, let limit = Int(parts[0]), let activeInt = Int(parts[1]) {
+                            let limitVal = (limit: limit, active: activeInt != 0)
+                            cacheLock.lock()
+                            _cachedBatteryLimit = limitVal
+                            cacheLock.unlock()
+                            return limitVal
+                        }
+                    }
+                }
+            } catch {}
         }
         
         cacheLock.lock()

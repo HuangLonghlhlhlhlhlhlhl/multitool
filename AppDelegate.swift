@@ -4,7 +4,8 @@ import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     
     var statusBarItem: NSStatusItem?
-    var popover: NSPopover?
+    var popover: NSPopover? = nil // Deprecated, kept for backward compatibility
+    var dashboardWindow: NSWindow?
     var settingsWindow: NSWindow?
     var aboutWindow: NSWindow?
     var statusBarCustomView: StatusBarCustomView?
@@ -39,12 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Listen for preference changes to update the menu bar layout instantly
         NotificationCenter.default.addObserver(self, selector: #selector(handleDefaultsChange), name: UserDefaults.didChangeNotification, object: nil)
         
-        // 1. Popover（左键展开的主面板）
-        let popover = NSPopover()
-        popover.contentSize = NSSize(width: 680, height: 530)
-        popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: DashboardView())
-        self.popover = popover
+        // 1. Defer dashboard window initialization to click or manual open
         
         // 2. 状态栏按钮
         self.statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -146,13 +142,84 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    private func togglePopover(_ sender: AnyObject?) {
-        guard let button = self.statusBarItem?.button, let popover = self.popover else { return }
-        if popover.isShown {
-            popover.performClose(sender)
+    func showDashboardWindow(centered: Bool = false) {
+        if dashboardWindow == nil {
+            let hostingController = NSHostingController(rootView: DashboardView())
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 680, height: 530),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.title = "STATUS CTRL"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            
+            let visualEffect = NSVisualEffectView()
+            visualEffect.blendingMode = .behindWindow
+            visualEffect.state = .active
+            visualEffect.material = .hudWindow
+            window.contentView = visualEffect
+            
+            let hostingView = NSHostingView(rootView: hostingController.rootView)
+            hostingView.translatesAutoresizingMaskIntoConstraints = false
+            visualEffect.addSubview(hostingView)
+            
+            NSLayoutConstraint.activate([
+                hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
+                hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
+                hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
+                hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor)
+            ])
+            
+            window.minSize = NSSize(width: 680, height: 530)
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            
+            self.dashboardWindow = window
+        }
+        
+        guard let window = self.dashboardWindow else { return }
+        
+        if centered {
+            window.center()
+        } else if !window.isVisible {
+            if let button = self.statusBarItem?.button, let buttonWindow = button.window {
+                let buttonScreenRect = buttonWindow.convertToScreen(button.frame)
+                let windowSize = window.frame.size
+                let x = buttonScreenRect.midX - (windowSize.width / 2)
+                let y = buttonScreenRect.minY - windowSize.height - 8
+                window.setFrameOrigin(NSPoint(x: x, y: y))
+            } else {
+                window.center()
+            }
+        }
+        
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    func hideDashboardWindow() {
+        if let window = dashboardWindow, window.isVisible {
+            window.orderOut(nil)
+        }
+    }
+    
+    func showPopover() {
+        showDashboardWindow(centered: false)
+    }
+    
+    func hidePopover() {
+        hideDashboardWindow()
+    }
+    
+    func togglePopover(_ sender: AnyObject?) {
+        if let window = dashboardWindow, window.isVisible {
+            hideDashboardWindow()
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            showDashboardWindow(centered: false)
         }
     }
     
@@ -214,7 +281,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
     
     @objc private func openDashboard() {
-        togglePopover(nil)
+        showDashboardWindow(centered: true)
     }
     
     @objc func openSettingsWindow() {
@@ -1113,7 +1180,7 @@ struct SettingsView: View {
 // MARK: - About View
 
 struct AboutView: View {
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.2"
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.3"
     
     var body: some View {
         VStack(spacing: 20) {
@@ -1403,9 +1470,55 @@ class StatusBarCustomView: NSView {
         self.targetAttributedString = newAttrStr
     }
     
-    // 允许点击穿透，让下方的 NSStatusBarButton 正常接收所有鼠标点击和高亮状态切换
+    // 允许捕获鼠标事件以进行 hover 探测，同时将点击/拖拽等交互透传给底部的 NSStatusBarButton
     override func hitTest(_ point: NSPoint) -> NSView? {
-        return nil
+        return super.hitTest(point) != nil ? self : nil
+    }
+    
+    // 鼠标点击/拖拽转发逻辑，保证底部的 NSStatusBarButton 仍能完美响应点击动作
+    override func mouseDown(with event: NSEvent) {
+        superview?.mouseDown(with: event)
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        superview?.mouseUp(with: event)
+    }
+    
+    override func mouseDragged(with event: NSEvent) {
+        superview?.mouseDragged(with: event)
+    }
+    
+    override func rightMouseDown(with event: NSEvent) {
+        superview?.rightMouseDown(with: event)
+    }
+    
+    override func rightMouseUp(with event: NSEvent) {
+        superview?.rightMouseUp(with: event)
+    }
+    
+    // 鼠标 hover 监听区域构建
+    private var trackingArea: NSTrackingArea?
+    
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        
+        if let trackingArea = trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        
+        let options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        self.trackingArea = area
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        // 当鼠标划入状态栏图标时，立即打开小窗口
+        DispatchQueue.main.async {
+            if let delegate = NSApp.delegate as? AppDelegate {
+                delegate.showPopover()
+            }
+        }
     }
     
     // 每次父视图（即状态栏按钮）被请求重绘时，也强制我们重绘
@@ -1426,11 +1539,11 @@ class StatusBarCustomView: NSView {
             logo.draw(in: logoRect)
         }
         
-        // 2. 绘制右侧双行监控文本，并按用户指示“向下靠下”靠底对齐微调
+        // 2. 绘制右侧双行监控文本，微调垂直偏移以完美避开边缘裁切，支持字母下延部完整展示
         guard let attrStr = attributedString else { return }
         let totalSize = attrStr.size()
         
-        let y = (bounds.height - totalSize.height) / 2.0 - 1.5 + drawOffsetY
+        let y = (bounds.height - totalSize.height) / 2.0 - 0.5 + drawOffsetY
         let x: CGFloat = showLogo ? 24.0 : 4.0
         
         let drawRect = NSRect(x: x, y: y, width: totalSize.width, height: totalSize.height)

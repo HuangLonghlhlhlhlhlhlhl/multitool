@@ -13,8 +13,6 @@ public class MemoryPurger {
         print("[MemoryPurger] Initiating deep process cleanup...")
         
         let safeToKillSystemProcesses: Set<String> = [
-            "mdworker", "mdworker_shared", "mds", "mds_stores", "mds_helper", "mdworker_shared_sentry",
-            "com.apple.WebKit.WebContent", "com.apple.WebKit.Networking", "com.apple.WebKit.GPU",
             "suggestd", "siriknowledged", "AssistantSiri", "Siri",
             "quicklookd", "QuickLookUIService", "cloudphotosd", "photoanalysisd",
             "photolibraryd", "reversetemplated", "newsd", "mapspushd",
@@ -215,11 +213,14 @@ public class MemoryPurger {
         }
     }
     
-    /// Safely terminates the specified process PIDs.
     public static func terminateProcess(pids: [Int32]) {
         print("[MemoryPurger] Request to terminate PIDs: \(pids)")
         let selfPid = getpid()
         for pid in pids {
+            guard pid > 0 else {
+                print("[MemoryPurger] Bypassing unsafe or invalid PID: \(pid)")
+                continue
+            }
             if pid != selfPid {
                 print("[MemoryPurger] Terminating PID \(pid)...")
                 kill(pid, SIGKILL)

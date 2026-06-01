@@ -4,6 +4,32 @@
 
 ---
 
+## [1.9.3] — 2026-06-01
+
+### 🛠️ 空间定位雷达交互补全与系统级高可用抗崩加固 (Interactive Radar & System Robustness Audit)
+
+#### 🌀 状态栏图标「无感 Hover」唤醒与点击转发 (Popover Hover Auto-Trigger & Perfect Event Forwarding)
+- **鼠标划入即现**：利用 `NSTrackingArea` 动态捕获鼠标划入状态栏图标区域的动作，实现**鼠标悬停自动展开小面板**，告别繁琐的物理点击。
+- **点击穿透转发**：重构了自定义状态栏视图的 `hitTest` 和鼠标事件，通过转发 `mouseDown`/`mouseUp`/`mouseDragged` 完美解决点击被 Custom View 拦截的问题，底部的 `NSStatusBarButton` 仍能完美响应点击与拖拽动作。
+
+#### 🌐 空间定位雷达键盘模拟步测与缩放工具栏 (Keyboard Navigation & Floating Zoom Overlay)
+- **物理键盘步测模拟**：在大型全景雷达视图中，接入了 `NSEvent` 局部键盘监听，支持用户按 **`[W] [A] [S] [D]`** 或 **`[↑] [↓] [←] [→]`** 键模拟自己在物理空间中的坐标移动。随之而来，雷达中的所有 WiFi/蓝牙信号发射源会自适应**重算相对方位和距离**。
+- **悬浮放大缩小工具栏**：右下角新增微型磨砂玻璃放大/缩小工具栏（支持放大至 300% 或缩小至 50% ），并支持双指触控板捏合缩放（MagnificationGesture）以及一键复位。
+- **点击 inspect Popover 控制**：点击雷达上的任意发射点（WiFi 或蓝牙），均可在对应坐标处弹出一个持久化的毛玻璃详情面板（`WiFiDetailView`/`BluetoothDetailView`），展示 UUID、物理衰减率和信号抗干扰波浪条。
+
+#### 🔋 SMC 强制同步通道与 Sandbox 电量读取提权兼容 (Sudoers Fallback & Forced Sync)
+- **非阻塞主线程的强制写入**：在进行设置（如写入电池充电阈值）时，主线程若采用 `tryLock` 可能会导致写入失败。我们新增了 `forceSync` 参数，在调用 `writeKey`/`setBatteryChargeLimit` 时强制进行同步锁等待，确保 100% 写入成功。
+- **Sudo 提权保养限额读取 fallback**：在沙箱机制下，直接读取电池充电限制 Key 偶尔会受限。我们新增了安全 fallback 通路，在直接读取失败时自动调用 `/Library/PrivilegedHelperTools/com.hl.smchelper readcharge` 提取状态，保证电量保养检测的绝对高可用。
+
+#### 🧹 进程级安全清理过滤与 PID 防崩加固 (Memory Clean System Safe Exclusion & Robust PID Check)
+- **避免系统服务不稳定**：在进行一键内存极速释放时，从清理名单中剔除了 `mds` (Spotlight 索引器)、`mdworker` 及其相关 WebKit 核心渲染进程，防止因误杀导致系统搜索卡顿或浏览器网页崩溃。
+- **PID 防崩校验**：在 `terminateProcess` 中加入 `guard pid > 0` 健壮性前置校验，100% 避免传入无效或特权 PID 引起的底层系统异常。
+
+#### 🛡️ GitHub API 速率限制处理与在线检查容错 (GitHub API Rate Limit Graceful Handlers)
+- **API 优雅限流提醒**：在请求 GitHub API 获取在线更新包时，若触发 GitHub 单 IP 访问限制（HTTP 403 / 429），不再提示“网络解析错误”，而是精准呈现“`GitHub API 访问速率受限，请稍后再试`”，极大地增强了人机界面的亲和力。
+
+---
+
 ## [1.9.2] — 2026-05-29
 
 ### 🌐 网络蓝牙全景空间物理定位雷达与高精度 BLE 扫频中心 (Panoramic Wireless & BLE Radar Hub)

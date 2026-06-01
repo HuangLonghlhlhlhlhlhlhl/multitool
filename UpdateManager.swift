@@ -11,7 +11,7 @@ class UpdateManager: NSObject, ObservableObject {
     }
     
     @Published var currentVersion: String = {
-        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.2"
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.3"
     }()
     
     @Published var latestVersion: String? = nil
@@ -108,6 +108,14 @@ class UpdateManager: NSObject, ObservableObject {
             if let error = error {
                 DispatchQueue.main.async {
                     self.checkError = error.localizedDescription
+                    completion?(false)
+                }
+                return
+            }
+            
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 403 || httpResponse.statusCode == 429 {
+                DispatchQueue.main.async {
+                    self.checkError = "GitHub API 访问速率受限，请稍后再试"
                     completion?(false)
                 }
                 return
