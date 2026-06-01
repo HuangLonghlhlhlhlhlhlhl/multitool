@@ -1854,10 +1854,45 @@ struct DashboardView: View {
                     .frame(width: 240, height: 240)
                 
                 // Concentric circles representing distance divisions
-                ForEach([80, 160, 240], id: \.self) { diameter in
+                ForEach([60, 120, 180, 240], id: \.self) { diameter in
                     Circle()
-                        .stroke(Color.cyan.opacity(0.12), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [2, 4], dashPhase: 0))
+                        .stroke(Color.cyan.opacity(0.15), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [3, 4], dashPhase: 0))
                         .frame(width: CGFloat(diameter), height: CGFloat(diameter))
+                }
+                
+                // Distance labels placed directly on concentric range rings
+                Group {
+                    Text("5m")
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.6))
+                        .offset(x: 0, y: -30)
+                    
+                    Text("10m")
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.6))
+                        .offset(x: 0, y: -60)
+                    
+                    Text("15m")
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.6))
+                        .offset(x: 0, y: -90)
+                    
+                    Text("20m")
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan.opacity(0.6))
+                        .offset(x: 0, y: -120)
+                }
+                
+                // 360° degree dial boundary ticks (36 ticks, every 10 degrees)
+                ForEach(0..<36, id: \.self) { tick in
+                    let angle = Double(tick * 10)
+                    let length: CGFloat = tick % 9 == 0 ? 8 : 4
+                    let color = tick % 9 == 0 ? Color.cyan.opacity(0.7) : Color.cyan.opacity(0.3)
+                    Rectangle()
+                        .fill(color)
+                        .frame(width: 1, height: length)
+                        .offset(y: -120 + (length / 2))
+                        .rotationEffect(.degrees(angle))
                 }
                 
                 // Grid crosshairs
@@ -1872,7 +1907,12 @@ struct DashboardView: View {
                 // Sweeping rotating radar laser
                 Circle()
                     .fill(
-                        AngularGradient(colors: [.cyan.opacity(0.2), .clear], center: .center, angle: .degrees(0))
+                        AngularGradient(
+                            gradient: Gradient(colors: [.cyan.opacity(0.35), .cyan.opacity(0.1), .purple.opacity(0.05), .clear]),
+                            center: .center,
+                            startAngle: .degrees(0),
+                            endAngle: .degrees(270)
+                        )
                     )
                     .frame(width: 240, height: 240)
                     .rotationEffect(.degrees(scanAngle))
@@ -8110,17 +8150,29 @@ struct WiFiRadarChartNodeView: View {
         let x = radius * cos(CGFloat(currentAngle))
         let y = radius * sin(CGFloat(currentAngle))
         
+        let signalFactor = CGFloat(max(0, min(100, net.rssi + 100))) / 100.0
+        let haloRadius = 10.0 + (signalFactor * 18.0)
+        let haloOpacity = 0.15 + (signalFactor * 0.3)
+        let nodeColor = net.ssid.contains("隐藏") ? Color.orange : Color.cyan
+        
         return ZStack {
+            // Glowing Halo scaling with RSSI
             Circle()
-                .fill(net.ssid.contains("隐藏") ? Color.orange : Color.cyan)
-                .frame(width: 5, height: 5)
-                .shadow(color: net.ssid.contains("隐藏") ? Color.orange : Color.cyan, radius: 3)
+                .fill(nodeColor)
+                .frame(width: haloRadius, height: haloRadius)
+                .opacity(Double(haloOpacity))
+                .blur(radius: 3)
+            
+            Circle()
+                .fill(nodeColor)
+                .frame(width: 6, height: 6)
+                .shadow(color: nodeColor, radius: 4)
             
             if isAnimating || hoveredWiFiId == net.id {
                 Circle()
-                    .stroke(net.ssid.contains("隐藏") ? Color.orange.opacity(hoveredWiFiId == net.id ? 0.8 : 0.3) : Color.cyan.opacity(hoveredWiFiId == net.id ? 0.8 : 0.3), lineWidth: hoveredWiFiId == net.id ? 1.5 : 1)
-                    .frame(width: hoveredWiFiId == net.id ? 14 : 12, height: hoveredWiFiId == net.id ? 14 : 12)
-                    .scaleEffect(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 1.5 : 0.8))
+                    .stroke(nodeColor.opacity(hoveredWiFiId == net.id ? 0.9 : 0.4), lineWidth: hoveredWiFiId == net.id ? 1.8 : 1)
+                    .frame(width: hoveredWiFiId == net.id ? 18 : 14, height: hoveredWiFiId == net.id ? 18 : 14)
+                    .scaleEffect(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 1.6 : 0.8))
                     .opacity(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 0.0 : 1.0))
             }
         }
@@ -8174,6 +8226,10 @@ struct WiFiDistanceRadarChartNodeView: View {
         
         let nodeColor: Color = net.distanceMeters < 1.5 ? .green : (net.distanceMeters < 4.0 ? .cyan : (net.distanceMeters < 8.0 ? .yellow : .orange))
         
+        let signalFactor = CGFloat(max(0, min(100, net.rssi + 100))) / 100.0
+        let haloRadius = 12.0 + (signalFactor * 16.0)
+        let haloOpacity = 0.15 + (signalFactor * 0.3)
+        
         return ZStack {
             Path { path in
                 let center = 80.0 * zoomScale
@@ -8184,6 +8240,13 @@ struct WiFiDistanceRadarChartNodeView: View {
             .frame(width: 160 * zoomScale, height: 160 * zoomScale)
             
             ZStack {
+                // Glowing Halo scaling with RSSI
+                Circle()
+                    .fill(nodeColor)
+                    .frame(width: haloRadius, height: haloRadius)
+                    .opacity(Double(haloOpacity))
+                    .blur(radius: 3)
+                
                 Circle()
                     .fill(nodeColor)
                     .frame(width: 6, height: 6)
@@ -8259,17 +8322,29 @@ struct BluetoothRadarChartNodeView: View {
         let x = radius * cos(CGFloat(rad))
         let y = radius * sin(CGFloat(rad))
         
+        let signalFactor = CGFloat(max(0, min(100, dev.rssi + 100))) / 100.0
+        let haloRadius = 10.0 + (signalFactor * 18.0)
+        let haloOpacity = 0.15 + (signalFactor * 0.3)
+        let nodeColor = Color.purple
+        
         return ZStack {
+            // Glowing Halo scaling with RSSI
             Circle()
-                .fill(Color.purple)
-                .frame(width: 5, height: 5)
-                .shadow(color: Color.purple, radius: 3)
+                .fill(nodeColor)
+                .frame(width: haloRadius, height: haloRadius)
+                .opacity(Double(haloOpacity))
+                .blur(radius: 3)
+            
+            Circle()
+                .fill(nodeColor)
+                .frame(width: 6, height: 6)
+                .shadow(color: nodeColor, radius: 4)
             
             if isAnimating || hoveredBTId == dev.id {
                 Circle()
-                    .stroke(Color.purple.opacity(hoveredBTId == dev.id ? 0.8 : 0.3), lineWidth: hoveredBTId == dev.id ? 1.5 : 1)
-                    .frame(width: hoveredBTId == dev.id ? 14 : 12, height: hoveredBTId == dev.id ? 14 : 12)
-                    .scaleEffect(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 1.5 : 0.8))
+                    .stroke(nodeColor.opacity(hoveredBTId == dev.id ? 0.9 : 0.4), lineWidth: hoveredBTId == dev.id ? 1.8 : 1)
+                    .frame(width: hoveredBTId == dev.id ? 18 : 14, height: hoveredBTId == dev.id ? 18 : 14)
+                    .scaleEffect(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 1.6 : 0.8))
                     .opacity(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 0.0 : 1.0))
             }
         }
@@ -8758,77 +8833,130 @@ struct WiFiDistanceRadarChartView: View {
 
 struct WiFiNetworkRowView: View {
     let net: WiFiNetworkInfo
+    @State private var isHovered = false
     
     var body: some View {
-        HStack(spacing: 8) {
-            if #available(macOS 13.0, *) {
-                Image(systemName: "wifi", variableValue: Double(max(0, min(100, net.rssi + 100))) / 100.0)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
-                    .frame(width: 20)
-            } else {
-                let strength = net.rssi + 100
-                Image(systemName: "wifi")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
-                    .opacity(strength > 75 ? 1.0 : (strength > 50 ? 0.8 : (strength > 25 ? 0.6 : 0.4)))
-                    .frame(width: 20)
+        HStack(spacing: 12) {
+            // Signal Strength 3-bar indicator + icon
+            VStack(spacing: 3) {
+                // Dynamic WiFi icon
+                if #available(macOS 13.0, *) {
+                    Image(systemName: "wifi", variableValue: Double(max(0, min(100, net.rssi + 100))) / 100.0)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
+                } else {
+                    Image(systemName: "wifi")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
+                }
+                
+                // 3-bar live signal strength indicator
+                HStack(spacing: 1.5) {
+                    ForEach(0..<3) { bar in
+                        let active = getActiveBars(rssi: net.rssi, bar: bar)
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(active ? (net.ssid.contains("隐藏") ? Color.orange : Color.cyan) : Color.white.opacity(0.12))
+                            .frame(width: 3.5, height: CGFloat(4 + bar * 3))
+                    }
+                }
             }
+            .frame(width: 24)
             
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
+            // Middle: Name, BSSID (monospaced), frequency band details
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
                     if net.ssid.contains("隐藏") {
                         Image(systemName: "eye.slash.fill")
                             .font(.system(size: 9))
                             .foregroundColor(.orange)
                         Text(net.ssid)
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.orange)
                     } else {
-                        Text(net.ssid)
-                            .font(.system(size: 11, weight: .semibold))
+                        Text(net.ssid.isEmpty ? "隐藏的无线热点" : net.ssid)
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
                     }
                     
                     Spacer()
                     
+                    // Band tag
                     Text(net.phyMode)
-                        .font(.system(size: 8))
-                        .foregroundColor(.white.opacity(0.4))
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundColor(.cyan)
                         .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.white.opacity(0.06))
-                        .cornerRadius(3)
+                        .padding(.vertical, 1.5)
+                        .background(Color.cyan.opacity(0.12))
+                        .cornerRadius(3.5)
                 }
                 
-                HStack {
+                HStack(spacing: 8) {
                     Text(net.bssid)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.35))
+                        .font(.system(size: 8.5, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4))
                     
                     Spacer()
                     
                     Text("\(net.band) • 信道 \(net.channel) • \(net.rssi)dBm")
-                        .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.4))
+                        .font(.system(size: 8.5))
+                        .foregroundColor(.white.opacity(0.5))
                 }
             }
             
+            // Right: Distance badge pill
             VStack(alignment: .trailing, spacing: 2) {
                 Text(String(format: "%.1fm", net.distanceMeters))
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(net.distanceMeters < 1.5 ? .green : (net.distanceMeters < 4.0 ? .cyan : (net.distanceMeters < 8.0 ? .yellow : .orange)))
+                    .font(.system(size: 11, weight: .black, design: .monospaced))
+                    .foregroundColor(distanceColor(net.distanceMeters))
                 
+                // Color-coded pill badge
                 Text(net.distanceLabel)
-                    .font(.system(size: 7.5))
-                    .foregroundColor(.white.opacity(0.3))
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(distanceColor(net.distanceMeters).opacity(0.85))
+                    .cornerRadius(6)
             }
-            .frame(width: 50, alignment: .trailing)
+            .frame(width: 60, alignment: .trailing)
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Color.white.opacity(0.02))
-        .cornerRadius(10)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(isHovered ? 0.06 : 0.025))
+                .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isHovered ? (net.ssid.contains("隐藏") ? Color.orange.opacity(0.25) : Color.cyan.opacity(0.25)) : Color.white.opacity(0.04), lineWidth: 1)
+        )
+        .scaleEffect(isHovered ? 1.02 : 1.0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.75), value: isHovered)
+        .onHover { hover in
+            isHovered = hover
+        }
+    }
+    
+    private func getActiveBars(rssi: Int, bar: Int) -> Bool {
+        let activeCount: Int
+        if rssi > -60 {
+            activeCount = 3
+        } else if rssi > -75 {
+            activeCount = 2
+        } else if rssi > -90 {
+            activeCount = 1
+        } else {
+            activeCount = 0
+        }
+        return bar < activeCount
+    }
+    
+    private func distanceColor(_ dist: Double) -> Color {
+        if dist < 1.5 { return .green }
+        if dist < 4.0 { return .cyan }
+        if dist < 8.0 { return .orange }
+        return .red
     }
 }
 
@@ -9273,47 +9401,69 @@ struct BluetoothNetworkRowView: View {
     let dev: BluetoothDeviceInfo
     let isExpanded: Bool
     let onTap: () -> Void
+    @State private var isHovered = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.purple.opacity(0.12))
-                        .frame(width: 24, height: 24)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.purple.opacity(0.2), lineWidth: 1))
+            HStack(spacing: 12) {
+                // Left icon with 3-bar signal strength
+                VStack(spacing: 3) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color.purple.opacity(0.15))
+                            .frame(width: 22, height: 22)
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.purple.opacity(0.3), lineWidth: 0.8))
+                        
+                        Image(systemName: dev.name.contains("AirPods") ? "airpodspro" : (dev.name.contains("Watch") ? "applewatch" : (dev.name.contains("iPad") ? "ipad" : "bolt.bluetooth")))
+                            .font(.system(size: 11))
+                            .foregroundColor(.purple)
+                    }
                     
-                    Image(systemName: dev.name.contains("AirPods") ? "airpodspro" : (dev.name.contains("Watch") ? "applewatch" : (dev.name.contains("iPad") ? "ipad" : "bolt.bluetooth")))
-                        .font(.system(size: 11))
-                        .foregroundColor(.purple)
+                    // 3-bar signal strength
+                    HStack(spacing: 1.5) {
+                        ForEach(0..<3) { bar in
+                            let active = getActiveBars(rssi: dev.rssi, bar: bar)
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(active ? Color.purple : Color.white.opacity(0.12))
+                                .frame(width: 3.5, height: CGFloat(4 + bar * 3))
+                        }
+                    }
                 }
+                .frame(width: 24)
                 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(dev.name)
-                        .font(.system(size: 11.5, weight: .bold))
+                // Name & RSSI info
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(dev.name.isEmpty ? "未知外设" : dev.name)
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white)
                         .lineLimit(1)
                     
-                    Text("RSSI: \(dev.rssi) dBm")
+                    Text("信号强度: \(dev.rssi) dBm")
                         .font(.system(size: 8.5, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.white.opacity(0.45))
                 }
                 
                 Spacer()
                 
-                VStack(alignment: .trailing, spacing: 1) {
+                // Distance badge pill
+                VStack(alignment: .trailing, spacing: 2) {
                     Text(String(format: "%.1fm", dev.distanceMeters))
-                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(dev.distanceMeters < 1.0 ? .purple : (dev.distanceMeters < 3.0 ? .cyan : (dev.distanceMeters < 8.0 ? .yellow : .orange)))
+                        .font(.system(size: 11, weight: .black, design: .monospaced))
+                        .foregroundColor(distanceColor(dev.distanceMeters))
                     
                     Text(dev.distanceLabel)
-                        .font(.system(size: 7.5))
-                        .foregroundColor(.white.opacity(0.3))
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(distanceColor(dev.distanceMeters).opacity(0.85))
+                        .cornerRadius(6)
                 }
+                .frame(width: 60, alignment: .trailing)
                 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(.white.opacity(0.4))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .padding(.leading, 2)
             }
@@ -9324,7 +9474,7 @@ struct BluetoothNetworkRowView: View {
             
             if isExpanded {
                 VStack(alignment: .leading, spacing: 8) {
-                    Divider().background(Color.white.opacity(0.06))
+                    Divider().background(Color.white.opacity(0.08))
                     
                     VStack(alignment: .leading, spacing: 4) {
                         Text("设备硬件广播标识 (UUID):")
@@ -9375,11 +9525,43 @@ struct BluetoothNetworkRowView: View {
                 .padding(.bottom, 4)
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(Color.white.opacity(isExpanded ? 0.04 : 0.015))
-        .cornerRadius(8)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.purple.opacity(isExpanded ? 0.15 : 0.0), lineWidth: 1))
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(isHovered ? 0.06 : 0.025))
+                .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isHovered ? Color.purple.opacity(0.25) : Color.white.opacity(0.04), lineWidth: 1)
+        )
+        .scaleEffect(isHovered ? 1.02 : 1.0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.75), value: isHovered)
+        .onHover { hover in
+            isHovered = hover
+        }
+    }
+    
+    private func getActiveBars(rssi: Int, bar: Int) -> Bool {
+        let activeCount: Int
+        if rssi > -60 {
+            activeCount = 3
+        } else if rssi > -75 {
+            activeCount = 2
+        } else if rssi > -90 {
+            activeCount = 1
+        } else {
+            activeCount = 0
+        }
+        return bar < activeCount
+    }
+    
+    private func distanceColor(_ dist: Double) -> Color {
+        if dist < 1.0 { return .purple }
+        if dist < 3.0 { return .cyan }
+        if dist < 8.0 { return .orange }
+        return .red
     }
 }
 
@@ -10606,6 +10788,312 @@ struct LargeRadarImmersiveView: View {
             if let monitor = keyMonitor {
                 NSEvent.removeMonitor(monitor)
                 keyMonitor = nil
+            }
+        }
+    }
+}
+
+// ── Mini Dashboard View for Menu Bar Popup ──
+struct MiniDashboardView: View {
+    private let smc = SMCController.shared
+    private let cpuMonitor = CPUMonitor()
+    @StateObject private var processMonitor = NetworkProcessMonitor()
+    
+    @State private var cpuUsage: Double = 0.0
+    @State private var cpuTemp: Float = 0.0
+    @State private var ramUsage: Double = 0.0
+    @State private var powerStats = PowerMonitor.PowerStats()
+    @State private var isPurging = false
+    @State private var purgeSuccess = false
+    @State private var pulseGreen = false
+    
+    private var totalDownSpeed: Double {
+        processMonitor.topProcesses.reduce(0.0) { $0 + $1.downloadSpeed }
+    }
+    
+    private var totalUpSpeed: Double {
+        processMonitor.topProcesses.reduce(0.0) { $0 + $1.uploadSpeed }
+    }
+    
+    private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header with leading padding of 82 to avoid overlapping traffic lights
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: "gauge.medium.badge.plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.cyan)
+                    Text("STATUS CTRL")
+                        .font(.system(size: 13, weight: .black, design: .rounded))
+                        .foregroundColor(.white)
+                }
+                Spacer()
+                
+                // Status dot or small model info
+                Text(powerStats.friendlyModelName.isEmpty ? "MacBook" : powerStats.friendlyModelName.prefix(12) + "...")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            .padding(.leading, 82)
+            .padding(.trailing, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
+            
+            Divider()
+                .background(Color.white.opacity(0.08))
+                .padding(.horizontal, 16)
+            
+            // Grid content
+            HStack(spacing: 12) {
+                // Left Part: Circular CPU Neon Ring with Temperature
+                VStack(spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.05), lineWidth: 4.5)
+                            .frame(width: 80, height: 80)
+                        
+                        Circle()
+                            .trim(from: 0, to: CGFloat(min(1.0, max(0.0, cpuUsage / 100.0))))
+                            .stroke(
+                                LinearGradient(colors: [.cyan, .purple], startPoint: .top, endPoint: .bottom),
+                                style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
+                            )
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(-90))
+                            .animation(.easeOut(duration: 0.5), value: cpuUsage)
+                        
+                        VStack(spacing: 1) {
+                            Text(String(format: "%.0f%%", cpuUsage))
+                                .font(.system(size: 16, weight: .black, design: .rounded))
+                                .foregroundColor(.white)
+                            Text(String(format: "%.1f°C", cpuTemp))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan)
+                        }
+                    }
+                    .frame(width: 84, height: 84)
+                    
+                    Text("CPU & 温度")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .frame(width: 100)
+                
+                // Right Part: RAM + Battery + Network
+                VStack(alignment: .leading, spacing: 10) {
+                    // RAM Row with micro-purge
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Label {
+                                Text(String(format: "内存 (RAM): %.1f%%", ramUsage))
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.8))
+                            } icon: {
+                                Image(systemName: "memorychip")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.purple)
+                            }
+                            Spacer()
+                            
+                            // Reclaim Memory Button
+                            Button(action: {
+                                triggerMemoryPurge()
+                            }) {
+                                HStack(spacing: 2) {
+                                    if isPurging {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .scaleEffect(0.6)
+                                            .frame(width: 12, height: 12)
+                                    } else if purgeSuccess {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.green)
+                                    } else {
+                                        Image(systemName: "wind")
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.cyan)
+                                    }
+                                }
+                                .padding(4)
+                                .background(Color.white.opacity(0.06))
+                                .cornerRadius(5)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isPurging)
+                        }
+                        
+                        // RAM progress bar
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.white.opacity(0.08))
+                                    .frame(height: 5)
+                                
+                                Capsule()
+                                    .fill(LinearGradient(colors: [.purple, .cyan], startPoint: .leading, endPoint: .trailing))
+                                    .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, ramUsage / 100.0))), height: 5)
+                                    .animation(.easeOut(duration: 0.5), value: ramUsage)
+                            }
+                        }
+                        .frame(height: 5)
+                    }
+                    
+                    // Battery Power Row
+                    HStack(spacing: 6) {
+                        Image(systemName: batteryIcon)
+                            .font(.system(size: 11))
+                            .foregroundColor(powerStats.isCharging ? .green : .cyan)
+                        
+                        Text("电池: \(powerStats.stateOfCharge)%")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.8))
+                        
+                        if powerStats.isConnected {
+                            Image(systemName: "powerplug.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(.green)
+                            Text("(\(powerStats.adapterName.prefix(12)))")
+                                .font(.system(size: 9))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                    }
+                    
+                    // Live Net Speed Row
+                    HStack(spacing: 12) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.cyan)
+                            Text(formatSpeed(totalDownSpeed))
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan)
+                        }
+                        
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.purple)
+                            Text(formatSpeed(totalUpSpeed))
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(.purple)
+                        }
+                    }
+                }
+                .padding(.trailing, 16)
+            }
+            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            
+            Spacer(minLength: 0)
+            
+            Divider()
+                .background(Color.white.opacity(0.08))
+                .padding(.horizontal, 16)
+            
+            // Footer Text Indicator with Pulsing 🟢
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 6, height: 6)
+                    .scaleEffect(pulseGreen ? 1.4 : 0.8)
+                    .opacity(pulseGreen ? 0.4 : 1.0)
+                    .animation(Animation.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: pulseGreen)
+                
+                Text("点击绿灯 🟢 展开完整大面板")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .background(Color.white.opacity(0.01))
+        }
+        .frame(width: 320, height: 260)
+        .background(
+            Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.85)
+        )
+        .preferredColorScheme(.dark)
+        .onAppear {
+            updateStats()
+            processMonitor.startMonitoring()
+            pulseGreen = true
+        }
+        .onDisappear {
+            processMonitor.stopMonitoring()
+        }
+        .onReceive(timer) { _ in
+            updateStats()
+        }
+    }
+    
+    private var batteryIcon: String {
+        let charge = powerStats.stateOfCharge
+        if powerStats.isCharging {
+            return "battery.100.bolt"
+        }
+        if charge > 85 { return "battery.100" }
+        if charge > 65 { return "battery.75" }
+        if charge > 40 { return "battery.50" }
+        if charge > 15 { return "battery.25" }
+        return "battery.0"
+    }
+    
+    private func formatSpeed(_ mbps: Double) -> String {
+        if mbps >= 1.0 {
+            return String(format: "%.1f MB/s", mbps)
+        } else {
+            return String(format: "%.0f KB/s", mbps * 1024.0)
+        }
+    }
+    
+    private func getRAMUsage() -> Double {
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard kerr == KERN_SUCCESS else { return 0.0 }
+        
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        
+        let activePages = Double(stats.active_count)
+        let wirePages = Double(stats.wire_count)
+        let compressedPages = Double(stats.compressor_page_count)
+        let freePages = Double(stats.free_count)
+        let inactivePages = Double(stats.inactive_count)
+        
+        let usedPages = activePages + wirePages + compressedPages
+        let totalPages = usedPages + freePages + inactivePages
+        
+        guard totalPages > 0 else { return 0.0 }
+        return (usedPages / totalPages) * 100.0
+    }
+    
+    private func updateStats() {
+        cpuUsage = cpuMonitor.getUsage() * 100.0
+        cpuTemp = smc.getCPUTemperature()
+        ramUsage = getRAMUsage()
+        powerStats = PowerMonitor.getPowerStats()
+    }
+    
+    private func triggerMemoryPurge() {
+        isPurging = true
+        purgeSuccess = false
+        MemoryPurger.purge(progressHandler: { _ in }) { reclaimedMB in
+            isPurging = false
+            withAnimation(.spring()) {
+                purgeSuccess = true
+            }
+            // Auto hide success checkmark after 2 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation {
+                    purgeSuccess = false
+                }
             }
         }
     }

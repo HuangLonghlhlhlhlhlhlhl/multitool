@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarItem: NSStatusItem?
     var popover: NSPopover? = nil // Deprecated, kept for backward compatibility
     var dashboardWindow: NSWindow?
+    var miniStatusWindow: NSWindow?
     var settingsWindow: NSWindow?
     var aboutWindow: NSWindow?
     var statusBarCustomView: StatusBarCustomView?
@@ -207,19 +208,101 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
+    func showMiniStatusWindow() {
+        if miniStatusWindow == nil {
+            let hostingController = NSHostingController(rootView: MiniDashboardView())
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 260),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.title = "STATUS CTRL MINI"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            
+            let visualEffect = NSVisualEffectView()
+            visualEffect.blendingMode = .behindWindow
+            visualEffect.state = .active
+            visualEffect.material = .hudWindow
+            window.contentView = visualEffect
+            
+            let hostingView = NSHostingView(rootView: hostingController.rootView)
+            hostingView.translatesAutoresizingMaskIntoConstraints = false
+            visualEffect.addSubview(hostingView)
+            
+            NSLayoutConstraint.activate([
+                hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
+                hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
+                hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
+                hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor)
+            ])
+            
+            window.minSize = NSSize(width: 320, height: 260)
+            window.maxSize = NSSize(width: 320, height: 260)
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            
+            // Intercept standard zoom button to open the full dashboard window screen-centered!
+            if let zoomButton = window.standardWindowButton(.zoomButton) {
+                zoomButton.target = self
+                zoomButton.action = #selector(miniZoomButtonClicked)
+            }
+            
+            self.miniStatusWindow = window
+        }
+        
+        guard let window = self.miniStatusWindow else { return }
+        
+        if !window.isVisible {
+            if let button = self.statusBarItem?.button, let buttonWindow = button.window {
+                let buttonScreenRect = buttonWindow.convertToScreen(button.frame)
+                let windowSize = window.frame.size
+                let x = buttonScreenRect.midX - (windowSize.width / 2)
+                let y = buttonScreenRect.minY - windowSize.height - 8
+                window.setFrameOrigin(NSPoint(x: x, y: y))
+            } else {
+                window.center()
+            }
+        }
+        
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    func hideMiniStatusWindow() {
+        if let window = miniStatusWindow, window.isVisible {
+            window.orderOut(nil)
+        }
+    }
+    
+    @objc func miniZoomButtonClicked() {
+        hideMiniStatusWindow()
+        showDashboardWindow(centered: true)
+    }
+    
     func showPopover() {
-        showDashboardWindow(centered: false)
+        showMiniStatusWindow()
     }
     
     func hidePopover() {
-        hideDashboardWindow()
+        hideMiniStatusWindow()
     }
     
     func togglePopover(_ sender: AnyObject?) {
+        var closedAny = false
+        if let window = miniStatusWindow, window.isVisible {
+            hideMiniStatusWindow()
+            closedAny = true
+        }
         if let window = dashboardWindow, window.isVisible {
             hideDashboardWindow()
-        } else {
-            showDashboardWindow(centered: false)
+            closedAny = true
+        }
+        if !closedAny {
+            showMiniStatusWindow()
         }
     }
     
