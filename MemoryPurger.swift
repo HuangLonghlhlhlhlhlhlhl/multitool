@@ -16,12 +16,6 @@ public class MemoryPurger {
             "suggestd", "siriknowledged", "AssistantSiri", "Siri",
             "quicklookd", "QuickLookUIService", "cloudphotosd", "photoanalysisd",
             "photolibraryd", "reversetemplated", "newsd", "mapspushd",
-            "fmfd", "findmydeviced", "sharedfilelistd", "cloudd",
-            "com.apple.appkit.xpc.openAndSavePanelService", "WiFiAgent",
-            "UsageTrackingAgent", "UniversalReceiver", "sharingd", "rapportd",
-            "homed", "remotepairingdeviced", "corespeechd", "spindump",
-            "AppleIDAuthAgent", "BiomeAgent", "SafariCloudHistoryPushAgent",
-            "SafariHistoryService", "com.apple.Safari.History",
             "GoogleSoftwareUpdateAgent", "Microsoft Update Assistant", "Adobe IPC Broker", "Creative Cloud Helper"
         ]
         
@@ -95,11 +89,13 @@ public class MemoryPurger {
                 progressHandler(0.2)
             }
             
-            // 3. Perform balloon allocation to trigger VM compression/cleanup
+            // 3. Perform balloon allocation to trigger VM compression/cleanup safely
             let totalPhysicalMemory = ProcessInfo.processInfo.physicalMemory
             let blockSize = 512 * 1024 * 1024 // 512 MB
-            let numBlocks = Int((totalPhysicalMemory / 2) / UInt64(blockSize))
-            let safeNumBlocks = max(4, min(numBlocks, 32)) // minimum 2GB, maximum 16GB
+            // Target 25% of total memory or maximum 4GB (8 blocks) to avoid locking up system
+            let targetAllocation = totalPhysicalMemory / 4
+            let numBlocks = Int(targetAllocation / UInt64(blockSize))
+            let safeNumBlocks = max(2, min(numBlocks, 8)) // minimum 1GB, maximum 4GB
             var allocatedBlocks: [UnsafeMutableRawPointer] = []
             
             print("[MemoryPurger] Total physical RAM: \(totalPhysicalMemory / 1024 / 1024) MB. Target balloon size: \(safeNumBlocks * 512) MB (\(safeNumBlocks) blocks)")

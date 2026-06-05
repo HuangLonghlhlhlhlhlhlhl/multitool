@@ -72,6 +72,8 @@ class SMCController {
     private var _cachedGpuVoltage: Double = 0.85
     private var _cachedCpuPower: Double = 1.5
     private var _cachedGpuPower: Double = 0.5
+    private var _cachedNpuPower: Double = 0.0
+    private var _cachedSystemPower: Double = 5.0
     
     private var _cachedFanCount: Int = 0
     private var _cachedFanSpeeds: [Float] = Array(repeating: 0.0, count: 4)
@@ -171,6 +173,10 @@ class SMCController {
     
     private func markKeyFailed(_ keyStr: String) {
         cacheLock.lock()
+        guard !unsupportedKeys.contains(keyStr) else {
+            cacheLock.unlock()
+            return
+        }
         let current = keyFailCount[keyStr] ?? 0
         let next = current + 1
         keyFailCount[keyStr] = next
@@ -178,7 +184,9 @@ class SMCController {
             unsupportedKeys.insert(keyStr)
             let list = Array(unsupportedKeys)
             cacheLock.unlock()
-            UserDefaults.standard.set(list, forKey: "SMCUnsupportedKeys")
+            DispatchQueue.global(qos: .background).async {
+                UserDefaults.standard.set(list, forKey: "SMCUnsupportedKeys")
+            }
             print("[SMC] Key '\(keyStr)' failed \(next) times. Blacklisting it to eliminate hardware delays.")
         } else {
             cacheLock.unlock()
@@ -724,6 +732,69 @@ class SMCController {
         cacheLock.unlock()
         return est
     }
+    
+    // Get NPU Power (Watts)
+    func getNPUPower(load: Double) -> Double {
+        if let bytes = readKey("PANE") {
+            let sign: Double = (bytes.0 & 0x80 == 0) ? 1.0 : -1.0
+            let intVal = Double(bytes.0 & 0x7F)
+            let fracVal = Double(bytes.1) / 256.0
+            let watts = sign * (intVal + fracVal)
+            if watts >= 0.0 && watts <= 120.0 {
+                cacheLock.lock()
+                _cachedNpuPower = watts
+                cacheLock.unlock()
+                return watts
+            }
+        }
+        
+        cacheLock.lock()
+        let cached = _cachedNpuPower
+        cacheLock.unlock()
+        
+        if cached > 0.0 && Thread.isMainThread { return cached }
+        
+        // Estimation if hardware key doesn't exist
+        let est = (load / 100.0) * 15.0 // ANE peak is around 15W
+        
+        cacheLock.lock()
+        _cachedNpuPower = est
+        cacheLock.unlock()
+        return est
+    }
+    
+    // Get System Total Power (Watts)
+    func getSystemPower() -> Double {
+        if let bytes = readKey("PSTR") {
+            let sign: Double = (bytes.0 & 0x80 == 0) ? 1.0 : -1.0
+            let intVal = Double(bytes.0 & 0x7F)
+            let fracVal = Double(bytes.1) / 256.0
+            let watts = sign * (intVal + fracVal)
+            if watts >= 0.1 && watts <= 250.0 {
+                cacheLock.lock()
+                _cachedSystemPower = watts
+                cacheLock.unlock()
+                return watts
+            }
+        }
+        
+        cacheLock.lock()
+        let cached = _cachedSystemPower
+        cacheLock.unlock()
+        
+        if cached > 0.1 && Thread.isMainThread { return cached }
+        
+        // Sum up parts plus basic idle base
+        let cpu = _cachedCpuPower
+        let gpu = _cachedGpuPower
+        let npu = _cachedNpuPower
+        let est = cpu + gpu + npu + 3.5 // 3.5W base for screen/board
+        
+        cacheLock.lock()
+        _cachedSystemPower = est
+        cacheLock.unlock()
+        return est
+    }
 
     // Get Fan Count
     func getFanCount() -> Int {
@@ -981,7 +1052,7 @@ class SMCController {
         let helperPath = "/Library/PrivilegedHelperTools/com.hl.smchelper"
         if FileManager.default.fileExists(atPath: helperPath) {
             let proc = Process()
-            proc.launchPath = "/usr/bin/sudo"
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments = ["-n", helperPath, "readcharge"]
             let pipe = Pipe()
             proc.standardOutput = pipe

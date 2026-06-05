@@ -9,3 +9,9 @@ dmg_staging/
 
 # Exclude DMG locally from git repo (we will attach it to release, or if we want it in repo we can commit it, but best practice is release assets)
 *.dmg
+
+# Test binaries
+test_battery
+test_brightness
+test_telemetry
+

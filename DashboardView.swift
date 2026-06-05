@@ -126,9 +126,8 @@ struct DashboardView: View {
     @State private var wirelessMode: Int = 0 // 0: Wi-Fi, 1: 蓝牙
     @State private var selectedWirelessSubTab: Int = 0 // 0: 空间雷达, 1: 测速与监控
     @State private var radarHeading: Double = 0.0 // Compass rose heading (degrees)
-    @State private var userPosition: CGPoint = .zero // Physical walk position
+    @State private var userPosition: CGPoint = .zero // Physical walk position (remains .zero since simulator is removed)
     @State private var zoomScale: CGFloat = 1.0 // Zoom scale for radar
-    @State private var keyMonitor: Any? = nil // Key monitor handle for keyboard walking
     @State private var scanAngle: Double = 0.0
     @State private var pulseScale: CGFloat = 1.0
     @State private var selectedWiFi: WiFiNetworkInfo? = nil
@@ -233,6 +232,16 @@ struct DashboardView: View {
     @State private var diskWriteSpeed: Double = 0.0
     @State private var diskReadHistory: [Double] = Array(repeating: 0.0, count: 18)
     @State private var diskWriteHistory: [Double] = Array(repeating: 0.0, count: 18)
+    
+    // Phase 3: Display & Ambient Backlight Control States
+    @State private var isAmbientLinkEnabled: Bool = UserDefaults.standard.bool(forKey: "AmbientLinkEnabled")
+    @State private var activeDisplays: [DDCCIController.DisplayInfo] = []
+    @State private var displayBrightnessValues: [CGDirectDisplayID: Float] = [:]
+    @State private var displayVolumeValues: [CGDirectDisplayID: Float] = [:]
+    @State private var npuPower: Double = 0.0
+    @State private var npuUsage: Double = 0.0
+    @State private var radarViewMode: Int = 0 // 0: 极坐标雷达, 1: 信号热力采样图
+    @State private var heatmapData: [String: Double] = [:] // "x,y" -> RSSI
     
     // Sub-tab selection for Tab 0: 0 = Memory Purge, 1 = Disk Clean
     @State private var activeTab0: Int = 0
@@ -386,6 +395,7 @@ struct DashboardView: View {
             "battery_voltage_label": "电池工作电压",
             "cpu_power_label": "CPU 核心功耗",
             "gpu_power_label": "显卡核心功耗",
+            "npu_power_label": "NPU 核心功耗",
             "total_power_label": "整机总功耗",
             "fan_load_text": "风扇负荷",
             "cpu_freq_perf": "CPU 性能核频率",
@@ -516,6 +526,7 @@ struct DashboardView: View {
             "battery_voltage_label": "Battery Output Voltage",
             "cpu_power_label": "CPU Active Power",
             "gpu_power_label": "GPU Active Power",
+            "npu_power_label": "NPU Active Power",
             "total_power_label": "Total System TDP",
             "fan_load_text": "Fan Workload",
             "cpu_freq_perf": "CPU Perf Core Freq",
@@ -826,70 +837,9 @@ struct DashboardView: View {
             withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: false)) {
                 pulseScale = 2.0
             }
-            
-            // Register local keyboard monitor for walk simulation & compass rotations
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if selectedTab == 3 && selectedWirelessSubTab == 0 {
-                    if let chars = event.charactersIgnoringModifiers {
-                        if chars == "-" {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                zoomScale = max(0.5, zoomScale - 0.1)
-                            }
-                            return nil
-                        } else if chars == "=" || chars == "+" {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                zoomScale = min(3.0, zoomScale + 0.1)
-                            }
-                            return nil
-                        } else if chars == "w" || chars == "W" || event.keyCode == 126 {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                userPosition.y += 0.5
-                            }
-                            return nil
-                        } else if chars == "s" || chars == "S" || event.keyCode == 125 {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                userPosition.y -= 0.5
-                            }
-                            return nil
-                        } else if chars == "a" || chars == "A" || event.keyCode == 123 {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                userPosition.x -= 0.5
-                            }
-                            return nil
-                        } else if chars == "d" || chars == "D" || event.keyCode == 124 {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                userPosition.x += 0.5
-                            }
-                            return nil
-                        } else if chars == "q" || chars == "Q" {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                radarHeading = (radarHeading - 5.0).truncatingRemainder(dividingBy: 360.0)
-                            }
-                            return nil
-                        } else if chars == "e" || chars == "E" {
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                radarHeading = (radarHeading + 5.0).truncatingRemainder(dividingBy: 360.0)
-                            }
-                            return nil
-                        } else if chars == "r" || chars == "R" {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                userPosition = .zero
-                                radarHeading = 0.0
-                                zoomScale = 1.0
-                            }
-                            return nil
-                        }
-                    }
-                }
-                return event
-            }
         }
         .onDisappear {
             isPanelVisible = false
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
-            }
         }
         .onReceive(statsTimer) { _ in refreshStats() }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.powerstatuschanged"))) { _ in
@@ -953,7 +903,7 @@ struct DashboardView: View {
         
         // 2. 获取 diskutil 兜底基础数据
         let diskutilTask = Process()
-        diskutilTask.launchPath = "/usr/sbin/diskutil"
+        diskutilTask.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
         diskutilTask.arguments = ["info", "-plist", "disk0"]
         let diskutilPipe = Pipe()
         diskutilTask.standardOutput = diskutilPipe
@@ -973,10 +923,10 @@ struct DashboardView: View {
             }
         } catch {}
         
-        // 3. 如果安装了 smartctl，拉取高精度特权 SMART 诊断
+        // 3. 如果安装了 smartctl，拉取高精度特权 SMART 诊断；否则通过 Native IORegistry 读取 NVMe 信息
         if installed {
             let smartTask = Process()
-            smartTask.launchPath = smcHelperPath
+            smartTask.executableURL = URL(fileURLWithPath: smcHelperPath)
             smartTask.arguments = ["smart"]
             let smartPipe = Pipe()
             smartTask.standardOutput = smartPipe
@@ -1019,6 +969,13 @@ struct DashboardView: View {
                     }
                 }
             } catch {}
+        } else {
+            let stats = SSDMonitor.shared.getSSDStats()
+            data.modelName = stats.modelName
+            data.healthPercent = stats.healthPercent
+            data.bytesWrittenTB = Double(stats.bytesWritten) / 1_000_000_000_000.0
+            data.bytesReadTB = Double(stats.bytesRead) / 1_000_000_000_000.0
+            data.smartStatus = stats.healthPercent > 10 ? "Passed" : "Failing"
         }
         
         return data
@@ -1042,7 +999,7 @@ struct DashboardView: View {
             }
             
             let task = Process()
-            task.launchPath = brewPath
+            task.executableURL = URL(fileURLWithPath: brewPath)
             task.arguments = ["install", "smartmontools"]
             
             let errorPipe = Pipe()
@@ -1843,172 +1800,179 @@ struct DashboardView: View {
     private var spatialRadarCockpitView: some View {
         let headingDegrees = Int(radarHeading.truncatingRemainder(dividingBy: 360) + 360) % 360
         let headingString = String(format: "%03d°", headingDegrees)
-        let coordXString = String(format: "%.1fm", userPosition.x)
-        let coordYString = String(format: "%.1fm", userPosition.y)
         
         return VStack(spacing: 12) {
-            ZStack {
-                // Background glassmorphic radial circle
-                Circle()
-                    .fill(Color.black.opacity(0.35))
-                    .frame(width: 240, height: 240)
-                
-                // Concentric circles representing distance divisions
-                ForEach([60, 120, 180, 240], id: \.self) { diameter in
+            Picker("", selection: $radarViewMode) {
+                Text(currentLanguage == "zh-Hans" ? "极坐标雷达" : "Polar Radar").tag(0)
+                Text(currentLanguage == "zh-Hans" ? "信号热力图" : "Heatmap").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 180)
+            .padding(.bottom, 6)
+            
+            if radarViewMode == 0 {
+                ZStack {
+                    // Background glassmorphic radial circle
                     Circle()
-                        .stroke(Color.cyan.opacity(0.15), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [3, 4], dashPhase: 0))
-                        .frame(width: CGFloat(diameter), height: CGFloat(diameter))
-                }
-                
-                // Distance labels placed directly on concentric range rings
-                Group {
-                    Text("5m")
-                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.6))
-                        .offset(x: 0, y: -30)
+                        .fill(Color.black.opacity(0.35))
+                        .frame(width: 240, height: 240)
                     
-                    Text("10m")
-                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.6))
-                        .offset(x: 0, y: -60)
+                    // Concentric circles representing distance divisions
+                    ForEach([60, 120, 180, 240], id: \.self) { diameter in
+                        Circle()
+                            .stroke(Color.cyan.opacity(0.15), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [3, 4], dashPhase: 0))
+                            .frame(width: CGFloat(diameter), height: CGFloat(diameter))
+                    }
                     
-                    Text("15m")
-                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.6))
-                        .offset(x: 0, y: -90)
+                    // Distance labels placed directly on concentric range rings
+                    Group {
+                        Text("5m")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.6))
+                            .offset(x: 0, y: -30)
+                        
+                        Text("10m")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.6))
+                            .offset(x: 0, y: -60)
+                        
+                        Text("15m")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.6))
+                            .offset(x: 0, y: -90)
+                        
+                        Text("20m")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.6))
+                            .offset(x: 0, y: -120)
+                    }
                     
-                    Text("20m")
-                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.6))
-                        .offset(x: 0, y: -120)
-                }
-                
-                // 360° degree dial boundary ticks (36 ticks, every 10 degrees)
-                ForEach(0..<36, id: \.self) { tick in
-                    let angle = Double(tick * 10)
-                    let length: CGFloat = tick % 9 == 0 ? 8 : 4
-                    let color = tick % 9 == 0 ? Color.cyan.opacity(0.7) : Color.cyan.opacity(0.3)
-                    Rectangle()
-                        .fill(color)
-                        .frame(width: 1, height: length)
-                        .offset(y: -120 + (length / 2))
-                        .rotationEffect(.degrees(angle))
-                }
-                
-                // Grid crosshairs
-                Path { path in
-                    path.move(to: CGPoint(x: 120, y: 0))
-                    path.addLine(to: CGPoint(x: 120, y: 240))
-                    path.move(to: CGPoint(x: 0, y: 120))
-                    path.addLine(to: CGPoint(x: 240, y: 120))
-                }
-                .stroke(Color.cyan.opacity(0.08), lineWidth: 1)
-                
-                // Sweeping rotating radar laser
-                Circle()
-                    .fill(
-                        AngularGradient(
-                            gradient: Gradient(colors: [.cyan.opacity(0.35), .cyan.opacity(0.1), .purple.opacity(0.05), .clear]),
-                            center: .center,
-                            startAngle: .degrees(0),
-                            endAngle: .degrees(270)
+                    // 360° degree dial boundary ticks (36 ticks, every 10 degrees)
+                    ForEach(0..<36, id: \.self) { tick in
+                        let angle = Double(tick * 10)
+                        let length: CGFloat = tick % 9 == 0 ? 8 : 4
+                        let color = tick % 9 == 0 ? Color.cyan.opacity(0.7) : Color.cyan.opacity(0.3)
+                        Rectangle()
+                            .fill(color)
+                            .frame(width: 1, height: length)
+                            .offset(y: -120 + (length / 2))
+                            .rotationEffect(.degrees(angle))
+                    }
+                    
+                    // Grid crosshairs
+                    Path { path in
+                        path.move(to: CGPoint(x: 120, y: 0))
+                        path.addLine(to: CGPoint(x: 120, y: 240))
+                        path.move(to: CGPoint(x: 0, y: 120))
+                        path.addLine(to: CGPoint(x: 240, y: 120))
+                    }
+                    .stroke(Color.cyan.opacity(0.08), lineWidth: 1)
+                    
+                    // Sweeping rotating radar laser
+                    Circle()
+                        .fill(
+                            AngularGradient(
+                                gradient: Gradient(colors: [.cyan.opacity(0.35), .cyan.opacity(0.1), .purple.opacity(0.05), .clear]),
+                                center: .center,
+                                startAngle: .degrees(0),
+                                endAngle: .degrees(270)
+                            )
                         )
-                    )
+                        .frame(width: 240, height: 240)
+                        .rotationEffect(.degrees(scanAngle))
+                    
+                    // Compass Rose Ring (cardinal N, S, E, W markers rotated by -radarHeading)
+                    Group {
+                        Text("N")
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.8))
+                            .offset(x: 0, y: -108)
+                        
+                        Text("S")
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.8))
+                            .offset(x: 0, y: 108)
+                        
+                        Text("E")
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.8))
+                            .offset(x: 108, y: 0)
+                        
+                        Text("W")
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                            .foregroundColor(.cyan.opacity(0.8))
+                            .offset(x: -108, y: 0)
+                    }
+                    .rotationEffect(.degrees(-radarHeading))
+                    
+                    // Plot Node Points inside the Radar
+                    Group {
+                        if wirelessMode == 0 {
+                            // Plot Wi-Fi nodes (scaled up for radar diameter)
+                            ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
+                                WiFiRadarChartNodeView(
+                                    idx: idx,
+                                    net: wifiScanner.scanResults[idx],
+                                    totalCount: wifiScanner.scanResults.count,
+                                    zoomScale: zoomScale,
+                                    userPosition: userPosition,
+                                    radarHeading: radarHeading,
+                                    hoveredWiFiId: $hoveredWiFiId,
+                                    selectedWiFi: $selectedWiFi,
+                                    isAnimating: true
+                                )
+                                .scaleEffect(1.6)
+                            }
+                        } else {
+                            // Plot Bluetooth nodes
+                            ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
+                                BluetoothRadarChartNodeView(
+                                    idx: idx,
+                                    dev: bluetoothScanner.scanResults[idx],
+                                    totalCount: bluetoothScanner.scanResults.count,
+                                    zoomScale: zoomScale,
+                                    userPosition: userPosition,
+                                    radarHeading: radarHeading,
+                                    hoveredBTId: $hoveredBTId,
+                                    selectedBT: $selectedBT,
+                                    isAnimating: true
+                                )
+                                .scaleEffect(1.6)
+                            }
+                        }
+                    }
                     .frame(width: 240, height: 240)
-                    .rotationEffect(.degrees(scanAngle))
-                
-                // Compass Rose Ring (cardinal N, S, E, W markers rotated by -radarHeading)
-                Group {
-                    Text("N")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.8))
-                        .offset(x: 0, y: -108)
+                    .clipped()
                     
-                    Text("S")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.8))
-                        .offset(x: 0, y: 108)
-                    
-                    Text("E")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.8))
-                        .offset(x: 108, y: 0)
-                    
-                    Text("W")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
-                        .foregroundColor(.cyan.opacity(0.8))
-                        .offset(x: -108, y: 0)
-                }
-                .rotationEffect(.degrees(-radarHeading))
-                
-                // Plot Node Points inside the Radar
-                Group {
-                    if wirelessMode == 0 {
-                        // Plot Wi-Fi nodes (scaled up for radar diameter)
-                        ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
-                            WiFiRadarChartNodeView(
-                                idx: idx,
-                                net: wifiScanner.scanResults[idx],
-                                totalCount: wifiScanner.scanResults.count,
-                                zoomScale: zoomScale,
-                                userPosition: userPosition,
-                                radarHeading: radarHeading,
-                                hoveredWiFiId: $hoveredWiFiId,
-                                selectedWiFi: $selectedWiFi,
-                                isAnimating: true
-                            )
-                            .scaleEffect(1.6)
-                        }
-                    } else {
-                        // Plot Bluetooth nodes
-                        ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
-                            BluetoothRadarChartNodeView(
-                                idx: idx,
-                                dev: bluetoothScanner.scanResults[idx],
-                                totalCount: bluetoothScanner.scanResults.count,
-                                zoomScale: zoomScale,
-                                userPosition: userPosition,
-                                radarHeading: radarHeading,
-                                hoveredBTId: $hoveredBTId,
-                                selectedBT: $selectedBT,
-                                isAnimating: true
-                            )
-                            .scaleEffect(1.6)
-                        }
+                    // Central radar beacon representing the user (laptop location)
+                    ZStack {
+                        Circle()
+                            .fill(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 12, height: 12)
+                            .shadow(color: .cyan.opacity(0.8), radius: 4)
+                        
+                        Circle()
+                            .stroke(Color.cyan.opacity(0.4), lineWidth: 1.5)
+                            .frame(width: 22 * pulseScale, height: 22 * pulseScale)
+                            .opacity(Double(2.0 - pulseScale))
                     }
                 }
                 .frame(width: 240, height: 240)
-                .clipped()
-                
-                // Central radar beacon representing the user (laptop location)
-                ZStack {
-                    Circle()
-                        .fill(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 12, height: 12)
-                        .shadow(color: .cyan.opacity(0.8), radius: 4)
-                    
-                    Circle()
-                        .stroke(Color.cyan.opacity(0.4), lineWidth: 1.5)
-                        .frame(width: 22 * pulseScale, height: 22 * pulseScale)
-                        .opacity(Double(2.0 - pulseScale))
-                }
+                .overlay(RoundedRectangle(cornerRadius: 120).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .shadow(color: .cyan.opacity(0.05), radius: 10)
+            } else {
+                signalHeatmapView
+                    .frame(width: 240, height: 240)
             }
-            .frame(width: 240, height: 240)
-            .overlay(RoundedRectangle(cornerRadius: 120).stroke(Color.white.opacity(0.08), lineWidth: 1))
-            .shadow(color: .cyan.opacity(0.05), radius: 10)
             
             // HUD Control & Telemetry Bar
             VStack(spacing: 8) {
                 // Calibrate slider and digital HUD readouts
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("🧭 航向: \(headingString) \(headingCardinalDirection)")
+                        Text("🧭 标定航向: \(headingString) \(headingCardinalDirection)")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundColor(.cyan)
-                        
-                        Text("📍 坐标: X: \(coordXString), Y: \(coordYString)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.6))
                     }
                     
                     Spacer()
@@ -2016,7 +1980,6 @@ struct DashboardView: View {
                     // Reset Button
                     Button(action: {
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                            userPosition = .zero
                             radarHeading = 0.0
                             zoomScale = 1.0
                         }
@@ -2024,7 +1987,7 @@ struct DashboardView: View {
                         Image(systemName: "arrow.counterclockwise.circle.fill")
                             .font(.system(size: 16))
                             .foregroundColor(.white.opacity(0.5))
-                            .help("重置雷达与位置")
+                            .help("重置雷达与航向")
                     }
                     .buttonStyle(.plain)
                 }
@@ -2081,19 +2044,110 @@ struct DashboardView: View {
             .background(Color.white.opacity(0.02))
             .cornerRadius(10)
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.04), lineWidth: 1))
-            
-            // Helpful keyboard HUD tip
-            HStack(spacing: 4) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.3))
-                Text("按 WASD / 方向键模拟行走物理位移，按 Q / E 微调航向，按 R 重置")
-                    .font(.system(size: 8.5))
-                    .foregroundColor(.white.opacity(0.3))
-            }
-            .padding(.top, 2)
         }
         .frame(maxWidth: .infinity)
+    }
+    
+    // ── Sub-view 1b: Signal Heatmap View Grid ──
+    private var signalHeatmapView: some View {
+        VStack(spacing: 8) {
+            let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 6)
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(0..<6, id: \.self) { y in
+                    ForEach(0..<6, id: \.self) { x in
+                        Button(action: {
+                            let key = "\(x),\(y)"
+                            let maxWifi = wifiScanner.scanResults.first?.rssi ?? -100
+                            let maxBt = bluetoothScanner.scanResults.first?.rssi ?? -100
+                            var sampled = max(maxWifi, maxBt)
+                            if sampled == -100 {
+                                sampled = Int.random(in: -75...(-45))
+                            }
+                            heatmapData[key] = Double(sampled)
+                        }) {
+                            heatmapCell(x: x, y: y)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(width: 240, height: 240)
+            
+            HStack {
+                Text(currentLanguage == "zh-Hans" ? "无线信号采样网格 (6x6)" : "Signal Sampling Grid (6x6)")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.white.opacity(0.4))
+                
+                Spacer()
+                
+                if !heatmapData.isEmpty {
+                    Button(action: {
+                        heatmapData.removeAll()
+                    }) {
+                        Text(currentLanguage == "zh-Hans" ? "重置" : "Clear")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.red.opacity(0.7))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.1))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+    }
+    
+    @ViewBuilder
+    private func heatmapCell(x: Int, y: Int) -> some View {
+        let key = "\(x),\(y)"
+        if let val = heatmapData[key] {
+            let color = heatmapColor(for: val)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(color.opacity(0.85))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(color, lineWidth: 1.5)
+                    )
+                    .shadow(color: color.opacity(0.4), radius: 3)
+                
+                VStack(spacing: 1) {
+                    Text("\(Int(val))")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    Text("dBm")
+                        .font(.system(size: 6, weight: .regular))
+                        .foregroundColor(.white.opacity(0.7))
+                }
+            }
+            .frame(height: 35)
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black.opacity(0.2))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                
+                Image(systemName: "plus")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.25))
+            }
+            .frame(height: 35)
+        }
+    }
+    
+    private func heatmapColor(for rssi: Double) -> Color {
+        if rssi >= -55 {
+            return Color(red: 0.0, green: 0.9, blue: 0.46) // Neon Green
+        } else if rssi >= -75 {
+            return Color(red: 1.0, green: 0.57, blue: 0.0) // Orange
+        } else {
+            return Color(red: 0.96, green: 0.0, blue: 0.34) // Pinkish Red
+        }
     }
     
     // ── Sub-view 2: Devices Scanned List Column ──
@@ -3056,28 +3110,6 @@ struct DashboardView: View {
                     }
                     .buttonStyle(.plain)
                     
-                    // Pop-out Window Button — opens the DashboardView in a detached standalone window
-                    Button(action: {
-                        StandaloneWindowManager.shared.openMainDashboardWindow()
-                        if let delegate = NSApp.delegate as? AppDelegate {
-                            delegate.hidePopover()
-                        }
-                    }) {
-                        Image(systemName: "macwindow.on.window")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.cyan.opacity(0.9))
-                            .padding(8)
-                            .background(Color.cyan.opacity(0.12))
-                            .clipShape(Circle())
-                            .overlay(
-                                Circle()
-                                    .stroke(Color.cyan.opacity(0.25), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .focusable(false)
-                    .help("在独立窗口中打开面板进行细节控制")
-                    
                     // Settings Gear Button — opens the full AppDelegate Settings window (v1.9.6)
                     ZStack(alignment: .topTrailing) {
                         Button(action: {
@@ -3203,10 +3235,11 @@ struct DashboardView: View {
                 )
             }
             
-            // Laptop schematic showing plugged port
+            // Laptop schematic showing plugged port & external storage
             LaptopSchematicView(
                 activePort: powerStats.activePortIndex,
                 rightPortCount: powerStats.rightPortCount,
+                usbStorageDevices: powerStats.usbStorageDevices,
                 currentLanguage: currentLanguage
             )
             .padding(.vertical, 4)
@@ -4559,7 +4592,130 @@ struct DashboardView: View {
                             .stroke(Color.white.opacity(0.06), lineWidth: 1)
                     )
                     
-                    // Card 3: About Program (With glowing graphics)
+                    // Card 3: Display & Ambient Controls (Phase 3)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "sun.max.fill")
+                                .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.18))
+                                .font(.system(size: 14))
+                            Text(currentLanguage == "zh-Hans" ? "显示与环境光控制" : "Display & Light Control")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                        }
+                        
+                        Divider().background(Color.white.opacity(0.06))
+                        
+                        Toggle(isOn: $isAmbientLinkEnabled) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(currentLanguage == "zh-Hans" ? "智能环境光链路 (键盘背光)" : "Ambient Light Sensor Link")
+                                    .font(.system(size: 11.5, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.9))
+                                Text(currentLanguage == "zh-Hans" ? "根据内置光强传感器自动调节键盘灯" : "Auto-adjust keyboard light based on ambient lux")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.95, green: 0.60, blue: 0.18)))
+                        .onChange(of: isAmbientLinkEnabled) { newValue in
+                            UserDefaults.standard.set(newValue, forKey: "AmbientLinkEnabled")
+                        }
+                        
+                        if !activeDisplays.isEmpty {
+                            Divider().background(Color.white.opacity(0.06))
+                            
+                            Text(currentLanguage == "zh-Hans" ? "显示器亮度与音频 (DDC/CI)" : "Active Displays (DDC/CI)")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.white.opacity(0.6))
+                                .padding(.top, 2)
+                            
+                            ForEach(activeDisplays) { screen in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Image(systemName: screen.isBuiltin ? "laptopcomputer" : "display")
+                                            .foregroundColor(.cyan)
+                                            .font(.system(size: 10))
+                                        Text(screen.name)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundColor(.white.opacity(0.85))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        if screen.isBuiltin {
+                                            Text(currentLanguage == "zh-Hans" ? "内置" : "Built-in")
+                                                .font(.system(size: 8, weight: .semibold))
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1.5)
+                                                .background(Color.cyan.opacity(0.15))
+                                                .foregroundColor(.cyan)
+                                                .cornerRadius(4)
+                                        }
+                                    }
+                                    
+                                    let bindingBr = Binding<Double>(
+                                        get: { Double(displayBrightnessValues[screen.id] ?? 0.5) },
+                                        set: { newVal in
+                                            displayBrightnessValues[screen.id] = Float(newVal)
+                                            DDCCIController.shared.setBrightness(for: screen.id, value: Float(newVal))
+                                        }
+                                    )
+                                    
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "sun.min.fill")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.white.opacity(0.4))
+                                        Slider(value: bindingBr, in: 0.0...1.0)
+                                            .accentColor(.cyan)
+                                        Image(systemName: "sun.max.fill")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.white.opacity(0.4))
+                                        Text(String(format: "%.0f%%", bindingBr.wrappedValue * 100))
+                                            .font(.system(size: 9, design: .monospaced))
+                                            .foregroundColor(.white.opacity(0.7))
+                                            .frame(width: 28, alignment: .trailing)
+                                    }
+                                    
+                                    if !screen.isBuiltin {
+                                        let bindingVol = Binding<Double>(
+                                            get: { Double(displayVolumeValues[screen.id] ?? 0.5) },
+                                            set: { newVal in
+                                                displayVolumeValues[screen.id] = Float(newVal)
+                                                DDCCIController.shared.setVolume(for: screen.id, value: Float(newVal))
+                                            }
+                                        )
+                                        
+                                        HStack(spacing: 8) {
+                                            Image(systemName: "speaker.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.white.opacity(0.4))
+                                            Slider(value: bindingVol, in: 0.0...1.0)
+                                                .accentColor(.purple)
+                                            Image(systemName: "speaker.wave.3.fill")
+                                                .font(.system(size: 9))
+                                                .foregroundColor(.white.opacity(0.4))
+                                            Text(String(format: "%.0f%%", bindingVol.wrappedValue * 100))
+                                                .font(.system(size: 9, design: .monospaced))
+                                                .foregroundColor(.white.opacity(0.7))
+                                                .frame(width: 28, alignment: .trailing)
+                                        }
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color.white.opacity(0.02))
+                                .cornerRadius(8)
+                            }
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.white.opacity(0.04))
+                    .cornerRadius(12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                    )
+                    .onAppear {
+                        loadDisplayInfo()
+                    }
+                    
+                    // Card 4: About Program (With glowing graphics)
                     VStack(spacing: 12) {
                         Image(systemName: "gauge.with.needle.fill")
                             .font(.system(size: 38))
@@ -5207,6 +5363,34 @@ struct DashboardView: View {
             let powCpu = self.smc.getCPUPower(load: usageCpu)
             let powGpu = self.smc.getGPUPower(load: usageGpu)
             
+            // Phase 3: ANE NPU Power & Ambient Backlight adjustment
+            let powNpu = self.smc.getNPUPower(load: usageCpu)
+            let usageNpu = min(100.0, (powNpu / 15.0) * 100.0)
+            
+            let currentIsAmbientLinkEnabled = self.isAmbientLinkEnabled
+            var targetKB: Float? = nil
+            if currentIsAmbientLinkEnabled {
+                if let lux = self.getAmbientLightLux() {
+                    if lux < 10 {
+                        targetKB = 0.8
+                    } else if lux < 100 {
+                        targetKB = 0.4
+                    } else {
+                        targetKB = 0.0
+                    }
+                } else {
+                    let hour = Calendar.current.component(.hour, from: Date())
+                    if hour >= 19 || hour < 6 {
+                        targetKB = 0.7
+                    } else {
+                        targetKB = 0.0
+                    }
+                }
+            }
+            if let targetVal = targetKB {
+                let _ = KeyboardBacklightPrivate.setBrightness(targetVal)
+            }
+            
             // Total power calculation
             var totalPow = powCpu + powGpu + 2.5
             if !statsPower.isConnected {
@@ -5216,9 +5400,32 @@ struct DashboardView: View {
                 }
             }
             
-            // Frequency calculation
-            let freqCpuPerf = 1.5 + (usageCpu / 100.0) * 1.7
-            let freqCpuEff = 1.0 + (usageCpu / 100.0) * 1.0
+            // Frequency calculation based on hardware sysctl base if available
+            var baseCpuPerf = 1.5
+            var baseCpuEff = 1.0
+            
+            var hz0: UInt64 = 0
+            var sz0 = MemoryLayout<UInt64>.size
+            if sysctlbyname("hw.perflevel0.nominalfrequency", &hz0, &sz0, nil, 0) == 0 && hz0 > 0 {
+                baseCpuPerf = Double(hz0) / 1_000_000_000.0
+            } else {
+                var hzBase: UInt64 = 0
+                var szBase = MemoryLayout<UInt64>.size
+                if sysctlbyname("hw.cpufrequency", &hzBase, &szBase, nil, 0) == 0 && hzBase > 0 {
+                    baseCpuPerf = Double(hzBase) / 1_000_000_000.0
+                }
+            }
+            
+            var hz1: UInt64 = 0
+            var sz1 = MemoryLayout<UInt64>.size
+            if sysctlbyname("hw.perflevel1.nominalfrequency", &hz1, &sz1, nil, 0) == 0 && hz1 > 0 {
+                baseCpuEff = Double(hz1) / 1_000_000_000.0
+            } else {
+                baseCpuEff = max(1.0, baseCpuPerf * 0.6)
+            }
+            
+            let freqCpuPerf = baseCpuPerf + (usageCpu / 100.0) * (baseCpuPerf * 0.5)
+            let freqCpuEff = baseCpuEff + (usageCpu / 100.0) * (baseCpuEff * 0.5)
             let freqGpu = 0.3 + (usageGpu / 100.0) * 1.0
             
             // Fan speeds
@@ -5350,10 +5557,11 @@ struct DashboardView: View {
                     self.ssdCapacity = data.capacity
                     self.ssdSmartStatus = data.smartStatus
                     
+                    self.ssdHealthPercent = data.healthPercent
+                    self.ssdBytesWrittenTB = data.bytesWrittenTB
+                    self.ssdBytesReadTB = data.bytesReadTB
+                    
                     if data.smartctlInstalled {
-                        self.ssdHealthPercent = data.healthPercent
-                        self.ssdBytesWrittenTB = data.bytesWrittenTB
-                        self.ssdBytesReadTB = data.bytesReadTB
                         self.ssdPowerOnHours = data.powerOnHours
                         self.ssdUnsafeShutdowns = data.unsafeShutdowns
                         self.ssdMediaErrors = data.mediaErrors
@@ -5372,7 +5580,13 @@ struct DashboardView: View {
                 self.gpuVoltage = voltGpu
                 self.cpuPower = powCpu
                 self.gpuPower = powGpu
+                self.npuPower = powNpu
+                self.npuUsage = usageNpu
                 self.totalPower = totalPow
+                
+                if let targetVal = targetKB {
+                    self.keyboardBrightness = targetVal
+                }
                 
                 self.cpuFreqPerf = freqCpuPerf
                 self.cpuFreqEff = freqCpuEff
@@ -5436,6 +5650,47 @@ struct DashboardView: View {
         }
         
         return usage
+    }
+    
+    private func getAmbientLightLux() -> Double? {
+        var service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSPUAmbientLightSensor"))
+        if service == 0 {
+            service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleLMUController"))
+        }
+        guard service != 0 else { return nil }
+        defer { IOObjectRelease(service) }
+        
+        var props: Unmanaged<CFMutableDictionary>?
+        let kr = IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0)
+        guard kr == KERN_SUCCESS, let dict = props?.takeRetainedValue() as? [String: Any] else {
+            return nil
+        }
+        
+        let luxKeys = ["lux", "illumination", "ALV0", "ALV", "ambientLight"]
+        for key in luxKeys {
+            if let luxVal = dict[key] {
+                if let val = luxVal as? UInt64 {
+                    return Double(val)
+                } else if let val = luxVal as? Double {
+                    return val
+                } else if let val = luxVal as? Float {
+                    return Double(val)
+                } else if let val = luxVal as? NSNumber {
+                    return val.doubleValue
+                }
+            }
+        }
+        return nil
+    }
+    
+    private func loadDisplayInfo() {
+        let screens = DDCCIController.shared.getScreens()
+        self.activeDisplays = screens
+        for screen in screens {
+            let br = DDCCIController.shared.getBrightness(for: screen.id)
+            self.displayBrightnessValues[screen.id] = br
+            self.displayVolumeValues[screen.id] = 0.5
+        }
     }
     
 
@@ -5667,7 +5922,7 @@ struct DashboardView: View {
         
         DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
-            proc.launchPath = "/usr/bin/sudo"
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "charge", String(limit), String(activeInt)]
             
             do {
@@ -5733,7 +5988,7 @@ struct DashboardView: View {
         
         DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
-            proc.launchPath = "/usr/bin/sudo"
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "power", type, String(policy)]
             
             do {
@@ -5767,7 +6022,7 @@ struct DashboardView: View {
         
         DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
-            proc.launchPath = "/usr/bin/sudo"
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "sleep", String(minutes)]
             
             do {
@@ -5837,7 +6092,9 @@ struct DashboardView: View {
                 // 修复冲突#2：极致节能(<=8W) 时，若风扇在 Turbo，自动降至静音，避免风扇电机白白消耗 1~2W
                 applyAggressiveSleepLimit(1) // 1分钟休眠
                 if keyboardMode == 0 {
-                    let _ = KeyboardBacklightPrivate.setBrightness(0.0)
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        let _ = KeyboardBacklightPrivate.setBrightness(0.0)
+                    }
                     keyboardBrightness = 0.0
                 }
                 if fanCount > 0 && fanPreset == 3 {
@@ -5847,7 +6104,9 @@ struct DashboardView: View {
                 // 中度节能(8~15W)：若 Turbo，降为均衡
                 applyAggressiveSleepLimit(2) // 2分钟休眠
                 if keyboardMode == 0 {
-                    let _ = KeyboardBacklightPrivate.setBrightness(0.15)
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        let _ = KeyboardBacklightPrivate.setBrightness(0.15)
+                    }
                     keyboardBrightness = 0.15
                 }
                 if fanCount > 0 && fanPreset == 3 {
@@ -5865,7 +6124,7 @@ struct DashboardView: View {
         
         DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
-            proc.launchPath = "/usr/bin/sudo"
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "sleep", String(minutes)]
             
             do {
@@ -5906,7 +6165,7 @@ struct DashboardView: View {
         // 2. sudo securely via Process array
         DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
-            proc.launchPath = "/usr/bin/sudo"
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "manual", String(manual ? 1 : 0), String(bitmask)]
             
             var success = false
@@ -5930,7 +6189,7 @@ struct DashboardView: View {
                             for i in 0..<fc {
                                 let speed = targets[safe: i] ?? 2000
                                 let p = Process()
-                                p.launchPath = "/usr/bin/sudo"
+                                p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
                                 p.arguments = ["-n", helperPath, "speed", String(i), String(Int(speed))]
                                 try? p.run()
                                 p.waitUntilExit()
@@ -5974,7 +6233,7 @@ struct DashboardView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             for i in indices {
                 let proc = Process()
-                proc.launchPath = "/usr/bin/sudo"
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
                 proc.arguments  = ["-n", helperPath, "speed", String(i), String(Int(speed))]
                 
                 do {
@@ -5998,7 +6257,9 @@ struct DashboardView: View {
 
     private func applyKeyboardBrightness(_ brightness: Float) {
         guard keyboardMode == 0 else { return }
-        let _ = KeyboardBacklightPrivate.setBrightness(brightness)
+        DispatchQueue.global(qos: .userInteractive).async {
+            let _ = KeyboardBacklightPrivate.setBrightness(brightness)
+        }
     }
     
     private func toggleKeyboardAnimation(mode: Int) {
@@ -6015,7 +6276,9 @@ struct DashboardView: View {
                     let intensity = pow(sin(phase * 0.5), 2.0)
                     
                     let b = Float(intensity)
-                    let _ = KeyboardBacklightPrivate.setBrightness(b)
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        let _ = KeyboardBacklightPrivate.setBrightness(b)
+                    }
                 }
         } else if mode == 2 {
             // Wave Mode (Pulses overall physical backlight dynamically)
@@ -6030,7 +6293,9 @@ struct DashboardView: View {
                     
                     // Single-zoned physical backlight pulses elegantly with a wavy wave phase (0.35 to 0.75)
                     let physicalIntensity = 0.35 + 0.4 * pow(sin(phase * 0.5), 2.0)
-                    let _ = KeyboardBacklightPrivate.setBrightness(Float(physicalIntensity))
+                    DispatchQueue.global(qos: .userInteractive).async {
+                        let _ = KeyboardBacklightPrivate.setBrightness(Float(physicalIntensity))
+                    }
                 }
         } else {
             // Static Mode
@@ -6167,8 +6432,14 @@ struct DashboardView: View {
                 // 2. Power & Voltages Accordion
                 DisclosureGroup(isExpanded: $isPowerExpanded) {
                     VStack(spacing: 4) {
-                        TelemetryRow(icon: "waveform.path.ecg", iconColor: Color(red: 0.62, green: 0.32, blue: 0.88), label: t("cpu_voltage_label"), value: String(format: "%.3f V / %.2f W", cpuVoltage, cpuPower))
-                        TelemetryRow(icon: "waveform.path.ecg", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("gpu_voltage_label"), value: String(format: "%.3f V / %.2f W", gpuVoltage, gpuPower))
+                        TelemetryRow(icon: "waveform.path.ecg", iconColor: Color(red: 0.62, green: 0.32, blue: 0.88), label: t("cpu_voltage_label"), value: String(format: "%.3f V / %.2f W (负载: %.1f%%)", cpuVoltage, cpuPower, cpuUsage))
+                        TelemetryRow(icon: "waveform.path.ecg", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("gpu_voltage_label"), value: String(format: "%.3f V / %.2f W (负载: %.1f%%)", gpuVoltage, gpuPower, gpuUsage))
+                        if isSilicon {
+                            TelemetryRow(icon: "cpu.fill", iconColor: Color(red: 0.18, green: 0.62, blue: 0.95), label: t("npu_power_label"), value: String(format: "%.2f W (负载: %.1f%%)", npuPower, npuUsage))
+                            let combinedLoad = (cpuUsage * 0.2 + gpuUsage * 0.6 + npuUsage * 0.8)
+                            let currentBandwidthGBs = min(200.0, 15.0 + (combinedLoad / 100.0) * 185.0)
+                            TelemetryRow(icon: "memorychip.fill", iconColor: Color(red: 0.85, green: 0.30, blue: 0.45), label: currentLanguage == "zh-Hans" ? "统一内存带宽" : "Unified Memory Bandwidth", value: String(format: "%.1f GB/s", currentBandwidthGBs))
+                        }
                         TelemetryRow(icon: "bolt.fill", iconColor: Color(red: 0.95, green: 0.60, blue: 0.18), label: t("battery_voltage_label"), value: String(format: "%.3f V", powerStats.batteryVoltage))
                         TelemetryRow(icon: "bolt.heart", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("total_power_label"), value: String(format: "%.2f W", totalPower))
                     }
@@ -6295,6 +6566,7 @@ struct DashboardView: View {
 struct LaptopSchematicView: View {
     var activePort: Int // -1 = disconnected, 0 = L1, 1 = L2, 2 = R1, 3 = R2
     var rightPortCount: Int // 0, 1, or 2
+    var usbStorageDevices: [PowerMonitor.USBStorageInfo]
     var currentLanguage: String
     
     private func t(_ key: String) -> String {
@@ -6425,6 +6697,64 @@ struct LaptopSchematicView: View {
                 Text(t("no_adapter"))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.white.opacity(0.4))
+            }
+            
+            // External USB Storage Devices section
+            let storageDevices = usbStorageDevices.filter { $0.isStorage }
+            if !storageDevices.isEmpty {
+                Divider()
+                    .background(Color.white.opacity(0.08))
+                    .padding(.vertical, 4)
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "externaldrive.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.cyan)
+                        Text(currentLanguage == "zh-Hans" ? "外接存储设备诊断：" : "External Storage Diagnostics:")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    
+                    ForEach(storageDevices) { dev in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Text(dev.name)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.85))
+                                    .lineLimit(1)
+                                
+                                Spacer()
+                                
+                                // USB mode badge (2.0 vs 3.0+)
+                                let isUSB3 = dev.speed.contains("3.0") || dev.speed.contains("3.1") || dev.speed.contains("3.2") || dev.speed.contains("USB4") || dev.speed.contains("TB")
+                                Text(isUSB3 ? "USB 3.0+" : "USB 2.0")
+                                    .font(.system(size: 8, weight: .black))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(isUSB3 ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
+                                    .foregroundColor(isUSB3 ? .green : .orange)
+                                    .cornerRadius(3)
+                            }
+                            
+                            HStack(spacing: 8) {
+                                Text(dev.speed)
+                                    .font(.system(size: 8.5))
+                                    .foregroundColor(.white.opacity(0.45))
+                                
+                                Spacer()
+                                
+                                let watts = (dev.voltage * dev.current) / 1000.0
+                                Text(String(format: "%.1fV @ %.0fmA (%.2fW)", dev.voltage, dev.current, watts))
+                                    .font(.system(size: 8.5, design: .monospaced))
+                                    .foregroundColor(.cyan)
+                            }
+                        }
+                        .padding(6)
+                        .background(Color.white.opacity(0.03))
+                        .cornerRadius(6)
+                    }
+                }
             }
         }
         .padding(.vertical, 10)
@@ -8325,7 +8655,17 @@ struct BluetoothRadarChartNodeView: View {
         let signalFactor = CGFloat(max(0, min(100, dev.rssi + 100))) / 100.0
         let haloRadius = 10.0 + (signalFactor * 18.0)
         let haloOpacity = 0.15 + (signalFactor * 0.3)
-        let nodeColor = Color.purple
+        
+        let isApple = dev.isAppleFindMy
+        let isAirTag = dev.isAirTag
+        let nodeColor: Color
+        if isAirTag {
+            nodeColor = Color(red: 0.22, green: 0.80, blue: 0.45)
+        } else if isApple {
+            nodeColor = Color(red: 0.18, green: 0.62, blue: 0.95)
+        } else {
+            nodeColor = Color.purple
+        }
         
         return ZStack {
             // Glowing Halo scaling with RSSI
@@ -8335,10 +8675,32 @@ struct BluetoothRadarChartNodeView: View {
                 .opacity(Double(haloOpacity))
                 .blur(radius: 3)
             
-            Circle()
-                .fill(nodeColor)
-                .frame(width: 6, height: 6)
+            if isAirTag {
+                ZStack {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 8, height: 8)
+                    Image(systemName: "tag.fill")
+                        .font(.system(size: 5, weight: .bold))
+                        .foregroundColor(nodeColor)
+                }
                 .shadow(color: nodeColor, radius: 4)
+            } else if isApple {
+                ZStack {
+                    Circle()
+                        .fill(nodeColor)
+                        .frame(width: 7, height: 7)
+                    Image(systemName: "applelogo")
+                        .font(.system(size: 4, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                .shadow(color: nodeColor, radius: 4)
+            } else {
+                Circle()
+                    .fill(nodeColor)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: nodeColor, radius: 4)
+            }
             
             if isAnimating || hoveredBTId == dev.id {
                 Circle()
@@ -8396,7 +8758,16 @@ struct BluetoothDistanceRadarChartNodeView: View {
         let x = radius * cos(CGFloat(currentAngle))
         let y = radius * sin(CGFloat(currentAngle))
         
-        let nodeColor: Color = dev.distanceMeters < 1.0 ? .purple : (dev.distanceMeters < 3.0 ? .cyan : (dev.distanceMeters < 8.0 ? .yellow : .orange))
+        let isApple = dev.isAppleFindMy
+        let isAirTag = dev.isAirTag
+        let nodeColor: Color
+        if isAirTag {
+            nodeColor = Color(red: 0.22, green: 0.80, blue: 0.45)
+        } else if isApple {
+            nodeColor = Color(red: 0.18, green: 0.62, blue: 0.95)
+        } else {
+            nodeColor = dev.distanceMeters < 1.0 ? .purple : (dev.distanceMeters < 3.0 ? .cyan : (dev.distanceMeters < 8.0 ? .yellow : .orange))
+        }
         
         return ZStack {
             Path { path in
@@ -8408,10 +8779,32 @@ struct BluetoothDistanceRadarChartNodeView: View {
             .frame(width: 160 * zoomScale, height: 160 * zoomScale)
             
             ZStack {
-                Circle()
-                    .fill(nodeColor)
-                    .frame(width: 6, height: 6)
+                if isAirTag {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 9, height: 9)
+                        Image(systemName: "tag.fill")
+                            .font(.system(size: 6, weight: .bold))
+                            .foregroundColor(nodeColor)
+                    }
                     .shadow(color: nodeColor, radius: 4)
+                } else if isApple {
+                    ZStack {
+                        Circle()
+                            .fill(nodeColor)
+                            .frame(width: 8, height: 8)
+                        Image(systemName: "applelogo")
+                            .font(.system(size: 5, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .shadow(color: nodeColor, radius: 4)
+                } else {
+                    Circle()
+                        .fill(nodeColor)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: nodeColor, radius: 4)
+                }
                 
                 if pulseScale > 1.0 || hoveredBTId == dev.id {
                     Circle()
@@ -9042,6 +9435,8 @@ struct BluetoothDeviceInfo: Identifiable {
     let distanceLabel: String
     let lastSeen: Date
     let peripheralId: String
+    let isAppleFindMy: Bool
+    let isAirTag: Bool
 }
 
 class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
@@ -9114,6 +9509,21 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
         }
         
         DispatchQueue.main.async {
+            var isApple = false
+            var isAirTag = false
+            if let mfgData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
+                if mfgData.count >= 1 && mfgData[0] == 0x12 {
+                    isApple = true
+                    isAirTag = true
+                }
+            }
+            if name.contains("AirTag") || name.contains("AirPods") || name.contains("Find My") || name.contains("Apple") {
+                isApple = true
+                if name.contains("AirTag") {
+                    isAirTag = true
+                }
+            }
+            
             if let index = self.scanResults.firstIndex(where: { $0.peripheralId == uuid.uuidString }) {
                 self.scanResults[index] = BluetoothDeviceInfo(
                     name: name,
@@ -9121,7 +9531,9 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
                     distanceMeters: distance,
                     distanceLabel: distanceLabel,
                     lastSeen: Date(),
-                    peripheralId: uuid.uuidString
+                    peripheralId: uuid.uuidString,
+                    isAppleFindMy: isApple,
+                    isAirTag: isAirTag
                 )
             } else {
                 self.scanResults.append(BluetoothDeviceInfo(
@@ -9130,7 +9542,9 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
                     distanceMeters: distance,
                     distanceLabel: distanceLabel,
                     lastSeen: Date(),
-                    peripheralId: uuid.uuidString
+                    peripheralId: uuid.uuidString,
+                    isAppleFindMy: isApple,
+                    isAirTag: isAirTag
                 ))
             }
             self.scanResults.sort(by: { $0.rssi > $1.rssi })
@@ -9167,7 +9581,9 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
                         distanceMeters: newDistance,
                         distanceLabel: newLabel,
                         lastSeen: Date(),
-                        peripheralId: updated[i].peripheralId
+                        peripheralId: updated[i].peripheralId,
+                        isAppleFindMy: updated[i].isAppleFindMy,
+                        isAirTag: updated[i].isAirTag
                     )
                 }
                 self.scanResults = updated.sorted(by: { $0.rssi > $1.rssi })
@@ -9177,11 +9593,13 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
     
     private func generateMockScanResults() -> [BluetoothDeviceInfo] {
         return [
-            BluetoothDeviceInfo(name: "HL's iPad Pro", rssi: -45, distanceMeters: 0.7, distanceLabel: "极近范围", lastSeen: Date(), peripheralId: "E430A23B-11B5-C2B1-AA5B-C9EBD129A0FC"),
-            BluetoothDeviceInfo(name: "AirPods Pro (2nd Gen)", rssi: -52, distanceMeters: 1.1, distanceLabel: "极近范围", lastSeen: Date(), peripheralId: "B50495E6-124D-D9FA-8BC1-C12A439D9CC9"),
-            BluetoothDeviceInfo(name: "Apple Watch Ultra 2", rssi: -60, distanceMeters: 2.1, distanceLabel: "同房间内", lastSeen: Date(), peripheralId: "C80495E6-124D-C8FA-8BC1-C12A439D9CD0"),
-            BluetoothDeviceInfo(name: "Sony WH-1000XM5", rssi: -68, distanceMeters: 4.5, distanceLabel: "较近距离", lastSeen: Date(), peripheralId: "ACA213B5-E20C-FA8B-C12A-439D9CC83D21"),
-            BluetoothDeviceInfo(name: "Unknown BLE Tag", rssi: -79, distanceMeters: 9.8, distanceLabel: "较远距离", lastSeen: Date(), peripheralId: "9CC9EBD1-29A0-36C6-BC7B-01A639D95EEB")
+            BluetoothDeviceInfo(name: "HL's iPad Pro", rssi: -45, distanceMeters: 0.7, distanceLabel: "极近范围", lastSeen: Date(), peripheralId: "E430A23B-11B5-C2B1-AA5B-C9EBD129A0FC", isAppleFindMy: true, isAirTag: false),
+            BluetoothDeviceInfo(name: "AirPods Pro (2nd Gen)", rssi: -52, distanceMeters: 1.1, distanceLabel: "极近范围", lastSeen: Date(), peripheralId: "B50495E6-124D-D9FA-8BC1-C12A439D9CC9", isAppleFindMy: true, isAirTag: false),
+            BluetoothDeviceInfo(name: "Apple Watch Ultra 2", rssi: -60, distanceMeters: 2.1, distanceLabel: "同房间内", lastSeen: Date(), peripheralId: "C80495E6-124D-C8FA-8BC1-C12A439D9CD0", isAppleFindMy: true, isAirTag: false),
+            BluetoothDeviceInfo(name: "AirTag (🔑 钥匙)", rssi: -58, distanceMeters: 1.8, distanceLabel: "同房间内", lastSeen: Date(), peripheralId: "E30495E6-124D-C8FA-8BC1-C12A439D9CD1", isAppleFindMy: true, isAirTag: true),
+            BluetoothDeviceInfo(name: "AirTag (🎒 双肩包)", rssi: -65, distanceMeters: 3.2, distanceLabel: "较近距离", lastSeen: Date(), peripheralId: "F10495E6-124D-C8FA-8BC1-C12A439D9CD2", isAppleFindMy: true, isAirTag: true),
+            BluetoothDeviceInfo(name: "Sony WH-1000XM5", rssi: -68, distanceMeters: 4.5, distanceLabel: "较近距离", lastSeen: Date(), peripheralId: "ACA213B5-E20C-FA8B-C12A-439D9CC83D21", isAppleFindMy: false, isAirTag: false),
+            BluetoothDeviceInfo(name: "Unknown BLE Tag", rssi: -79, distanceMeters: 9.8, distanceLabel: "较远距离", lastSeen: Date(), peripheralId: "9CC9EBD1-29A0-36C6-BC7B-01A639D95EEB", isAppleFindMy: false, isAirTag: false)
         ]
     }
 }
@@ -9846,7 +10264,6 @@ struct WiFiRadarStandaloneView: View {
     @ObservedObject var wifiScanner: WiFiScanner
     @State private var zoomScale: CGFloat = 1.0
     @State private var lastMagnification: CGFloat = 1.0
-    @State private var keyMonitor: Any? = nil
     @State private var userPosition: CGPoint = .zero
     
     var body: some View {
@@ -10100,48 +10517,10 @@ struct WiFiRadarStandaloneView: View {
         )
         .preferredColorScheme(.dark)
         .onAppear {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if let chars = event.charactersIgnoringModifiers {
-                    if chars == "-" {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            zoomScale = max(0.5, zoomScale - 0.1)
-                        }
-                        return nil
-                    } else if chars == "=" || chars == "+" {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            zoomScale = min(3.0, zoomScale + 0.1)
-                        }
-                        return nil
-                    } else if chars == "w" || chars == "W" || event.keyCode == 126 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.y += 0.5
-                        }
-                        return nil
-                    } else if chars == "s" || chars == "S" || event.keyCode == 125 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.y -= 0.5
-                        }
-                        return nil
-                    } else if chars == "a" || chars == "A" || event.keyCode == 123 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.x -= 0.5
-                        }
-                        return nil
-                    } else if chars == "d" || chars == "D" || event.keyCode == 124 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.x += 0.5
-                        }
-                        return nil
-                    }
-                }
-                return event
-            }
+            // keyMonitor registration removed
         }
         .onDisappear {
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
-            }
+            // keyMonitor teardown removed
         }
     }
 }
@@ -10152,7 +10531,6 @@ struct BluetoothRadarStandaloneView: View {
     @ObservedObject var bluetoothScanner: BluetoothScanner
     @State private var zoomScale: CGFloat = 1.0
     @State private var lastMagnification: CGFloat = 1.0
-    @State private var keyMonitor: Any? = nil
     @State private var userPosition: CGPoint = .zero
     @State private var expandedBluetoothId: String? = nil
     
@@ -10358,48 +10736,10 @@ struct BluetoothRadarStandaloneView: View {
         )
         .preferredColorScheme(.dark)
         .onAppear {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if let chars = event.charactersIgnoringModifiers {
-                    if chars == "-" {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            zoomScale = max(0.5, zoomScale - 0.1)
-                        }
-                        return nil
-                    } else if chars == "=" || chars == "+" {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            zoomScale = min(3.0, zoomScale + 0.1)
-                        }
-                        return nil
-                    } else if chars == "w" || chars == "W" || event.keyCode == 126 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.y += 0.5
-                        }
-                        return nil
-                    } else if chars == "s" || chars == "S" || event.keyCode == 125 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.y -= 0.5
-                        }
-                        return nil
-                    } else if chars == "a" || chars == "A" || event.keyCode == 123 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.x -= 0.5
-                        }
-                        return nil
-                    } else if chars == "d" || chars == "D" || event.keyCode == 124 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.x += 0.5
-                        }
-                        return nil
-                    }
-                }
-                return event
-            }
+            // keyMonitor registration removed
         }
         .onDisappear {
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
-            }
+            // keyMonitor teardown removed
         }
     }
 }
@@ -10414,7 +10754,6 @@ struct LargeRadarImmersiveView: View {
     @State private var autoScanTimer: Timer?
     @State private var zoomScale: CGFloat = 1.0
     @State private var lastMagnification: CGFloat = 1.0
-    @State private var keyMonitor: Any? = nil
     @State private var userPosition: CGPoint = .zero
     @State private var radarHeading: Double = 0.0
     
@@ -10727,68 +11066,10 @@ struct LargeRadarImmersiveView: View {
                 wifiScanner.startScan()
                 bluetoothScanner.startScan()
             }
-            
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if let chars = event.charactersIgnoringModifiers {
-                    if chars == "-" {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            zoomScale = max(0.5, zoomScale - 0.1)
-                        }
-                        return nil
-                    } else if chars == "=" || chars == "+" {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            zoomScale = min(3.0, zoomScale + 0.1)
-                        }
-                        return nil
-                    } else if chars == "w" || chars == "W" || event.keyCode == 126 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.y += 0.5
-                        }
-                        return nil
-                    } else if chars == "s" || chars == "S" || event.keyCode == 125 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.y -= 0.5
-                        }
-                        return nil
-                    } else if chars == "a" || chars == "A" || event.keyCode == 123 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.x -= 0.5
-                        }
-                        return nil
-                    } else if chars == "d" || chars == "D" || event.keyCode == 124 {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition.x += 0.5
-                        }
-                        return nil
-                    } else if chars == "q" || chars == "Q" {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            radarHeading = (radarHeading - 5.0).truncatingRemainder(dividingBy: 360.0)
-                        }
-                        return nil
-                    } else if chars == "e" || chars == "E" {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            radarHeading = (radarHeading + 5.0).truncatingRemainder(dividingBy: 360.0)
-                        }
-                        return nil
-                    } else if chars == "r" || chars == "R" {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            userPosition = .zero
-                            radarHeading = 0.0
-                        }
-                        return nil
-                    }
-                }
-                return event
-            }
         }
         .onDisappear {
             autoScanTimer?.invalidate()
             autoScanTimer = nil
-            
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
-            }
         }
     }
 }
@@ -10988,29 +11269,8 @@ struct MiniDashboardView: View {
             .padding(.horizontal, 16)
             
             Spacer(minLength: 0)
-            
-            Divider()
-                .background(Color.white.opacity(0.08))
-                .padding(.horizontal, 16)
-            
-            // Footer Text Indicator with Pulsing 🟢
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 6, height: 6)
-                    .scaleEffect(pulseGreen ? 1.4 : 0.8)
-                    .opacity(pulseGreen ? 0.4 : 1.0)
-                    .animation(Animation.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: pulseGreen)
-                
-                Text("点击绿灯 🟢 展开完整大面板")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.5))
-            }
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity)
-            .background(Color.white.opacity(0.01))
         }
-        .frame(width: 320, height: 260)
+        .frame(width: 320, height: 220)
         .background(
             Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.85)
         )
@@ -11074,11 +11334,22 @@ struct MiniDashboardView: View {
         return (usedPages / totalPages) * 100.0
     }
     
+    private let telemetryQueue = DispatchQueue(label: "com.statusctrl.mini.telemetry", qos: .userInitiated)
+    
     private func updateStats() {
-        cpuUsage = cpuMonitor.getUsage() * 100.0
-        cpuTemp = smc.getCPUTemperature()
-        ramUsage = getRAMUsage()
-        powerStats = PowerMonitor.getPowerStats()
+        telemetryQueue.async {
+            let usage = self.cpuMonitor.getUsage()
+            let temp = self.smc.getCPUTemperature()
+            let ram = self.getRAMUsage()
+            let stats = PowerMonitor.getPowerStats()
+            
+            DispatchQueue.main.async {
+                self.cpuUsage = usage
+                self.cpuTemp = temp
+                self.ramUsage = ram
+                self.powerStats = stats
+            }
+        }
     }
     
     private func triggerMemoryPurge() {

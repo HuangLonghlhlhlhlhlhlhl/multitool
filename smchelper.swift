@@ -92,12 +92,12 @@ func main() {
         
         // 1. 设置 lowpowermode
         let task1 = Process()
-        task1.launchPath = "/usr/bin/pmset"
+        task1.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
         task1.arguments = [flag, "lowpowermode", String(lpm)]
         
-        // 2. 设置 highpower (用 try? 运行，以兼容不支持高功率模式的机型)
+        // 2. 设置 highpower (用 try? 运行，以兼容不支持 high功率模式的机型)
         let task2 = Process()
-        task2.launchPath = "/usr/bin/pmset"
+        task2.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
         task2.arguments = [flag, "highpower", String(hp)]
         
         do {
@@ -128,7 +128,7 @@ func main() {
         let minutes = min(max(rawMinutes, 0), 180)
         
         let task = Process()
-        task.launchPath = "/usr/bin/pmset"
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
         task.arguments = ["-b", "displaysleep", String(minutes)]
         do {
             try task.run()
@@ -153,7 +153,7 @@ func main() {
         }
         
         let task = Process()
-        task.launchPath = smartctlPath
+        task.executableURL = URL(fileURLWithPath: smartctlPath)
         task.arguments = ["-a", "-j", "/dev/disk0"]
         
         let pipe = Pipe()
@@ -174,7 +174,7 @@ func main() {
         }
     } else if command == "optimize" {
         let task = Process()
-        task.launchPath = "/usr/sbin/diskutil"
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
         task.arguments = ["apfs", "updatePreboot", "/"]
         
         do {

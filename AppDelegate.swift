@@ -1579,30 +1579,7 @@ class StatusBarCustomView: NSView {
         superview?.rightMouseUp(with: event)
     }
     
-    // 鼠标 hover 监听区域构建
-    private var trackingArea: NSTrackingArea?
-    
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        
-        if let trackingArea = trackingArea {
-            removeTrackingArea(trackingArea)
-        }
-        
-        let options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways]
-        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
-        addTrackingArea(area)
-        self.trackingArea = area
-    }
-    
-    override func mouseEntered(with event: NSEvent) {
-        // 当鼠标划入状态栏图标时，立即打开小窗口
-        DispatchQueue.main.async {
-            if let delegate = NSApp.delegate as? AppDelegate {
-                delegate.showPopover()
-            }
-        }
-    }
+
     
     // 每次父视图（即状态栏按钮）被请求重绘时，也强制我们重绘
     override func viewWillDraw() {

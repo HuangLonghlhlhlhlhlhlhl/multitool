@@ -34,6 +34,7 @@ class PowerMonitor {
         var currentCapacity: Double = 0.0 // mAh
         var maxCapacity: Double = 0.0     // mAh
         var designCapacity: Double = 0.0  // mAh
+        var usbStorageDevices: [USBStorageInfo] = []
     }
     
     private static func doubleValue(for key: String, in dict: [String: Any]) -> Double? {
@@ -51,6 +52,22 @@ class PowerMonitor {
         }
         return nil
     }
+    
+    private static func intValue(for key: String, in dict: [String: Any]) -> Int? {
+        if let val = dict[key] as? Int {
+            return val
+        }
+        if let val = dict[key] as? Double {
+            return Int(val)
+        }
+        if let val = dict[key] as? Int64 {
+            return Int(val)
+        }
+        if let nsNum = dict[key] as? NSNumber {
+            return nsNum.intValue
+        }
+        return nil
+    }
 
     static func getPowerStats() -> PowerStats {
         var stats = PowerStats()
@@ -61,6 +78,7 @@ class PowerMonitor {
             stats.isConnected = true
             stats.adapterPower = 0.0
             stats.hasBattery = false
+            stats.usbStorageDevices = getConnectedUSBDevices()
             return stats
         }
         
@@ -157,20 +175,24 @@ class PowerMonitor {
             stats.hardwareModel = rawModel
             stats.friendlyModelName = getFriendlyModelName(model: rawModel)
             
-            var foundUsbCPower = false
             if let portInfo = dict["PortControllerInfo"] as? [[String: Any]] {
                 stats.rightPortCount = max(0, portInfo.count - 2)
                 stats.hasRightPorts = stats.rightPortCount > 0
                 
                 if stats.isConnected {
                     for (index, port) in portInfo.enumerated() {
-                        let maxPower = port["PortControllerMaxPower"] as? Int ?? 0
-                        let dnSt = port["PortControllerDnSt"] as? Int ?? 0
+                        let maxPower = intValue(for: "PortControllerMaxPower", in: port)
+                                    ?? intValue(for: "PortMaxPower", in: port)
+                                    ?? intValue(for: "MaxPower", in: port)
+                                    ?? 0
+                        let dnSt = intValue(for: "PortControllerDnSt", in: port)
+                                ?? intValue(for: "PortDnSt", in: port)
+                                ?? intValue(for: "DnSt", in: port)
+                                ?? 0
                         
                         // Detect port actively negotiating power or hosting downstream delivery
                         if maxPower > 0 || dnSt > 0 {
                             stats.activePortIndex = index
-                            foundUsbCPower = true
                             break
                         }
                     }
@@ -197,16 +219,17 @@ class PowerMonitor {
             if stats.isConnected {
                 // Smart MagSafe detection
                 let adapterNameLower = stats.adapterName.lowercased()
-                let isMagSafe = adapterNameLower.contains("magsafe") || !foundUsbCPower
+                let isMagSafe = adapterNameLower.contains("magsafe")
                 
                 if isMagSafe {
                     stats.activePortIndex = 99 // 99 represents MagSafe!
                 } else if stats.activePortIndex == -1 {
-                    stats.activePortIndex = 0 // Fallback to L1
+                    stats.activePortIndex = 0 // Fallback to USB-C Port L1 (index 0)
                 }
             }
         }
         
+        stats.usbStorageDevices = getConnectedUSBDevices()
         return stats
     }
     
@@ -278,5 +301,123 @@ class PowerMonitor {
             return "Mac Studio (\(model))"
         }
         return model
+    }
+    
+    struct USBStorageInfo: Identifiable, Hashable {
+        public let id: UUID
+        public let name: String
+        public let speed: String       // e.g. "USB 3.0 (SuperSpeed 5Gbps)"
+        public let voltage: Double     // 5.0 V
+        public let current: Double     // mA
+        public let isStorage: Bool
+        
+        public init(id: UUID = UUID(), name: String, speed: String, voltage: Double, current: Double, isStorage: Bool) {
+            self.id = id
+            self.name = name
+            self.speed = speed
+            self.voltage = voltage
+            self.current = current
+            self.isStorage = isStorage
+        }
+    }
+    
+    static func getConnectedUSBDevices() -> [USBStorageInfo] {
+        var list: [USBStorageInfo] = []
+        
+        let matchingDict = IOServiceMatching("IOUSBHostDevice")
+        var iterator: io_iterator_t = 0
+        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
+        if kr == KERN_SUCCESS {
+            var entry = IOIteratorNext(iterator)
+            while entry != 0 {
+                var info: Unmanaged<CFMutableDictionary>?
+                if IORegistryEntryCreateCFProperties(entry, &info, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                   let dict = info?.takeRetainedValue() as? [String: Any] {
+                    
+                    let name = dict["USB Product Name"] as? String 
+                            ?? dict["productName"] as? String 
+                            ?? dict["kUSBProductString"] as? String
+                            ?? "Generic USB Device"
+                    
+                    let vendorID = dict["idVendor"] as? Int ?? dict["vendorID"] as? Int ?? 0
+                    let lowerName = name.lowercased()
+                    // Filter out internal Apple devices and generic hubs
+                    if vendorID == 0x05ac || lowerName.contains("hub") || lowerName.contains("controller") || lowerName.contains("root") {
+                        IOObjectRelease(entry)
+                        entry = IOIteratorNext(iterator)
+                        continue
+                    }
+                    
+                    var isStorage = false
+                    if let devClass = dict["bDeviceClass"] as? Int, devClass == 8 {
+                        isStorage = true
+                    }
+                    
+                    if !isStorage {
+                        var childIterator: io_iterator_t = 0
+                        if IORegistryEntryGetChildIterator(entry, kIOServicePlane, &childIterator) == KERN_SUCCESS {
+                            var child = IOIteratorNext(childIterator)
+                            while child != 0 {
+                                var childInfo: Unmanaged<CFMutableDictionary>?
+                                if IORegistryEntryCreateCFProperties(child, &childInfo, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                                   let childDict = childInfo?.takeRetainedValue() as? [String: Any] {
+                                    if let intfClass = childDict["bInterfaceClass"] as? Int, intfClass == 8 {
+                                        isStorage = true
+                                        break
+                                    }
+                                }
+                                IOObjectRelease(child)
+                                child = IOIteratorNext(childIterator)
+                            }
+                            IOObjectRelease(childIterator)
+                        }
+                    }
+                    
+                    if !isStorage {
+                        let keywords = ["storage", "disk", "drive", "flash", "sandisk", "samsung", "crucial", "kingston", "wd", "seagate", "toshiba", "lexar", "card reader", "nvme"]
+                        for kw in keywords {
+                            if lowerName.contains(kw) {
+                                isStorage = true
+                                break
+                            }
+                        }
+                    }
+                    
+                    var speedStr = "USB 2.0"
+                    let speedVal = dict["Device Speed"] as? Int ?? dict["speed"] as? Int ?? 2
+                    switch speedVal {
+                    case 0: speedStr = "USB 1.1 (Low Speed 1.5Mbps)"
+                    case 1: speedStr = "USB 1.1 (Full Speed 12Mbps)"
+                    case 2: speedStr = "USB 2.0 (High Speed 480Mbps)"
+                    case 3: speedStr = "USB 3.0 (SuperSpeed 5Gbps)"
+                    case 4: speedStr = "USB 3.1/3.2 (SuperSpeed+ 10Gbps)"
+                    default:
+                        if speedVal > 4 {
+                            speedStr = "USB4/TB (SuperSpeed+ \(speedVal)0Gbps)"
+                        } else {
+                            speedStr = "USB 2.0"
+                        }
+                    }
+                    
+                    var currentmA = 500.0
+                    if let powerRequested = dict["Requested Power"] as? Int {
+                        currentmA = Double(powerRequested)
+                    } else if let powerRequested = dict["Requested Power"] as? NSNumber {
+                        currentmA = powerRequested.doubleValue
+                    } else if let bMaxPower = dict["bMaxPower"] as? Int {
+                        currentmA = Double(bMaxPower * 2)
+                    }
+                    
+                    let voltage = 5.0
+                    
+                    list.append(USBStorageInfo(name: name, speed: speedStr, voltage: voltage, current: currentmA, isStorage: isStorage))
+                }
+                IOObjectRelease(entry)
+                entry = IOIteratorNext(iterator)
+            }
+            IOObjectRelease(iterator)
+        }
+        
+        return list
     }
 }

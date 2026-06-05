@@ -18,9 +18,11 @@ echo "=================================================="
 echo "📦 [Git] 正在暂存本地更改并提交..."
 git add AppDelegate.swift DashboardView.swift Makefile PowerMonitor.swift \
     SMCController.swift smchelper.swift MemoryPurger.swift UpdateManager.swift \
+    DDCCIController.swift SSDMonitor.swift Bridging-Header.h .gitignore \
+    test_battery.swift test_brightness.swift test_telemetry.swift \
     README.md README.en.md CHANGELOG.md deploy.sh release_notes_v${VERSION}.md \
     assets/screenshots/*.png
-git commit -m "feat: 🧹 STATUS CTRL v${VERSION} — 智能磁盘深度清理、重复文件查重与闲置自动维护系统" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
+git commit -m "feat: 📡 STATUS CTRL v${VERSION} — 独立毛玻璃浮动面板、空间物理定位雷达与抗崩溃稳定审计" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
 
 # 2. 推送至 GitHub main 分支
 echo "📤 [Git] 正在推送代码至远程仓库 main 分支..."

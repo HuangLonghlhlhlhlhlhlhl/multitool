@@ -30,7 +30,7 @@ smchelper: smchelper.swift SMCController.swift
 	@echo "[Build] smchelper: $$(lipo -info smchelper)"
 
 # ── Main App (Universal Binary) ───────────────────────────────────
-$(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift SMCController.swift PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift Bridging-Header.h
+$(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift SMCController.swift PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift Bridging-Header.h
 	@echo "[Build] Creating macOS App bundle..."
 	mkdir -p $(MACOS_DIR)
 	mkdir -p $(RESOURCES_DIR)
@@ -41,7 +41,7 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo "[Build] Compiling arm64 slice..."
 	swiftc \
 		main.swift AppDelegate.swift SMCController.swift \
-		PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift \
+		PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift \
 		KeyboardBacklightPrivate.o \
 		-import-objc-header Bridging-Header.h \
 		-target arm64-apple-macos12.0 \
@@ -53,7 +53,7 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo "[Build] Compiling x86_64 slice..."
 	swiftc \
 		main.swift AppDelegate.swift SMCController.swift \
-		PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift \
+		PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift \
 		KeyboardBacklightPrivate.o \
 		-import-objc-header Bridging-Header.h \
 		-target x86_64-apple-macos12.0 \

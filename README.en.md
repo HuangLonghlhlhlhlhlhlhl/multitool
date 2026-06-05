@@ -52,6 +52,8 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 | 👯 Duplicate File Finder | **[NEW]** Progressive 3-step MD5 search engine to instantly identify and safely remove duplicate files. |
 | 📈 Live Throughput Chart | **[NEW]** Live dual line glowing line chart plotting real-time SSD MB/s read/write speed on System Health Tab. |
 | 🔌 AC/Idle Self-Maintenance| **[NEW]** Automates memory purge and APFS preboot index rebuilding when connected to AC power and user is idle for >= 5 minutes. |
+| 🪟 Translucent Resizable Window| **[NEW]** Replaces NSPopover with a custom NSWindow. Features standard macOS traffic lights, background drag-to-move, border resizing, and dual-mode triggers. |
+| 📡 Spatial Telemetry Radar| **[NEW]** Implements a compass-based spatial telemetry radar and network throughput tab. Features reverse trigonometric tracking, heading-locking, and key-driven stride simulation. |
 | 🛡️ Device Privacy Guard | 4-way privacy switches (Camera, Mic, Screen, Auto Action) alongside a randomized scrambled keylogger-proof on-screen keyboard. |
 | ⚙️ Customize Status Bar | Dedicated settings tab with interactive macOS menu bar mockup preview to show/hide 8 status indicators with perfect alignment. |
 | 🔄 Auto-Updater & Upgrade | Integrates GitHub Releases API to automatically check for updates. Supports background download, live progress bar, automatic mounting/opening of `.dmg` installers, version skipping, and a neon notification dot. |
@@ -105,6 +107,29 @@ STATUS CTRL v1.8.0 introduces a highly requested solid-state drive lifespan and 
 - **🛠️ One-Click Automatic Environment Configuration**: Detects missing diagnostic backends and provides a sleek, glowing floating helper button. Click once to automatically install `smartmontools` using Homebrew (`brew install smartmontools`) in a silent background thread. Once done, the dashboard fades in with detailed telemetry.
 - **🔌 No-Dependency Plist Fallback**: Automatically downgrades to a zero-dependency Plist parser using `diskutil info` if Homebrew is unavailable. Restores basic device models (e.g. `APPLE SSD AP0512R`), raw device capacity, and verified SMART status immediately.
 - **⏱️ Zero Background Overhead**: Adheres to our zero-lag principle. SSD disk telemetry runs only when the "System Health" tab is actively viewed. Telemetry goes fully silent when the dashboard is closed or when switching tabs, yielding **0ms main-thread lag and 0% CPU consumption**.
+
+---
+
+## 📡 Spatial Telemetry Radar & Resizable Floating Panel (New in v1.9.3)
+
+STATUS CTRL v1.9.3 introduces a generational leap in window architecture and spatial physical interaction:
+
+- **🪟 Translucent Resizable NSWindow**:
+  - **No More Popover Limitations**: Replaces the transient NSPopover with a highly customizable standalone `NSWindow` dashboard, incorporating standard macOS red/yellow/green traffic light controls.
+  - **HUD Glassmorphism visual materials**: Implements HUD-inspired materials (`.hudWindow` + `.behindWindow`) with a transparent title bar. Supports drag-to-move from any background point and border-dragging for seamless multi-resolution adaptation.
+  - **Dual Launch Modes**: Left-clicking the menu bar icon displays the panel aligned below the icon; right-clicking and selecting "Open Dashboard" displays the panel as a fully decoupled, screen-centered window.
+
+- **📡 Spatial Telemetry Radar Dashboard**:
+  - **Modular UI Separation**: Divides the crowded Network tab into two sub-views: `📡 Spatial Telemetry Radar` and `⚡ Traffic Monitor & Speedtest`.
+  - **Compass Rose & Absolute Heading Locking**: The radar circle features a detailed compass rose (N, S, E, W & degree tick marks). Applies reverse trigonometric coordinate transforms to automatically recalculate and lock relative signal source positions when the user moves or turns, achieving high-fidelity "user-moving, radar-aligning" effects.
+
+- **⌨️ Keyboard Navigation & Precision Stride (Spatial Compass Keys)**:
+  - Supports pressing `W / A / S / D` or `↑ / ↓ / ← / →` on the keyboard to simulate physical walking paths, updating distance badges and coordinates in real-time.
+  - Supports pressing `Q / E` to adjust the device heading yaw offset, `R` to reset position and heading, and `+ / -` for smooth step-less zoom.
+
+- **⚡ Stability Audits & Crash Prevention**:
+  - **Deadlock Prevention**: Audits and reinforces SMC sensor read concurrency locks with defer statements to guarantee zero deadlock when reading multiple hardware registers.
+  - **Zero Force Unwraps**: Fully hardens the memory clean and log garbage collection pipelines to prevent runtime crashes.
 
 ---
 
