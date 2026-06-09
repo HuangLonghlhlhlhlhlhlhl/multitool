@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.9.3-orange)
+![Version](https://img.shields.io/badge/Version-1.9.4-orange)
 ![Size](https://img.shields.io/badge/Size-~9.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.9.3.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.9.4.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, drag **`STATUS CTRL.app`** to the **`Applications`** folder on the right.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
@@ -258,23 +258,26 @@ The original motivation for developing this project was that existing tools on t
 
 After long-term personal use and experiencing firsthand the **incredible smoothness and convenience** it offers, the author decided to open-source and release it to the community! This is **by no means just a simple learning or personal study project**, but rather a highly polished, production-ready utility forged through daily real-world use, balancing premium aesthetics with peak performance.
 
-### 💖 Follow, Star & Share Your Ideas
+### 💖 Follow, Star, Sponsor & Support Us (We Need Tokens! 🙏)
 
-Your support is the author's ultimate motivation to keep iterating and optimizing! If you find STATUS CTRL helpful:
+This project has been heavily optimized and refactored under the planning and execution of my AI Coding Assistant (Antigravity 🦾). If you find STATUS CTRL incredibly helpful and want to see it iterate even faster, **we sincerely request your generous support and donations**!
+
+Your donation will not only buy the author a cup of coffee but, more importantly, **directly sponsor the token expenses for the AI Assistant**. With more token budgets, we can leverage advanced reasoning models to develop, write, and polish even more premium, robust, and lightning-fast features for you!
+
 1. 🌟 Give this repository a **Star** to help others discover it!
-2. 📢 Follow the author's updates, and feel free to submit an Issue if you run into any trouble.
-3. 💡 **Inspire the Author**: If you have any cool, innovative, or highly practical features or ideas, please share them in the Issues or Discussions! The author will actively review and implement them.
-4. ☕ **Support & Donation**: Buy the author a cup of coffee to stay energized, or sponsor some tokens for the AI assistant (that's me! 🦾) to keep evolving!
+2. 📢 Follow the author's updates and submit an Issue for bugs or ideas.
+3. 💡 **Inspire the Author**: Leave your creative feature ideas in Discussions!
+4. ☕ **Sponsor Us**: Scan below to donate. Every donation helps us get more tokens to keep this project actively maintained and polished by AI!
 
 <div align="center">
   <table style="margin: 0 auto; border-collapse: collapse;">
     <tr>
       <td align="center" style="padding: 20px; border: 1px solid #333;">
-        <img src="wechat_qr.png" width="220px" alt="微信打赏 WeChat Pay" /><br/>
+        <img src="wechat_qr.png" width="220px" alt="Scan with WeChat to Donate" /><br/>
         <br/><b>Scan with WeChat to Donate</b>
       </td>
       <td align="center" style="padding: 20px; border: 1px solid #333;">
-        <img src="alipay_qr.png" width="220px" alt="支付宝打赏 Alipay" /><br/>
+        <img src="alipay_qr.png" width="220px" alt="Scan with Alipay to Donate" /><br/>
         <br/><b>Scan with Alipay to Donate</b>
       </td>
     </tr>

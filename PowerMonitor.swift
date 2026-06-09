@@ -1,41 +1,44 @@
 import Foundation
 import IOKit
 
-class PowerMonitor {
+public class PowerMonitor {
     
-    struct PowerStats {
-        var isConnected: Bool = false
-        var adapterVoltage: Double = 0.0 // Volts (V)
-        var adapterCurrent: Double = 0.0 // Amperes (A)
-        var adapterPower: Double = 0.0   // Watts (W) (Negotiated Charger Power)
+    public struct PowerStats {
+        public var isConnected: Bool = false
+        public var adapterVoltage: Double = 0.0 // Volts (V)
+        public var adapterCurrent: Double = 0.0 // Amperes (A)
+        public var adapterPower: Double = 0.0   // Watts (W) (Negotiated Charger Power)
         
-        var batteryVoltage: Double = 0.0 // Volts (V)
-        var batteryCurrent: Double = 0.0 // Amperes (A) (positive = charging, negative = discharging)
-        var batteryPower: Double = 0.0   // Watts (W) (Current Charge or Load Power)
-        var isCharging: Bool = false
-        var stateOfCharge: Int = 0       // Percentage (%)
-        var batteryCycleCount: Int = 0
-        var batteryHealthPercent: Int = 100
-        var adapterName: String = "Unknown"
+        public var batteryVoltage: Double = 0.0 // Volts (V)
+        public var batteryCurrent: Double = 0.0 // Amperes (A) (positive = charging, negative = discharging)
+        public var batteryPower: Double = 0.0   // Watts (W) (Current Charge or Load Power)
+        public var isCharging: Bool = false
+        public var stateOfCharge: Int = 0       // Percentage (%)
+        public var batteryCycleCount: Int = 0
+        public var batteryHealthPercent: Int = 100
+        public var adapterName: String = "Unknown"
         
         // Expanded Battery telemetry
-        var batteryTemperature: Double = 0.0 // Celsius (°C)
-        var timeRemaining: Int = 0           // Minutes
-        var avgTimeToEmpty: Int = 0          // Minutes
-        var avgTimeToFull: Int = 0           // Minutes
-        var hasBattery: Bool = false
+        public var batteryTemperature: Double = 0.0 // Celsius (°C)
+        public var timeRemaining: Int = 0           // Minutes
+        public var avgTimeToEmpty: Int = 0          // Minutes
+        public var avgTimeToFull: Int = 0           // Minutes
+        public var hasBattery: Bool = false
         
         // Dynamic port diagnostic fields
-        var activePortIndex: Int = -1     // -1 = disconnected, 0 = L1, 1 = L2, 2 = R1, 3 = R2
-        var hasRightPorts: Bool = false
-        var rightPortCount: Int = 2       // 0, 1, or 2 ports on the right
-        var hardwareModel: String = ""
-        var friendlyModelName: String = ""
-        var currentCapacity: Double = 0.0 // mAh
-        var maxCapacity: Double = 0.0     // mAh
-        var designCapacity: Double = 0.0  // mAh
-        var usbStorageDevices: [USBStorageInfo] = []
+        public var activePortIndex: Int = -1     // -1 = disconnected, 0 = L1, 1 = L2, 2 = R1, 3 = R2
+        public var hasRightPorts: Bool = false
+        public var rightPortCount: Int = 2       // 0, 1, or 2 ports on the right
+        public var hardwareModel: String = ""
+        public var friendlyModelName: String = ""
+        public var currentCapacity: Double = 0.0 // mAh
+        public var maxCapacity: Double = 0.0     // mAh
+        public var designCapacity: Double = 0.0  // mAh
+        public var usbStorageDevices: [USBStorageInfo] = []
     }
+    
+    private static var cachedUSBDevices: [USBStorageInfo] = []
+    private static var lastUSBCacheTime: Date = Date.distantPast
     
     private static func doubleValue(for key: String, in dict: [String: Any]) -> Double? {
         if let val = dict[key] as? Double {
@@ -69,7 +72,7 @@ class PowerMonitor {
         return nil
     }
 
-    static func getPowerStats() -> PowerStats {
+    public static func getPowerStats() -> PowerStats {
         var stats = PowerStats()
         
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
@@ -78,7 +81,7 @@ class PowerMonitor {
             stats.isConnected = true
             stats.adapterPower = 0.0
             stats.hasBattery = false
-            stats.usbStorageDevices = getConnectedUSBDevices()
+            stats.usbStorageDevices = getUSBDevicesCached()
             return stats
         }
         
@@ -229,7 +232,7 @@ class PowerMonitor {
             }
         }
         
-        stats.usbStorageDevices = getConnectedUSBDevices()
+        stats.usbStorageDevices = getUSBDevicesCached()
         return stats
     }
     
@@ -303,7 +306,7 @@ class PowerMonitor {
         return model
     }
     
-    struct USBStorageInfo: Identifiable, Hashable {
+    public struct USBStorageInfo: Identifiable, Hashable {
         public let id: UUID
         public let name: String
         public let speed: String       // e.g. "USB 3.0 (SuperSpeed 5Gbps)"
@@ -319,6 +322,15 @@ class PowerMonitor {
             self.current = current
             self.isStorage = isStorage
         }
+    }
+    
+    private static func getUSBDevicesCached() -> [USBStorageInfo] {
+        let now = Date()
+        if now.timeIntervalSince(lastUSBCacheTime) >= 10.0 || lastUSBCacheTime == Date.distantPast {
+            cachedUSBDevices = getConnectedUSBDevices()
+            lastUSBCacheTime = now
+        }
+        return cachedUSBDevices
     }
     
     static func getConnectedUSBDevices() -> [USBStorageInfo] {
@@ -363,6 +375,7 @@ class PowerMonitor {
                                    let childDict = childInfo?.takeRetainedValue() as? [String: Any] {
                                     if let intfClass = childDict["bInterfaceClass"] as? Int, intfClass == 8 {
                                         isStorage = true
+                                        IOObjectRelease(child)
                                         break
                                     }
                                 }

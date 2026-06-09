@@ -9,8 +9,26 @@ public class MemoryPurger {
     ///   - progressHandler: Called on main thread with progress from 0.0 to 1.0.
     ///   - completion: Called on main thread with the reclaimed memory in Megabytes.
     /// Safely terminates non-essential high-memory system helper / daemon / updater processes owned by the user.
+    private static func getProcessName(pid: Int32, bsdName: String) -> String {
+        var pathBuffer = [CChar](repeating: 0, count: 4096)
+        let length = proc_pidpath(pid, &pathBuffer, 4096)
+        if length > 0 {
+            let path = String(cString: pathBuffer)
+            let lastComponent = URL(fileURLWithPath: path).lastPathComponent
+            if !lastComponent.isEmpty {
+                return lastComponent
+            }
+        }
+        return bsdName
+    }
+
+    /// Purge memory asynchronously on a background thread.
+    /// - Parameters:
+    ///   - progressHandler: Called on main thread with progress from 0.0 to 1.0.
+    ///   - completion: Called on main thread with the reclaimed memory in Megabytes.
+    /// Safely terminates non-essential high-memory system helper / daemon / updater processes owned by the user.
     private static func terminateSystemProcesses() {
-        print("[MemoryPurger] Initiating deep process cleanup...")
+        print("[MemoryPurger] Initiating deep process cleanup using native Darwin APIs...")
         
         let safeToKillSystemProcesses: Set<String> = [
             "suggestd", "siriknowledged", "AssistantSiri", "Siri",
@@ -19,43 +37,37 @@ public class MemoryPurger {
             "GoogleSoftwareUpdateAgent", "Microsoft Update Assistant", "Adobe IPC Broker", "Creative Cloud Helper"
         ]
         
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "ps -cax -o pid,comm,rss"]
+        let numPids = proc_listallpids(nil, 0)
+        guard numPids > 0 else { return }
         
-        let pipe = Pipe()
-        process.standardOutput = pipe
+        var pids = [Int32](repeating: 0, count: Int(numPids) + 10)
+        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
+        guard count > 0 else { return }
         
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            print("[MemoryPurger] Failed to run ps -cax for process cleanup: \(error)")
-            return
-        }
+        let selfPid = getpid()
         
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return }
-        
-        let lines = output.components(separatedBy: .newlines)
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("PID") { continue }
+        for i in 0..<Int(count) {
+            let pid = pids[i]
+            guard pid > 0 && pid != selfPid else { continue }
             
-            let components = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-            guard components.count >= 3 else { continue }
+            var info = proc_taskallinfo()
+            let size = Int32(MemoryLayout<proc_taskallinfo>.size)
+            let bytesRead = proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &info, size)
+            guard bytesRead == size else { continue }
             
-            let pidString = components[0]
-            let rssString = components[components.count - 1]
-            let name = components[1..<(components.count - 1)].joined(separator: " ")
+            let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 16) {
+                    String(cString: $0)
+                }
+            }
             
-            guard let pid = Int32(pidString), let rssKB = Double(rssString) else { continue }
-            
-            // Only target listed safe system processes with memory usage above 5MB
+            let name = getProcessName(pid: pid, bsdName: bsdName)
+            let rssKB = Double(info.ptinfo.pti_resident_size) / 1024.0
             let memoryMB = rssKB / 1024.0
+            
             if safeToKillSystemProcesses.contains(name) && memoryMB >= 5.0 {
                 // Ensure we don't kill our own app or its status bar helper
-                if name.contains("HelperStatusBar") || name.contains("Antigravity") || pid == getpid() {
+                if name.contains("HelperStatusBar") || name.contains("Antigravity") {
                     continue
                 }
                 
@@ -101,6 +113,13 @@ public class MemoryPurger {
             print("[MemoryPurger] Total physical RAM: \(totalPhysicalMemory / 1024 / 1024) MB. Target balloon size: \(safeNumBlocks * 512) MB (\(safeNumBlocks) blocks)")
             
             for i in 0..<safeNumBlocks {
+                // Check if remaining free memory is too low (< 500 MB)
+                let freeBytes = getFreeMemoryBytes()
+                if freeBytes < 500 * 1024 * 1024 {
+                    print("[MemoryPurger] Free memory is critically low (\(freeBytes / 1024 / 1024) MB < 500 MB). Stopping balloon expansion to prevent system freeze.")
+                    break
+                }
+                
                 let progress = 0.2 + (Double(i) / Double(safeNumBlocks)) * 0.6
                 DispatchQueue.main.async {
                     progressHandler(progress)
@@ -224,30 +243,18 @@ public class MemoryPurger {
         }
     }
     
+    // Cache dictionary for computing process CPU usage differentials
+    private static var lastProcessCPUTimes: [Int32: (date: Date, cpuTimeNs: UInt64)] = [:]
+    
     /// Retrieve the currently active user application processes and their aggregated memory usage (RSS) & CPU usage.
     public static func getActiveProcessMemoryList() -> [ProcessInfoItem] {
-        // Secure subprocess execution: execute /bin/ps directly with arguments, avoiding shell injection risks
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-cax", "-o", "pid,comm,rss,%cpu"]
+        let numPids = proc_listallpids(nil, 0)
+        guard numPids > 0 else { return [] }
         
-        let pipe = Pipe()
-        process.standardOutput = pipe
+        var pids = [Int32](repeating: 0, count: Int(numPids) + 10)
+        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
+        guard count > 0 else { return [] }
         
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            print("[MemoryPurger] Failed to run ps command: \(error)")
-            return []
-        }
-        
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else {
-            return []
-        }
-        
-        let lines = output.components(separatedBy: .newlines)
         var processMemoryMap: [String: Double] = [:]
         var processCpuMap: [String: Double] = [:]
         var processPidsMap: [String: [Int32]] = [:]
@@ -275,26 +282,25 @@ public class MemoryPurger {
             "head", "grep"
         ]
         
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("PID") {
-                continue
+        let now = Date()
+        var newProcessCPUTimes: [Int32: (date: Date, cpuTimeNs: UInt64)] = [:]
+        
+        for i in 0..<Int(count) {
+            let pid = pids[i]
+            guard pid > 0 else { continue }
+            
+            var info = proc_taskallinfo()
+            let size = Int32(MemoryLayout<proc_taskallinfo>.size)
+            let bytesRead = proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &info, size)
+            guard bytesRead == size else { continue }
+            
+            let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 16) {
+                    String(cString: $0)
+                }
             }
             
-            let components = trimmed.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-            guard components.count >= 4 else {
-                continue
-            }
-            
-            let pidString = components[0]
-            let cpuString = components[components.count - 1]
-            let rssString = components[components.count - 2]
-            let name = components[1..<(components.count - 2)].joined(separator: " ")
-            
-            guard let pid = Int32(pidString), let rssKB = Double(rssString), let cpuPercent = Double(cpuString) else {
-                continue
-            }
-            
+            let name = getProcessName(pid: pid, bsdName: bsdName)
             if blacklist.contains(name) {
                 continue
             }
@@ -303,6 +309,20 @@ public class MemoryPurger {
             if name.count > 1 && name.last == "d" && name.allSatisfy({ !$0.isUppercase }) {
                 continue
             }
+            
+            let rssKB = Double(info.ptinfo.pti_resident_size) / 1024.0
+            
+            // Calculate real-time CPU percentage differential
+            let totalCpuTimeNs = info.ptinfo.pti_total_user + info.ptinfo.pti_total_system
+            var cpuPercent = 0.0
+            if let last = lastProcessCPUTimes[pid] {
+                let dt = now.timeIntervalSince(last.date)
+                if dt > 0.1 {
+                    let cpuDiffNs = totalCpuTimeNs >= last.cpuTimeNs ? totalCpuTimeNs - last.cpuTimeNs : 0
+                    cpuPercent = (Double(cpuDiffNs) / 1_000_000_000.0) / dt * 100.0
+                }
+            }
+            newProcessCPUTimes[pid] = (now, totalCpuTimeNs)
             
             // Normalize app names (group helper processes)
             var normalizedName = name
@@ -334,6 +354,9 @@ public class MemoryPurger {
             processCpuMap[normalizedName, default: 0.0] += cpuPercent
             processPidsMap[normalizedName, default: []].append(pid)
         }
+        
+        // Save current PIDs' CPU times for next tick
+        lastProcessCPUTimes = newProcessCPUTimes
         
         var result: [ProcessInfoItem] = []
         for (name, rssKB) in processMemoryMap {
@@ -435,10 +458,16 @@ public class MemoryPurger {
                 hasher.update(data: data)
             } else {
                 let chunkSize = 64 * 1024
-                while true {
-                    let data = handle.readData(ofLength: chunkSize)
-                    if data.isEmpty { break }
-                    hasher.update(data: data)
+                var hasMore = true
+                while hasMore {
+                    autoreleasepool {
+                        let data = handle.readData(ofLength: chunkSize)
+                        if data.isEmpty {
+                            hasMore = false
+                        } else {
+                            hasher.update(data: data)
+                        }
+                    }
                 }
             }
             
@@ -455,20 +484,25 @@ public class MemoryPurger {
         let fileManager = FileManager.default
         var allFiles: [URL] = []
         
-        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]
         guard let enumerator = fileManager.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsPackageDescendants, .skipsHiddenFiles]) else {
             return []
         }
         
         var totalScanned = 0
         for case let fileURL as URL in enumerator {
-            if let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)),
-               let isRegular = resourceValues.isRegularFile, isRegular,
-               let size = resourceValues.fileSize, size > 0 {
-                allFiles.append(fileURL)
-                totalScanned += 1
-                if totalScanned % 100 == 0 {
-                    progressHandler(0.1, "已发现 \(totalScanned) 个文件...")
+            if let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)) {
+                if let isSymlink = resourceValues.isSymbolicLink, isSymlink {
+                    enumerator.skipDescendants()
+                    continue
+                }
+                if let isRegular = resourceValues.isRegularFile, isRegular,
+                   let size = resourceValues.fileSize, size > 0 {
+                    allFiles.append(fileURL)
+                    totalScanned += 1
+                    if totalScanned % 100 == 0 {
+                        progressHandler(0.1, "已发现 \(totalScanned) 个文件...")
+                    }
                 }
             }
         }

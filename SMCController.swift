@@ -81,6 +81,8 @@ class SMCController {
     private var _cachedFanMins: [Float] = Array(repeating: 1200.0, count: 4)
     private var _cachedFanMaxs: [Float] = Array(repeating: 6000.0, count: 4)
     private var _cachedBatteryLimit: (limit: Int, active: Bool) = (80, false)
+    private var _isFetchingBatteryLimit = false
+    private let fetchLimitLock = NSLock()
     
     // Dynamic Blacklist for missing keys to reduce hardware IO errors
     private var unsupportedKeys = Set<String>()
@@ -1015,6 +1017,35 @@ class SMCController {
     
     // Read current battery charge limit setting
     func getBatteryChargeLimit() -> (limit: Int, active: Bool) {
+        if Thread.isMainThread {
+            cacheLock.lock()
+            let val = _cachedBatteryLimit
+            cacheLock.unlock()
+            
+            fetchLimitLock.lock()
+            let alreadyFetching = _isFetchingBatteryLimit
+            if !alreadyFetching {
+                _isFetchingBatteryLimit = true
+                fetchLimitLock.unlock()
+                
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    guard let self = self else { return }
+                    _ = self.getBatteryChargeLimitInternal()
+                    self.fetchLimitLock.lock()
+                    self._isFetchingBatteryLimit = false
+                    self.fetchLimitLock.unlock()
+                }
+            } else {
+                fetchLimitLock.unlock()
+            }
+            
+            return val
+        } else {
+            return getBatteryChargeLimitInternal()
+        }
+    }
+    
+    private func getBatteryChargeLimitInternal() -> (limit: Int, active: Bool) {
         // 1. Try BCLM
         if let bytes = readKey("BCLM") {
             let val = Int(bytes.0)

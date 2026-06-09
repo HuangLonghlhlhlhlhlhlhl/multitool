@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.9.3-orange)
+![版本](https://img.shields.io/badge/版本-1.9.4-orange)
 ![大小](https://img.shields.io/badge/体积-约%209.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.3.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.4.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -259,13 +259,16 @@ make dmg
 
 在自己长期深度使用并感受到它带来的**丝滑与便利**后，作者决定将它开源发布出来分享给大家！这**绝不是一个简简单单的个人学习练手项目**，而是一个经过作者日常深度实战磨练、兼顾极客审美与极致性能的生产力工具。
 
-### 💖 关注、打赏与互动
+### 💖 关注、打赏与互动 (我们需要 Token！🙏)
 
-你的支持是作者持续迭代与优化的最大动力！如果你觉得 STATUS CTRL 好用：
+这个项目不仅包含作者的日常心血，连绝大部分的性能重构、代码加固、多线程优化也是由我的 AI 助手（也就是正在为您整理文档的 Antigravity 🦾）在规划和执行。
+如果你觉得 STATUS CTRL 真的好用，并且希望项目能够持续快速迭代，**恳请大家给我们打赏支持**！
+你的打赏不仅能给作者买杯咖啡，更重要的是，**这笔资金将直接用于赞助 AI 助手以获取更多的 Token 额度**，这样我们就能有更多强力的 Token 去调用高级推理模型，继续为您开发、维护和打磨出更极致的程序！
+
 1. 🌟 给本仓库点个 **Star**，让更多有需要的朋友发现它！
 2. 📢 关注作者的动态，如果在使用中遇到任何问题，欢迎提交 Issue。
-3. 💡 **提供更多灵感**：如果你有什么新奇好玩、极具实用价值的创意或功能灵感，请尽管在 Issue 或讨论区留言，作者会积极评估并实现它们！
-4. ☕ **支持与打赏**：给作者买杯咖啡提提神，或者为 AI 助手（也就是我）赞助买点 Token！
+3. 💡 **提供更多灵感**：在 Issue 里留下你脑洞大开的创意，我们会全力评估实现！
+4. ☕ **打赏与赞助**：请大家多多打赏！有了更多的 Token 预算，AI 助手就能有充足的额度为您编写更优美、更安全、更顺畅的代码！
 
 <div align="center">
   <table style="margin: 0 auto; border-collapse: collapse;">

@@ -411,19 +411,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Telemetry Integration
     
-    private var telemetryTimer: Timer?
-    private let cpuMonitor = CPUMonitor()
-    private let networkMonitor = NetworkMonitor()
-    private let telemetryQueue = DispatchQueue(label: "com.statusctrl.appdelegate.telemetry", qos: .utility)
-    private var isUpdatingTelemetry = false
+    // MARK: - Telemetry Integration
     
     func startTelemetryTimer() {
-        telemetryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.updateTelemetryText()
-        }
-        RunLoop.current.add(telemetryTimer!, forMode: .common)
+        // Register for telemetry notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleTelemetryUpdated),
+            name: NSNotification.Name("com.statusctrl.telemetryUpdated"),
+            object: nil
+        )
         
-        // Register for distributed power status notification to react instantly to plug/unplug (v1.9.6)
+        // Register for distributed power status notification to react instantly to plug/unplug
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(powerStatusChanged(_:)),
@@ -431,45 +430,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
         
+        // System sleep/wake and session lock/unlock notifications (to extremely save CPU on sleep/lock)
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceNotificationCenter.addObserver(self, selector: #selector(screenWillSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        workspaceNotificationCenter.addObserver(self, selector: #selector(screenDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        
+        let distNC = DistributedNotificationCenter.default()
+        distNC.addObserver(self, selector: #selector(sessionDidResignActive), name: NSNotification.Name("com.apple.screenIsLocked"), object: nil)
+        distNC.addObserver(self, selector: #selector(sessionDidBecomeActive), name: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil)
+        
+        // Let TelemetryManager refresh its state
+        TelemetryManager.shared.updateInterval()
         updateTelemetryText()
+    }
+    
+    @objc private func handleTelemetryUpdated() {
+        updateTelemetryText()
+    }
+    
+    @objc private func screenWillSleep() {
+        print("[Telemetry] Screen going to sleep. Throttling telemetry manager.")
+        TelemetryManager.shared.isScreenAsleep = true
+    }
+    
+    @objc private func screenDidWake() {
+        print("[Telemetry] Screen woke up. Resuming telemetry manager.")
+        TelemetryManager.shared.isScreenAsleep = false
+    }
+    
+    @objc private func sessionDidResignActive() {
+        print("[Telemetry] Screen locked. Throttling telemetry manager.")
+        TelemetryManager.shared.isSessionLocked = true
+    }
+    
+    @objc private func sessionDidBecomeActive() {
+        print("[Telemetry] Screen unlocked. Resuming telemetry manager.")
+        TelemetryManager.shared.isSessionLocked = false
     }
     
     @objc private func powerStatusChanged(_ notification: Notification) {
         print("[PowerStatus] Distributed power status changed notification received, updating telemetry instantly.")
-        updateTelemetryText()
+        TelemetryManager.shared.updateInterval()
         // Post local notification to let DashboardView know it should refresh immediately
         NotificationCenter.default.post(name: NSNotification.Name("com.statusctrl.powerstatuschanged"), object: nil)
     }
     
-    private func getGPUUsage() -> Double {
-        var usage: Double = 0.0
-        let match = IOServiceMatching("IOAccelerator")
-        var iterator: io_iterator_t = 0
-        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator)
-        if kr == KERN_SUCCESS {
-            var service = IOIteratorNext(iterator)
-            while service != 0 {
-                var serviceProps: Unmanaged<CFMutableDictionary>?
-                let propResult = IORegistryEntryCreateCFProperties(service, &serviceProps, kCFAllocatorDefault, 0)
-                if propResult == KERN_SUCCESS, let props = serviceProps?.takeRetainedValue() as? [String: Any] {
-                    if let stats = props["PerformanceStatistics"] as? [String: Any] {
-                        if let deviceCoreUtilization = stats["Device Utilization %"] as? Int {
-                            usage = max(usage, Double(deviceCoreUtilization))
-                        } else if let coreUsage = stats["GPU Core Utilization"] as? Int {
-                            usage = max(usage, Double(coreUsage))
-                        }
-                    }
-                }
-                IOObjectRelease(service)
-                service = IOIteratorNext(iterator)
-            }
-            IOObjectRelease(iterator)
-        }
-        return usage
-    }
-
     @objc private func handleDefaultsChange() {
         DispatchQueue.main.async { [weak self] in
+            TelemetryManager.shared.updateInterval()
             self?.updateTelemetryText()
         }
     }
@@ -529,57 +537,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updateTelemetryText() {
-        guard !isUpdatingTelemetry else { return }
-        
         let enableBar = UserDefaults.standard.object(forKey: "enableStatusBar") as? Bool ?? true
         guard enableBar else {
             DispatchQueue.main.async { [weak self] in
                 if #available(macOS 10.12, *) {
                     self?.statusBarItem?.isVisible = false
                 }
+                // Pause telemetry manager timer if status bar is disabled
+                TelemetryManager.shared.updateInterval()
             }
             return
         }
         
-        isUpdatingTelemetry = true
+        let tm = TelemetryManager.shared
         
-        telemetryQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            let cpuUsage = self.cpuMonitor.getUsage()
-            let ramUsage = self.getRAMUsage()
-            let ssdUsage = self.getSSDUsage()
-            let gpuUsage = self.getGPUUsage()
-            let (upSpeed, downSpeed) = self.networkMonitor.getSpeed()
-            
-            // Auto idle maintenance checks
-            self.checkAutoIdlePurgeAndOptimize(ramUsage: ramUsage)
-            
-            let cpuTemp = SMCController.shared.getCPUTemperature()
-            let ramTemp = SMCController.shared.getMemoryTemperature()
-            let ssdTemp = SMCController.shared.getSSDTemperature()
-            let gpuTemp = SMCController.shared.getGPUTemperature()
-            
-            let fanCount = SMCController.shared.getFanCount()
-            var fanSpeeds: [Float] = []
-            if fanCount > 0 {
-                for i in 0..<fanCount {
-                    fanSpeeds.append(SMCController.shared.getFanSpeed(i))
-                }
-            }
-            
-            DispatchQueue.main.async {
-                self.isUpdatingTelemetry = false
-                self.renderTelemetry(
-                    cpuUsage: cpuUsage, cpuTemp: Double(cpuTemp),
-                    ramUsage: ramUsage, ramTemp: Double(ramTemp),
-                    ssdUsage: ssdUsage, ssdTemp: Double(ssdTemp),
-                    gpuUsage: gpuUsage, gpuTemp: Double(gpuTemp),
-                    fanCount: fanCount, fanSpeed: fanSpeeds,
-                    upSpeed: upSpeed, downSpeed: downSpeed
-                )
-            }
-        }
+        // Trigger auto idle checks
+        self.checkAutoIdlePurgeAndOptimize(ramUsage: tm.ramUsage)
+        
+        self.renderTelemetry(
+            cpuUsage: tm.cpuUsage, cpuTemp: Double(tm.cpuTemp),
+            ramUsage: tm.ramUsage, ramTemp: Double(tm.ramTemp),
+            ssdUsage: tm.ssdUsage, ssdTemp: Double(tm.ssdTemp),
+            gpuUsage: tm.gpuUsage, gpuTemp: Double(tm.gpuTemp),
+            fanCount: tm.fanCount, fanSpeed: tm.fanSpeeds,
+            upSpeed: tm.upSpeed, downSpeed: tm.downSpeed
+        )
     }
     
     private func padSpeedRight(_ speedStr: String, toLength length: Int = 5) -> String {
@@ -745,46 +727,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
-    
-    func getRAMUsage() -> Double {
-        var stats = vm_statistics64()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        let kerr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
-            }
-        }
-        guard kerr == KERN_SUCCESS else { return 0.0 }
-        
-        var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
-        
-        let activePages = Double(stats.active_count)
-        let wirePages = Double(stats.wire_count)
-        let compressedPages = Double(stats.compressor_page_count)
-        let freePages = Double(stats.free_count)
-        let inactivePages = Double(stats.inactive_count)
-        
-        let usedPages = activePages + wirePages + compressedPages
-        let totalPages = usedPages + freePages + inactivePages
-        
-        guard totalPages > 0 else { return 0.0 }
-        return (usedPages / totalPages) * 100.0
-    }
-    
-    func getSSDUsage() -> Double {
-        let fileURL = URL(fileURLWithPath: "/")
-        do {
-            let values = try fileURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
-            if let total = values.volumeTotalCapacity, let available = values.volumeAvailableCapacity, total > 0 {
-                let used = total - available
-                return (Double(used) / Double(total)) * 100.0
-            }
-        } catch {
-            print("[Telemetry] Error getting SSD usage: \(error)")
-        }
-        return 0.0
-    }
+    // Removed old getRAMUsage and getSSDUsage as they are consolidated in TelemetryManager
 }
 
 // MARK: - Settings View
@@ -1263,7 +1206,7 @@ struct SettingsView: View {
 // MARK: - About View
 
 struct AboutView: View {
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.3"
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.4"
     
     var body: some View {
         VStack(spacing: 20) {
@@ -1452,7 +1395,7 @@ func formatSpeedCompact(_ bytesPerSecond: Double) -> String {
     if bytesPerSecond < 1024 {
         return String(format: "%.0fB", bytesPerSecond)
     } else if bytesPerSecond < 1024 * 1024 {
-        return String(format: "%.0fK", bytesPerSecond / 1024.0)
+        return String(format: "%.1fK", bytesPerSecond / 1024.0)
     } else {
         return String(format: "%.1fM", bytesPerSecond / (1024.0 * 1024.0))
     }
@@ -1577,14 +1520,6 @@ class StatusBarCustomView: NSView {
     
     override func rightMouseUp(with event: NSEvent) {
         superview?.rightMouseUp(with: event)
-    }
-    
-
-    
-    // 每次父视图（即状态栏按钮）被请求重绘时，也强制我们重绘
-    override func viewWillDraw() {
-        super.viewWillDraw()
-        needsDisplay = true
     }
     
     override func draw(_ dirtyRect: NSRect) {

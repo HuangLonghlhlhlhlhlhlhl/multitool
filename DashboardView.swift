@@ -33,43 +33,10 @@ struct DashboardView: View {
         return "/Users/h-l/Desktop/多功能小助手/smchelper"
     }
 
-    // Static stored properties to compute differential disk speed (v1.9.0)
-    private static var lastReadBytes: UInt64 = 0
-    private static var lastWriteBytes: UInt64 = 0
-    private static var lastIOTime: Date? = nil
-    
-    private func getSystemDiskIOBytes() -> (read: UInt64, write: UInt64) {
-        var totalRead: UInt64 = 0
-        var totalWrite: UInt64 = 0
-        
-        let matchingDict = IOServiceMatching("IOBlockStorageDriver")
-        var iterator: io_iterator_t = 0
-        
-        let result = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDict, &iterator)
-        if result == KERN_SUCCESS {
-            var drive = IOIteratorNext(iterator)
-            while drive != 0 {
-                var properties: Unmanaged<CFMutableDictionary>?
-                let propResult = IORegistryEntryCreateCFProperties(drive, &properties, kCFAllocatorDefault, 0)
-                if propResult == KERN_SUCCESS, let props = properties?.takeRetainedValue() as? [String: Any] {
-                    if let statistics = props["Statistics"] as? [String: Any] {
-                        let bytesRead = statistics["Bytes (Read)"] as? UInt64 ?? (statistics["Bytes (Read)"] as? Int64).map { UInt64($0) } ?? 0
-                        let bytesWritten = statistics["Bytes (Write)"] as? UInt64 ?? (statistics["Bytes (Write)"] as? Int64).map { UInt64($0) } ?? 0
-                        totalRead += bytesRead
-                        totalWrite += bytesWritten
-                    }
-                }
-                IOObjectRelease(drive)
-                drive = IOIteratorNext(iterator)
-            }
-            IOObjectRelease(iterator)
-        }
-        return (totalRead, totalWrite)
-    }
+    // Static stored properties to compute differential disk speed (Moved to TelemetryManager)
 
     
-    // Refresh Timers
-    private let statsTimer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
+    // Refresh Timers (Removed, consolidated in TelemetryManager)
     
     // UI & Hardware States
     private let telemetryQueue = DispatchQueue(label: "com.statusctrl.telemetryQueue", qos: .userInitiated)
@@ -205,6 +172,12 @@ struct DashboardView: View {
     @State private var batteryTargetPower: Double = UserDefaults.standard.double(forKey: "BatteryTargetPower") == 0 ? 8.0 : UserDefaults.standard.double(forKey: "BatteryTargetPower")
     @State private var autoAlignBatteryPolicies: Bool = UserDefaults.standard.object(forKey: "AutoAlignBatteryPolicies") == nil ? true : UserDefaults.standard.bool(forKey: "AutoAlignBatteryPolicies")
     @State private var lastAppliedTargetPower: Double = 0.0
+    
+    // Cache for dynamic power alignment optimization to prevent redundant changes
+    @State private var lastIsConnected: Bool? = nil
+    @State private var lastAppliedAcPolicy: Int? = nil
+    @State private var lastAppliedBatteryPolicy: Int? = nil
+    @State private var lastAppliedAutoAlign: Bool? = nil
     
     // Interactive feedback
     @State private var messagePrompt: String = ""
@@ -731,6 +704,7 @@ struct DashboardView: View {
                                 Button(action: {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                         selectedTab = idx
+                                        TelemetryManager.shared.currentTab = idx
                                         if selectedTab == 3 {
                                             processMonitor.startMonitoring()
                                             wifiScanner.startScan()
@@ -817,6 +791,8 @@ struct DashboardView: View {
             UserDefaults.standard.set("zh-Hans", forKey: "AppLanguage")
             currentLanguage = "zh-Hans"
             isPanelVisible = true
+            TelemetryManager.shared.isUIActive = true
+            TelemetryManager.shared.currentTab = selectedTab
             initializeHardware()
             
             // Initialize privacy state & window blocking (v1.9.6 Requirement)
@@ -840,10 +816,22 @@ struct DashboardView: View {
         }
         .onDisappear {
             isPanelVisible = false
+            TelemetryManager.shared.isUIActive = false
         }
-        .onReceive(statsTimer) { _ in refreshStats() }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.telemetryUpdated"))) { _ in
+            refreshStats()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.powerstatuschanged"))) { _ in
             self.refreshStats()
+        }
+        .onChange(of: isTempExpanded) { val in
+            UserDefaults.standard.set(val, forKey: "isTempAccordionExpanded")
+        }
+        .onChange(of: isPowerExpanded) { val in
+            UserDefaults.standard.set(val, forKey: "isPowerAccordionExpanded")
+        }
+        .onChange(of: showSiliconDieView) { val in
+            UserDefaults.standard.set(val, forKey: "showSiliconDieView")
         }
     }
 
@@ -5288,8 +5276,8 @@ struct DashboardView: View {
     
     private func refreshStats() {
         guard isPanelVisible else { return }
-        guard !isRefreshing else { return }
-        isRefreshing = true
+        
+        let tm = TelemetryManager.shared
         
         // Capture necessary State variables from the main thread
         let currentFanCount = fanCount
@@ -5311,130 +5299,10 @@ struct DashboardView: View {
         let cCurveSpeed4 = customCurveSpeed4
         
         let currentDisableKeyboardBacklightOnBattery = disableKeyboardBacklightOnBattery
-        let currentTab = selectedTab
         
         telemetryQueue.async {
-            // 1. Perform intensive hardware readings on background queue
-            let tempCpu = self.smc.getCPUTemperature()
-            let tempGpu = self.smc.getGPUTemperature()
-            let statsPower = PowerMonitor.getPowerStats()
-            
-            let usageCpu = self.cpuMonitor.getUsage()
-            let usageGpu = self.getGPUUsage()
-            
-            // Only group and fetch active process memory list if on tab 0 (Memory)
-            let processes = currentTab == 0 ? MemoryPurger.getActiveProcessMemoryList() : []
-            let ramPercent = self.getRAMUsage()
-            
-            // Calculate real-time physical disk I/O speed (v1.9.0)
-            let ioBytes = self.getSystemDiskIOBytes()
-            let now = Date()
-            var readSpeedMBs: Double = 0.0
-            var writeSpeedMBs: Double = 0.0
-            
-            if let lastTime = Self.lastIOTime {
-                let dt = now.timeIntervalSince(lastTime)
-                if dt > 0.1 {
-                    let rDiff = ioBytes.read >= Self.lastReadBytes ? ioBytes.read - Self.lastReadBytes : 0
-                    let wDiff = ioBytes.write >= Self.lastWriteBytes ? ioBytes.write - Self.lastWriteBytes : 0
-                    readSpeedMBs = (Double(rDiff) / (1024.0 * 1024.0)) / dt
-                    writeSpeedMBs = (Double(wDiff) / (1024.0 * 1024.0)) / dt
-                }
-            }
-            if readSpeedMBs > 15000.0 { readSpeedMBs = 0.0 }
-            if writeSpeedMBs > 15000.0 { writeSpeedMBs = 0.0 }
-            Self.lastReadBytes = ioBytes.read
-            Self.lastWriteBytes = ioBytes.write
-            Self.lastIOTime = now
-            
-            // Only fetch SSD SMART health logs if on tab 2 (System Health)
-            let ssdData = currentTab == 2 ? self.fetchSSDHealthDataInBackground() : nil
-            
-            let pCpuPerf = self.smc.getCPUPerfCoresTemperature()
-            let pCpuEff = self.smc.getCPUEffCoresTemperature()
-            let pSSD = self.smc.getSSDTemperature()
-            let pWiFi = self.smc.getWiFiTemperature()
-            let pMemory = self.smc.getMemoryTemperature()
-            let pPalmRest = self.smc.getPalmRestTemperature()
-            let pAirflow = self.smc.getAirflowTemperature()
-            
-            let voltCpu = self.smc.getCPUVoltage(load: usageCpu)
-            let voltGpu = self.smc.getGPUVoltage(load: usageGpu)
-            let powCpu = self.smc.getCPUPower(load: usageCpu)
-            let powGpu = self.smc.getGPUPower(load: usageGpu)
-            
-            // Phase 3: ANE NPU Power & Ambient Backlight adjustment
-            let powNpu = self.smc.getNPUPower(load: usageCpu)
-            let usageNpu = min(100.0, (powNpu / 15.0) * 100.0)
-            
-            let currentIsAmbientLinkEnabled = self.isAmbientLinkEnabled
-            var targetKB: Float? = nil
-            if currentIsAmbientLinkEnabled {
-                if let lux = self.getAmbientLightLux() {
-                    if lux < 10 {
-                        targetKB = 0.8
-                    } else if lux < 100 {
-                        targetKB = 0.4
-                    } else {
-                        targetKB = 0.0
-                    }
-                } else {
-                    let hour = Calendar.current.component(.hour, from: Date())
-                    if hour >= 19 || hour < 6 {
-                        targetKB = 0.7
-                    } else {
-                        targetKB = 0.0
-                    }
-                }
-            }
-            if let targetVal = targetKB {
-                let _ = KeyboardBacklightPrivate.setBrightness(targetVal)
-            }
-            
-            // Total power calculation
-            var totalPow = powCpu + powGpu + 2.5
-            if !statsPower.isConnected {
-                let discharge = abs(statsPower.batteryPower)
-                if discharge > 0.1 {
-                    totalPow = discharge
-                }
-            }
-            
-            // Frequency calculation based on hardware sysctl base if available
-            var baseCpuPerf = 1.5
-            var baseCpuEff = 1.0
-            
-            var hz0: UInt64 = 0
-            var sz0 = MemoryLayout<UInt64>.size
-            if sysctlbyname("hw.perflevel0.nominalfrequency", &hz0, &sz0, nil, 0) == 0 && hz0 > 0 {
-                baseCpuPerf = Double(hz0) / 1_000_000_000.0
-            } else {
-                var hzBase: UInt64 = 0
-                var szBase = MemoryLayout<UInt64>.size
-                if sysctlbyname("hw.cpufrequency", &hzBase, &szBase, nil, 0) == 0 && hzBase > 0 {
-                    baseCpuPerf = Double(hzBase) / 1_000_000_000.0
-                }
-            }
-            
-            var hz1: UInt64 = 0
-            var sz1 = MemoryLayout<UInt64>.size
-            if sysctlbyname("hw.perflevel1.nominalfrequency", &hz1, &sz1, nil, 0) == 0 && hz1 > 0 {
-                baseCpuEff = Double(hz1) / 1_000_000_000.0
-            } else {
-                baseCpuEff = max(1.0, baseCpuPerf * 0.6)
-            }
-            
-            let freqCpuPerf = baseCpuPerf + (usageCpu / 100.0) * (baseCpuPerf * 0.5)
-            let freqCpuEff = baseCpuEff + (usageCpu / 100.0) * (baseCpuEff * 0.5)
-            let freqGpu = 0.3 + (usageGpu / 100.0) * 1.0
-            
-            // Fan speeds
-            var actualFanSpeeds = [Float]()
-            if currentFanCount > 0 {
-                for i in 0..<currentFanCount {
-                    actualFanSpeeds.append(self.smc.getFanSpeed(i))
-                }
-            }
+            let tempCpu = tm.cpuTemp
+            let tempGpu = tm.gpuTemp
             
             // Custom fan curve temperature regulation evaluation
             var nextTargetFanSpeeds: [Float] = []
@@ -5518,7 +5386,7 @@ struct DashboardView: View {
             
             // Auto Dim Keyboard Backlight on Battery (CoreBrightness XPC in background)
             var didAutoDimKeyboard = false
-            if currentDisableKeyboardBacklightOnBattery && !statsPower.isConnected {
+            if currentDisableKeyboardBacklightOnBattery && !tm.powerStats.isConnected {
                 let currentKB = KeyboardBacklightPrivate.getBrightness()
                 if currentKB > 0.0 {
                     let _ = KeyboardBacklightPrivate.setBrightness(0.0)
@@ -5526,32 +5394,39 @@ struct DashboardView: View {
                 }
             }
             
-            // 2. Dispatch the results back to the main thread to update UI
+            // Update UI State variables on Main thread
             DispatchQueue.main.async {
-                self.cpuTemp = tempCpu
-                self.gpuTemp = tempGpu
-                self.powerStats = statsPower
-                self.cpuUsage = usageCpu
-                self.gpuUsage = usageGpu
+                self.cpuTemp = tm.cpuTemp
+                self.gpuTemp = tm.gpuTemp
+                self.powerStats = tm.powerStats
+                self.cpuUsage = tm.cpuUsage
+                self.gpuUsage = tm.gpuUsage
                 
-                if currentTab == 0 {
-                    self.activeProcesses = processes
+                if self.selectedTab == 0 {
+                    self.activeProcesses = tm.activeProcesses
                 }
-                self.currentRAMUsagePercent = ramPercent
+                self.currentRAMUsagePercent = tm.ramUsage
                 
-                // Set disk I/O speeds (v1.9.0)
-                self.diskReadSpeed = readSpeedMBs
-                self.diskWriteSpeed = writeSpeedMBs
-                self.diskReadHistory.append(readSpeedMBs)
-                if self.diskReadHistory.count > 18 {
-                    self.diskReadHistory.removeFirst()
+                self.diskReadSpeed = tm.diskReadSpeed
+                self.diskWriteSpeed = tm.diskWriteSpeed
+                self.diskReadHistory = tm.diskReadSpeed == 0.0 && self.diskReadHistory.isEmpty ? [] : self.diskReadHistory
+                
+                // Keep the last 18 readings for disk speeds history
+                if tm.diskReadSpeed > 0.0 || !self.diskReadHistory.isEmpty {
+                    self.diskReadHistory.append(tm.diskReadSpeed)
+                    if self.diskReadHistory.count > 18 {
+                        self.diskReadHistory.removeFirst()
+                    }
                 }
-                self.diskWriteHistory.append(writeSpeedMBs)
-                if self.diskWriteHistory.count > 18 {
-                    self.diskWriteHistory.removeFirst()
+                if tm.diskWriteSpeed > 0.0 || !self.diskWriteHistory.isEmpty {
+                    self.diskWriteHistory.append(tm.diskWriteSpeed)
+                    if self.diskWriteHistory.count > 18 {
+                        self.diskWriteHistory.removeFirst()
+                    }
                 }
                 
-                if currentTab == 2, let data = ssdData {
+                if self.selectedTab == 2 {
+                    let data = tm.ssdHealth
                     self.smartctlInstalled = data.smartctlInstalled
                     self.ssdModelName = data.modelName
                     self.ssdCapacity = data.capacity
@@ -5568,33 +5443,29 @@ struct DashboardView: View {
                     }
                 }
                 
-                self.tempCpuPerf = pCpuPerf
-                self.tempCpuEff = pCpuEff
-                self.tempSSD = pSSD
-                self.tempWiFi = pWiFi
-                self.tempMemory = pMemory
-                self.tempPalmRest = pPalmRest
-                self.tempAirflow = pAirflow
+                self.tempCpuPerf = tm.tempCpuPerf
+                self.tempCpuEff = tm.tempCpuEff
+                self.tempSSD = tm.tempSSD
+                self.tempWiFi = tm.tempWiFi
+                self.tempMemory = tm.tempMemory
+                self.tempPalmRest = tm.tempPalmRest
+                self.tempAirflow = tm.tempAirflow
                 
-                self.cpuVoltage = voltCpu
-                self.gpuVoltage = voltGpu
-                self.cpuPower = powCpu
-                self.gpuPower = powGpu
-                self.npuPower = powNpu
-                self.npuUsage = usageNpu
-                self.totalPower = totalPow
+                self.cpuVoltage = tm.cpuVoltage
+                self.gpuVoltage = tm.gpuVoltage
+                self.cpuPower = tm.cpuPower
+                self.gpuPower = tm.gpuPower
+                self.npuPower = tm.npuPower
+                self.npuUsage = tm.npuUsage
+                self.totalPower = tm.totalPower
                 
-                if let targetVal = targetKB {
-                    self.keyboardBrightness = targetVal
-                }
+                self.cpuFreqPerf = tm.cpuFreqPerf
+                self.cpuFreqEff = tm.cpuFreqEff
+                self.gpuFreq = tm.gpuFreq
                 
-                self.cpuFreqPerf = freqCpuPerf
-                self.cpuFreqEff = freqCpuEff
-                self.gpuFreq = freqGpu
-                
-                for i in 0..<actualFanSpeeds.count {
+                for i in 0..<tm.fanSpeeds.count {
                     if i < self.fanSpeed.count {
-                        self.fanSpeed[i] = actualFanSpeeds[i]
+                        self.fanSpeed[i] = tm.fanSpeeds[i]
                     }
                 }
                 
@@ -5614,42 +5485,6 @@ struct DashboardView: View {
                 self.isRefreshing = false
             }
         }
-    }
-    
-    private func getGPUUsage() -> Double {
-        var usage: Double = 0.0
-        let match = IOServiceMatching("IOAccelerator")
-        var iterator: io_iterator_t = 0
-        let kr = IOServiceGetMatchingServices(kIOMainPortDefault, match, &iterator)
-        if kr == KERN_SUCCESS {
-            var service = IOIteratorNext(iterator)
-            while service != 0 {
-                var serviceProps: Unmanaged<CFMutableDictionary>?
-                let propResult = IORegistryEntryCreateCFProperties(service, &serviceProps, kCFAllocatorDefault, 0)
-                if propResult == KERN_SUCCESS, let props = serviceProps?.takeRetainedValue() as? [String: Any] {
-                    if let stats = props["PerformanceStatistics"] as? [String: Any] {
-                        if let util = stats["Device Utilization %"] as? Int {
-                            usage = max(usage, Double(util))
-                        } else if let utilVal = stats["Device Utilization %"] as? Double {
-                            usage = max(usage, utilVal)
-                        } else if let utilVal = stats["Device Utilization %"] as? Int64 {
-                            usage = max(usage, Double(utilVal))
-                        }
-                    }
-                }
-                IOObjectRelease(service)
-                service = IOIteratorNext(iterator)
-            }
-            IOObjectRelease(iterator)
-        }
-        
-        if usage == 0.0 {
-            let gpuTempNow = smc.getGPUTemperature()
-            let baseGpu = max(0.0, Double(gpuTempNow - 38.0) * 1.5)
-            usage = max(0.0, min(100.0, baseGpu))
-        }
-        
-        return usage
     }
     
     private func getAmbientLightLux() -> Double? {
@@ -6055,8 +5890,23 @@ struct DashboardView: View {
         return 70.0 * (soc > 0 ? soc : 0.8)
     }
     
-    private func applyDynamicPowerSavingSettings() {
+    private func applyDynamicPowerSavingSettings(force: Bool = false) {
         let isConnected = powerStats.isConnected
+        
+        // Optimize: prevent redundant hardware writes and auto-alignment overrides 
+        // when state remains unchanged. This preserves manual fan overrides (e.g. Turbo mode).
+        if !force &&
+           lastIsConnected == isConnected &&
+           lastAppliedAcPolicy == acPowerPolicy &&
+           lastAppliedBatteryPolicy == batteryPowerPolicy &&
+           lastAppliedAutoAlign == autoAlignBatteryPolicies {
+            return
+        }
+        
+        lastIsConnected = isConnected
+        lastAppliedAcPolicy = acPowerPolicy
+        lastAppliedBatteryPolicy = batteryPowerPolicy
+        lastAppliedAutoAlign = autoAlignBatteryPolicies
         
         if isConnected {
             // AC 模式策略执行
@@ -8159,9 +8009,11 @@ class NetworkProcessMonitor: ObservableObject {
     
     func startMonitoring() {
         updateProcesses()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.updateProcesses()
         }
+        self.timer = t
+        RunLoop.current.add(t, forMode: .common)
     }
     
     func stopMonitoring() {
@@ -9557,7 +9409,7 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
             self.scanResults = self.generateMockScanResults()
             
             // Randomly update RSSI to create real-time sweeper movement
-            self.mockTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            let t = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
                 var updated = self.scanResults
                 for i in 0..<updated.count {
@@ -9588,6 +9440,8 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
                 }
                 self.scanResults = updated.sorted(by: { $0.rssi > $1.rssi })
             }
+            self.mockTimer = t
+            RunLoop.current.add(t, forMode: .common)
         }
     }
     
@@ -11062,10 +10916,12 @@ struct LargeRadarImmersiveView: View {
             wifiScanner.startScan()
             bluetoothScanner.startScan()
             
-            autoScanTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+            let t = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
                 wifiScanner.startScan()
                 bluetoothScanner.startScan()
             }
+            autoScanTimer = t
+            RunLoop.current.add(t, forMode: .common)
         }
         .onDisappear {
             autoScanTimer?.invalidate()
@@ -11096,7 +10952,7 @@ struct MiniDashboardView: View {
         processMonitor.topProcesses.reduce(0.0) { $0 + $1.uploadSpeed }
     }
     
-    private let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    // Timer removed, listens to TelemetryManager updates
     
     var body: some View {
         VStack(spacing: 0) {
@@ -11276,14 +11132,16 @@ struct MiniDashboardView: View {
         )
         .preferredColorScheme(.dark)
         .onAppear {
+            TelemetryManager.shared.isUIActive = true
             updateStats()
             processMonitor.startMonitoring()
             pulseGreen = true
         }
         .onDisappear {
+            TelemetryManager.shared.isUIActive = false
             processMonitor.stopMonitoring()
         }
-        .onReceive(timer) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.telemetryUpdated"))) { _ in
             updateStats()
         }
     }
@@ -11337,19 +11195,11 @@ struct MiniDashboardView: View {
     private let telemetryQueue = DispatchQueue(label: "com.statusctrl.mini.telemetry", qos: .userInitiated)
     
     private func updateStats() {
-        telemetryQueue.async {
-            let usage = self.cpuMonitor.getUsage()
-            let temp = self.smc.getCPUTemperature()
-            let ram = self.getRAMUsage()
-            let stats = PowerMonitor.getPowerStats()
-            
-            DispatchQueue.main.async {
-                self.cpuUsage = usage
-                self.cpuTemp = temp
-                self.ramUsage = ram
-                self.powerStats = stats
-            }
-        }
+        let tm = TelemetryManager.shared
+        self.cpuUsage = tm.cpuUsage
+        self.cpuTemp = tm.cpuTemp
+        self.ramUsage = tm.ramUsage
+        self.powerStats = tm.powerStats
     }
     
     private func triggerMemoryPurge() {

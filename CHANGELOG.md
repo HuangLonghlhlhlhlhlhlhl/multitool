@@ -4,6 +4,28 @@
 
 ---
 
+## [1.9.4] — 2026-06-09
+
+### ⚡ 性能卡顿修复与系统稳定性优化 (Performance & Stability Optimization)
+
+#### 🌀 消除电池管理主线程卡死 (Eliminating Battery Management UI Freeze)
+- **非阻塞主线程**: 重构 `getBatteryChargeLimit`。当从主线程调用时立即返回缓存值（0ms），将物理 I/O 与 `sudo` 特权检测移至后台异步线程，彻底解决反复切换面板或界面刷新时出现的 1-2 秒主线程冻结。
+
+#### 🔌 IOKit USB 扫描降频与句柄泄露修复 (USB Registry Polling & Leak Fixes)
+- **10秒周期缓存**: 将每次遥测的 IOKit 设备遍历频率降低为每 10 秒最多 1 次，大幅降低 CPU 空转能耗。
+- **句柄泄露平衡**: 修复了遍历 USB 子设备时因 early break 未调用 `IOObjectRelease` 产生的内核资源句柄泄露。
+
+#### 🧹 内存气球安全门槛与查重枚举加固 (Autorelease Clean, Symlink Protection & Safety Threshold)
+- **大文件查重内存即时释放**: 在大文件 MD5 校验的分块读取循环中嵌入 `autoreleasepool`，防止海量文件扫描时内存异常暴涨。
+- **符号链接循环防御**: 在重复文件扫描中加入了 `.isSymbolicLinkKey` 并调用 `enumerator.skipDescendants()` 跳过，杜绝环状 symlink 递归造成的栈溢出崩溃。
+- **空闲内存安全阀**: 在内存气球膨胀清理的各 512MB 块分配前进行系统空闲内存校验，若可用内存低于 500MB 则主动中止，防止极端情况下锁死系统。
+
+#### 📈 网速精细化与 Timer 锁定防护 (Speed Display & Timer Scroll Lock Protection)
+- **低网速高精化**: 格式化千字节以下的速度时显示 1 位小数（如 `1.5K`），使低速上传下载吞吐动态反馈更精准。
+- **UI交互不降频**: 将界面主要的轮询及扫描定时器注册至 RunLoop 的 `.common` 模式，避免了用户拖拽窗口或滚动列表时指示器暂停刷新的视觉卡顿。
+
+---
+
 ## [1.9.3] — 2026-06-01
 
 ### 🛠️ 空间定位雷达交互补全与系统级高可用抗崩加固 (Interactive Radar & System Robustness Audit)
