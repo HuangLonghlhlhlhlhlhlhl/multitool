@@ -189,6 +189,24 @@ func main() {
         } catch {
             print("ERROR: \(error.localizedDescription)")
         }
+    } else if command == "speedlimit" {
+        guard args.count >= 3 else {
+            print("ERROR: Missing arguments for speedlimit. Usage: smchelper speedlimit <percent>")
+            exit(1)
+        }
+        let rawPercent = Int(args[2]) ?? 100
+        let percent = min(max(rawPercent, 10), 100)
+        
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        task.arguments = ["-a", "speedlimit", String(percent)]
+        do {
+            try task.run()
+            task.waitUntilExit()
+            print("OK")
+        } catch {
+            print("ERROR")
+        }
     } else {
         print("ERROR: Unknown command \(command)")
         exit(1)

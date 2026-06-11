@@ -33,16 +33,18 @@ func getRAMUsage() -> Double {
 }
 
 func getSSDUsage() -> Double {
-    let fileURL = URL(fileURLWithPath: "/")
+    let fileURL = URL(fileURLWithPath: NSHomeDirectory())
     do {
-        let values = try fileURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
-        if let total = values.volumeTotalCapacity, let available = values.volumeAvailableCapacity {
-            let used = Double(total - available)
-            return (used / Double(total)) * 100.0
+        let values = try fileURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey])
+        if let totalInt = values.volumeTotalCapacity, let available = values.volumeAvailableCapacityForImportantUsage, totalInt > 0 {
+            let total = Int64(totalInt)
+            let used = total - available
+            return (Double(used) / Double(total)) * 100.0
         }
     } catch {}
     return 0.0
 }
 
 print("RAM Usage: \(getRAMUsage())%")
-print("SSD Usage: \(getSSDUsage())%")
+print("SSD Usage (Finder Volume Capacity): \(getSSDUsage())%")
+

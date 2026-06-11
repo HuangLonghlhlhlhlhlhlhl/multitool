@@ -15,3 +15,7 @@ test_battery
 test_brightness
 test_telemetry
 
+# Editor & Scratch dirs
+.vscode/
+scratch/
+

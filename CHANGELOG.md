@@ -4,6 +4,24 @@
 
 ---
 
+## [1.9.5] — 2026-06-11
+
+### 🚀 极客调频系统、对齐微调与无线电列表重构 (Geek Tuning, Fine Alignment & Wi-Fi Redesign)
+
+#### 🌡️ 状态栏单像素对齐微调 (Status Bar Column Alignment Fine-tuning)
+- **等宽对齐匹配**: 将状态栏第二行温度列的渲染格式由 `"  %2.0f°C"` 调整为 `"   %2.0f°C"`。在等宽系统字体下，这能让 CPU, RAM, SSD, GPU 等第二行温度值与上一行的百分比数值实现完美的左右对齐。
+
+#### 📡 无线 Wi-Fi AP 列表彻底重构 (Wi-Fi Access Point Scanner UI Redesign)
+- **高级折叠行布局**: 舍弃原先的弹窗，重构为可展开折叠行。展开后提供详尽的数据面板、渐变色彩虹信号衰减进度条，并在行内新增一键快速复制 BSSID 按钮。
+- **全局过滤、搜索与排序**: 引入实时的 SSID/BSSID 文本搜索过滤栏；增加频段筛选选择器（全部/5GHz/2.4GHz/隐藏 BSSID）与列表排序器（按信号强度/按物理估计距离/按字母名称排序）。
+- **物理追踪系统联动**: 重构 WiFi 雷达定位物理追踪，在 WiFi 折叠详情行中直接内置“🎯 启动物理追踪”按钮，点击后一键锁定 WiFi 指针，瞬间开始反向几何追踪。
+
+#### ⚙️ 处理器与内存手动调频极客面板 (Manual CPU & RAM Frequency Tuning Modules)
+- **处理器最高频率滑块**: 增加 CPU 调频控制器，以百分比（30% - 100%）自由拉伸限制处理器时钟；通过 `pmset -a speedlimit` 改变系统状态，并接入 `TelemetryManager` 实时反馈。
+- **Apple Silicon 统一内存时钟调校**: 新增内存频率调节，包含“自动”和 4 档手动锁定状态（6400MHz / 5500MHz / 4266MHz / 3200MHz），调整时辅以“正在配置内核管理器”同步动画并修正内存负载能效缩放。
+
+---
+
 ## [1.9.4] — 2026-06-09
 
 ### ⚡ 性能卡顿修复与系统稳定性优化 (Performance & Stability Optimization)

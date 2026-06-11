@@ -2,7 +2,7 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-VERSION="1.9.4"
+VERSION="1.9.5"
 TAG="v${VERSION}"
 DMG_PATH="/Users/h-l/Desktop/STATUS CTRL-v${VERSION}.dmg"
 
@@ -20,10 +20,10 @@ git add AppDelegate.swift DashboardView.swift Makefile PowerMonitor.swift \
     SMCController.swift smchelper.swift MemoryPurger.swift UpdateManager.swift \
     DDCCIController.swift SSDMonitor.swift Bridging-Header.h .gitignore \
     test_battery.swift test_brightness.swift test_telemetry.swift \
-    TelemetryManager.swift \
+    TelemetryManager.swift ThemeManager.swift DEVELOPER_GUIDELINES.md CodeMetrics.md \
     README.md README.en.md CHANGELOG.md deploy.sh release_notes_v${VERSION}.md \
     assets/screenshots/*.png
-git commit -m "feat: ⚡ STATUS CTRL v${VERSION} — 性能卡顿修复与系统稳定性优化" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
+git commit -m "feat: 🚀 STATUS CTRL v${VERSION} — 极客调频系统、对齐微调与无线电列表重构" || echo "⚠️ 没有检测到需要提交的新更改，继续..."
 
 # 2. 推送至 GitHub main 分支
 echo "📤 [Git] 正在推送代码至远程仓库 main 分支..."

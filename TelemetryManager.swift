@@ -49,6 +49,7 @@ public class TelemetryManager: ObservableObject {
     @Published public var cpuFreqPerf: Double = 1.5
     @Published public var cpuFreqEff: Double = 1.0
     @Published public var gpuFreq: Double = 0.3
+    @Published public var ramFreq: Double = 6400.0
     
     @Published public var fanCount: Int = 0
     @Published public var fanSpeeds: [Float] = []
@@ -148,8 +149,14 @@ public class TelemetryManager: ObservableObject {
         RunLoop.current.add(timer!, forMode: .common)
         
         // Trigger initial poll asynchronously
-        telemetryQueue.async { [weak self] in
-            self?.pollHardwareSync()
+        if !isPolling {
+            isPolling = true
+            telemetryQueue.async { [weak self] in
+                self?.pollHardwareSync()
+                DispatchQueue.main.async {
+                    self?.isPolling = false
+                }
+            }
         }
     }
     
@@ -160,7 +167,9 @@ public class TelemetryManager: ObservableObject {
         
         telemetryQueue.async { [weak self] in
             self?.pollHardwareSync()
-            self?.isPolling = false
+            DispatchQueue.main.async {
+                self?.isPolling = false
+            }
         }
     }
     
@@ -241,6 +250,7 @@ public class TelemetryManager: ObservableObject {
         var freqCpuPerfVal: Double = 1.5
         var freqCpuEffVal: Double = 1.0
         var freqGpuVal: Double = 0.3
+        var ramFreqVal: Double = 6400.0
         
         var diskReadSpeedVal: Double = 0.0
         var diskWriteSpeedVal: Double = 0.0
@@ -284,9 +294,27 @@ public class TelemetryManager: ObservableObject {
                 
                 // Frequencies
                 let (perfBase, effBase) = getCpuBaseFrequencies()
-                freqCpuPerfVal = perfBase + (cpuVal / 100.0) * (perfBase * 0.5)
-                freqCpuEffVal = effBase + (cpuVal / 100.0) * (effBase * 0.5)
-                freqGpuVal = 0.3 + (gpuVal / 100.0) * 1.0
+                
+                let cpuLimit = UserDefaults.standard.double(forKey: "CpuFreqLimit")
+                let scale = cpuLimit > 0 ? (cpuLimit / 100.0) : 1.0
+                
+                freqCpuPerfVal = (perfBase + (cpuVal / 100.0) * (perfBase * 0.5)) * scale
+                freqCpuEffVal = (effBase + (cpuVal / 100.0) * (effBase * 0.5)) * scale
+                freqGpuVal = (0.3 + (gpuVal / 100.0) * 1.0) * scale
+                
+                // RAM Frequency based on profile
+                let ramProfile = UserDefaults.standard.integer(forKey: "RamFreqProfile")
+                switch ramProfile {
+                case 1: ramFreqVal = 6400.0
+                case 2: ramFreqVal = 5500.0
+                case 3: ramFreqVal = 4266.0
+                case 4: ramFreqVal = 3200.0
+                default:
+                    // Auto: dynamic frequency based on CPU load to simulate hardware scaling
+                    let base = 3200.0
+                    let loadFactor = min(1.0, max(0.0, cpuVal / 80.0))
+                    ramFreqVal = base + loadFactor * 3200.0
+                }
             }
             
             // System Health / Disk I/O & SSD SMART stats (Tab 2 only)
@@ -361,6 +389,7 @@ public class TelemetryManager: ObservableObject {
             self.cpuFreqPerf = freqCpuPerfVal
             self.cpuFreqEff = freqCpuEffVal
             self.gpuFreq = freqGpuVal
+            self.ramFreq = ramFreqVal
             
             self.fanCount = tempFanCount
             self.fanSpeeds = actualFanSpeeds
@@ -404,15 +433,27 @@ public class TelemetryManager: ObservableObject {
     }
     
     private func getSSDUsageInternal() -> Double {
-        let fileURL = URL(fileURLWithPath: "/")
+        let fileURL = URL(fileURLWithPath: NSHomeDirectory())
         do {
-            let values = try fileURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
-            if let total = values.volumeTotalCapacity, let available = values.volumeAvailableCapacity, total > 0 {
+            let values = try fileURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey])
+            if let totalInt = values.volumeTotalCapacity, let available = values.volumeAvailableCapacityForImportantUsage, totalInt > 0 {
+                let total = Int64(totalInt)
                 let used = total - available
                 return (Double(used) / Double(total)) * 100.0
             }
         } catch {
-            print("[TelemetryManager] Error getting SSD usage: \(error)")
+            print("[TelemetryManager] Error getting SSD usage at NSHomeDirectory: \(error)")
+            // Fallback to root directory standard key
+            let rootURL = URL(fileURLWithPath: "/")
+            do {
+                let values = try rootURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
+                if let total = values.volumeTotalCapacity, let available = values.volumeAvailableCapacity, total > 0 {
+                    let used = total - available
+                    return (Double(used) / Double(total)) * 100.0
+                }
+            } catch {
+                print("[TelemetryManager] Error getting SSD usage fallback: \(error)")
+            }
         }
         return 0.0
     }

@@ -5,7 +5,7 @@ DESKTOP_APP=/Users/h-l/Desktop/$(DESKTOP_APP_NAME).app
 CONTENTS_DIR=$(APP_BUNDLE)/Contents
 MACOS_DIR=$(CONTENTS_DIR)/MacOS
 RESOURCES_DIR=$(CONTENTS_DIR)/Resources
-VERSION=1.9.4
+VERSION=1.9.5
 DMG_NAME=$(DESKTOP_APP_NAME)-v$(VERSION).dmg
 DMG_STAGING=dmg_staging
 
@@ -30,7 +30,7 @@ smchelper: smchelper.swift SMCController.swift
 	@echo "[Build] smchelper: $$(lipo -info smchelper)"
 
 # ── Main App (Universal Binary) ───────────────────────────────────
-$(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift SMCController.swift PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift TelemetryManager.swift Bridging-Header.h
+$(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift SMCController.swift PowerMonitor.swift DashboardView.swift MemoryPurger.swift ThemeManager.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift TelemetryManager.swift Bridging-Header.h
 	@echo "[Build] Creating macOS App bundle..."
 	mkdir -p $(MACOS_DIR)
 	mkdir -p $(RESOURCES_DIR)
@@ -41,7 +41,7 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo "[Build] Compiling arm64 slice..."
 	swiftc \
 		main.swift AppDelegate.swift SMCController.swift \
-		PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift TelemetryManager.swift \
+		PowerMonitor.swift DashboardView.swift MemoryPurger.swift ThemeManager.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift TelemetryManager.swift \
 		KeyboardBacklightPrivate.o \
 		-import-objc-header Bridging-Header.h \
 		-target arm64-apple-macos12.0 \
@@ -53,7 +53,7 @@ $(APP_BUNDLE): smchelper KeyboardBacklightPrivate.o main.swift AppDelegate.swift
 	@echo "[Build] Compiling x86_64 slice..."
 	swiftc \
 		main.swift AppDelegate.swift SMCController.swift \
-		PowerMonitor.swift DashboardView.swift MemoryPurger.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift TelemetryManager.swift \
+		PowerMonitor.swift DashboardView.swift MemoryPurger.swift ThemeManager.swift UpdateManager.swift SSDMonitor.swift DDCCIController.swift TelemetryManager.swift \
 		KeyboardBacklightPrivate.o \
 		-import-objc-header Bridging-Header.h \
 		-target x86_64-apple-macos12.0 \

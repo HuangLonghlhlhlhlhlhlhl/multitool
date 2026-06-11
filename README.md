@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.9.4-orange)
+![版本](https://img.shields.io/badge/版本-1.9.5-orange)
 ![大小](https://img.shields.io/badge/体积-约%209.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.4.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.5.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  

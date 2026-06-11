@@ -14,6 +14,14 @@ private extension Array {
 }
 
 struct DashboardView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
+    @Environment(\.colorScheme) private var colorScheme
+    private var isDark: Bool {
+        if themeMode == 0 {
+            return colorScheme == .dark
+        }
+        return themeMode == 2
+    }
     @ObservedObject private var updateManager = UpdateManager.shared
     
     // Core Managers
@@ -91,6 +99,19 @@ struct DashboardView: View {
     @Namespace private var tabNamespace
     @State private var selectedTab: Int = 0 // 0: 清理释放, 1: 系统功能, 2: 系统健康, 3: 网络蓝牙, 4: 隐私守护
     @State private var wirelessMode: Int = 0 // 0: Wi-Fi, 1: 蓝牙
+    
+    @AppStorage("CpuFreqLimit") private var storedCpuFreqLimit: Double = 100.0
+    @AppStorage("RamFreqProfile") private var storedRamFreqProfile: Int = 0
+    
+    @State private var cpuFreqLimit: Double = 100.0
+    @State private var ramFreqProfile: Int = 0
+    @State private var ramFreq: Double = 6400.0
+    @State private var isTuningFrequency: Bool = false
+    
+    @State private var wifiSearchText: String = ""
+    @State private var wifiBandFilter: String = "All"
+    @State private var wifiSortOrder: Int = 0
+    @State private var expandedWiFiId: UUID? = nil
     @State private var selectedWirelessSubTab: Int = 0 // 0: 空间雷达, 1: 测速与监控
     @State private var radarHeading: Double = 0.0 // Compass rose heading (degrees)
     @State private var userPosition: CGPoint = .zero // Physical walk position (remains .zero since simulator is removed)
@@ -215,6 +236,10 @@ struct DashboardView: View {
     @State private var npuUsage: Double = 0.0
     @State private var radarViewMode: Int = 0 // 0: 极坐标雷达, 1: 信号热力采样图
     @State private var heatmapData: [String: Double] = [:] // "x,y" -> RSSI
+    @State private var selectedMappingTarget: String = "ALL_DEVICES"
+    @State private var showHeatmapHelpPopover: Bool = false
+    @State private var selectedCellCoords: String? = nil
+    @State private var transmitterPositions: [String: CGPoint] = [:]
     
     // Sub-tab selection for Tab 0: 0 = Memory Purge, 1 = Disk Clean
     @State private var activeTab0: Int = 0
@@ -232,6 +257,26 @@ struct DashboardView: View {
     @State private var scanDupStatusText: String = ""
     @State private var scannedDuplicateGroups: [MemoryPurger.DuplicateFileGroup] = []
     @State private var selectedDuplicateFiles: Set<URL> = []
+    
+    // Large Files States
+    @State private var isScanningLargeFiles: Bool = false
+    @State private var scanLargeProgress: Double = 0.0
+    @State private var scanLargeStatusText: String = ""
+    @State private var scannedLargeFiles: [MemoryPurger.LargeFileItem] = []
+    @State private var selectedLargeFilePaths: Set<String> = []
+    @State private var minLargeFileSizeMB: Double = 100.0
+    @State private var largeFilesScanFolder: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Downloads")
+    
+    // Wireless Signal Tracking States
+    @State private var trackingTargetId: String? = nil
+    @State private var trackingTargetType: String = "" // "WiFi" or "Bluetooth"
+    @State private var trackingTargetName: String = ""
+    @State private var trackingRssiHistory: [Int] = []
+    @State private var trackingCurrentRssi: Int = -100
+    @State private var isAudioLocatorEnabled: Bool = false
+    @State private var trackerWiFiScanTimer: Timer? = nil
+    @State private var trackerAudioTimer: Timer? = nil
+
     
     // Helper breathing variables
     @State private var breathingTask: AnyCancellable?
@@ -286,7 +331,7 @@ struct DashboardView: View {
             "right_side": "右侧",
             "port_num": "号物理雷电/USB4端口",
             "no_adapter": "🔌 外部适配器未接通 (电池独立工作中)",
-            "app_ver": "Antigravity 状态栏小助手 v1.2.0",
+            "app_ver": "Antigravity 状态栏小助手 v1.9.5",
             
             // Settings Strings
             "settings": "系统设置",
@@ -417,7 +462,7 @@ struct DashboardView: View {
             "right_side": "Right Side",
             "port_num": " USB4/Thunderbolt Port",
             "no_adapter": "🔌 AC Power Disconnected (Running on Battery)",
-            "app_ver": "Antigravity Status Bar Helper v1.2.0",
+            "app_ver": "Antigravity Status Bar Helper v1.9.5",
             
             // Settings Strings
             "settings": "Settings",
@@ -519,6 +564,9 @@ struct DashboardView: View {
     private func getBatteryTimeText() -> String {
         let isZh = currentLanguage == "zh-Hans"
         if powerStats.isConnected {
+            if powerStats.stateOfCharge >= 100 {
+                return isZh ? "已接通电源 (已充满)" : "AC Connected (Fully Charged)"
+            }
             if powerStats.isCharging {
                 let time = powerStats.avgTimeToFull
                 if time > 0 && time != 65535 {
@@ -560,9 +608,9 @@ struct DashboardView: View {
                 .fill(
                     LinearGradient(
                         gradient: Gradient(colors: [
-                            Color.white.opacity(0.04),
-                            Color.white.opacity(0.12),
-                            Color.white.opacity(0.04)
+                            Color.themeCardBg,
+                            Color.themeBorder,
+                            Color.themeCardBg
                         ]),
                         startPoint: .leading,
                         endPoint: .trailing
@@ -594,7 +642,7 @@ struct DashboardView: View {
             .padding(.bottom, 10)
             
             Divider()
-                .background(Color.white.opacity(0.06))
+                .background(Color.themeDivider)
             
             // 主体分栏骨架
             HStack(alignment: .top, spacing: 12) {
@@ -603,7 +651,7 @@ struct DashboardView: View {
                     // 系统遥测卡片骨架
                     VStack(alignment: .leading, spacing: 14) {
                         SkeletonRow(width: 100, height: 16)
-                        Divider().background(Color.white.opacity(0.05))
+                        Divider().background(Color.themeDivider)
                         HStack(spacing: 16) {
                             SkeletonRow(width: 65, height: 65) // 环形图占位
                             VStack(alignment: .leading, spacing: 8) {
@@ -614,13 +662,14 @@ struct DashboardView: View {
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(14)
+                    .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     
                     // 风扇卡片骨架
                     VStack(alignment: .leading, spacing: 14) {
                         SkeletonRow(width: 80, height: 16)
-                        Divider().background(Color.white.opacity(0.05))
+                        Divider().background(Color.themeDivider)
                         HStack(spacing: 12) {
                             SkeletonRow(width: 44, height: 44) // 风扇圆形占位
                             VStack(alignment: .leading, spacing: 8) {
@@ -630,8 +679,9 @@ struct DashboardView: View {
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(14)
+                    .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 }
                 .frame(maxWidth: .infinity)
                 
@@ -640,7 +690,7 @@ struct DashboardView: View {
                     // 能耗卡片骨架
                     VStack(alignment: .leading, spacing: 14) {
                         SkeletonRow(width: 120, height: 16)
-                        Divider().background(Color.white.opacity(0.05))
+                        Divider().background(Color.themeDivider)
                         SkeletonRow(width: 200, height: 12)
                         HStack(spacing: 8) {
                             SkeletonRow(width: 70, height: 28)
@@ -649,18 +699,20 @@ struct DashboardView: View {
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(14)
+                    .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     
                     // 物理能耗延长卡片骨架
                     VStack(alignment: .leading, spacing: 14) {
                         SkeletonRow(width: 150, height: 16)
-                        Divider().background(Color.white.opacity(0.05))
+                        Divider().background(Color.themeDivider)
                         SkeletonRow(width: 240, height: 80) // 渲染曲线图占位
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(14)
+                    .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -670,12 +722,12 @@ struct DashboardView: View {
         .frame(minWidth: 680, maxWidth: .infinity, minHeight: 530, maxHeight: .infinity)
         .background(
             ZStack {
-                Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 280)
-                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 280)
+                Color.themeBg
+                RadialGradient(colors: [Color.themeRadialPurple, .clear], center: .topLeading, startRadius: 0, endRadius: 280)
+                RadialGradient(colors: [Color.themeRadialGreen, .clear], center: .bottomTrailing, startRadius: 0, endRadius: 280)
             }
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
     }
 
 
@@ -696,7 +748,7 @@ struct DashboardView: View {
                             .padding(.bottom, 10)
 
                         Divider()
-                            .background(Color.white.opacity(0.06))
+                            .background(Color.themeDivider)
 
                         // Segmented Tab Switched at the top (with namespaces and nice segmented buttons) (v1.9.6)
                         HStack(spacing: 0) {
@@ -722,7 +774,7 @@ struct DashboardView: View {
                                             Text(idx == 0 ? "清理释放" : (idx == 1 ? "系统功能" : (idx == 2 ? "系统健康" : (idx == 3 ? "网络蓝牙" : "隐私守护"))))
                                                 .font(.system(size: 12, weight: .semibold))
                                         }
-                                        .foregroundColor(selectedTab == idx ? .white : .white.opacity(0.4))
+                                        .foregroundColor(selectedTab == idx ? .white : .themeTextTertiary)
                                         
                                         // Active indicator line
                                         ZStack {
@@ -747,7 +799,7 @@ struct DashboardView: View {
                         .padding(.bottom, 6)
 
                         Divider()
-                            .background(Color.white.opacity(0.06))
+                            .background(Color.themeDivider)
 
                         if selectedTab == 0 {
                             memoryCleanPageView
@@ -781,16 +833,18 @@ struct DashboardView: View {
         .frame(minWidth: 680, maxWidth: .infinity, minHeight: 530, maxHeight: .infinity)
         .background(
             ZStack {
-                Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 280)
-                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 280)
+                Color.themeBg
+                RadialGradient(colors: [Color.themeRadialPurple, .clear], center: .topLeading, startRadius: 0, endRadius: 280)
+                RadialGradient(colors: [Color.themeRadialGreen, .clear], center: .bottomTrailing, startRadius: 0, endRadius: 280)
             }
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
         .onAppear {
             UserDefaults.standard.set("zh-Hans", forKey: "AppLanguage")
             currentLanguage = "zh-Hans"
             isPanelVisible = true
+            cpuFreqLimit = storedCpuFreqLimit
+            ramFreqProfile = storedRamFreqProfile
             TelemetryManager.shared.isUIActive = true
             TelemetryManager.shared.currentTab = selectedTab
             initializeHardware()
@@ -822,6 +876,12 @@ struct DashboardView: View {
             refreshStats()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.powerstatuschanged"))) { _ in
+            let isConnected = TelemetryManager.shared.powerStats.isConnected
+            if let last = self.lastIsConnected, last == true && !isConnected {
+                print("[PowerMonitor] AC -> Battery transition detected. Resetting fan preset to 0.")
+                self.applyPreset(0)
+            }
+            self.lastIsConnected = isConnected
             self.refreshStats()
         }
         .onChange(of: isTempExpanded) { val in
@@ -1034,18 +1094,19 @@ struct DashboardView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("系统固态硬盘健康诊断与寿命管理")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                         Text("固态硬盘为焊死不可更换架构，智能监测已写入总量(TBW)，守卫核心数据资产。")
                             .font(.system(size: 10.5))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                     }
                     Spacer()
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(14)
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeCardBg, lineWidth: 1))
                 
                 HStack(alignment: .top, spacing: 12) {
                     // Left Column: Circular gauge showing Life Percent
@@ -1053,15 +1114,15 @@ struct DashboardView: View {
                         VStack(spacing: 14) {
                             Text("SSD 可用健康度")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.themeTextSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             
-                            Divider().background(Color.white.opacity(0.06))
+                            Divider().background(Color.themeDivider)
                             
                             // Health Ring Gauge
                             ZStack {
                                 Circle()
-                                    .stroke(Color.white.opacity(0.05), lineWidth: 10)
+                                    .stroke(Color.themeDivider, lineWidth: 10)
                                     .frame(width: 120, height: 120)
                                 
                                 Circle()
@@ -1081,7 +1142,7 @@ struct DashboardView: View {
                                 VStack(spacing: 2) {
                                     Text("\(ssdHealthPercent)%")
                                         .font(.system(size: 26, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white)
+                                        .foregroundColor(.themeText)
                                     Text(ssdHealthPercent >= 95 ? "优秀" : (ssdHealthPercent >= 85 ? "良好" : "警告"))
                                         .font(.system(size: 9.5, weight: .semibold))
                                         .padding(.horizontal, 6)
@@ -1095,44 +1156,46 @@ struct DashboardView: View {
                             
                             Text("健康状态：\(ssdSmartStatus == "Verified" || ssdSmartStatus.lowercased() == "passed" ? "✅ 良好 (正常)" : "⚠️ 预警 (建议备份)")")
                                 .font(.system(size: 10.5))
-                                .foregroundColor(.white.opacity(0.6))
+                                .foregroundColor(.themeTextSecondary)
                         }
                         .padding(14)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
                         
                         // SSD Hardware specifications card
                         VStack(spacing: 12) {
                             Text("磁盘硬件规格")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.themeTextSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             
-                            Divider().background(Color.white.opacity(0.06))
+                            Divider().background(Color.themeDivider)
                             
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
-                                    Text("硬盘型号").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                    Text("硬盘型号").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                     Spacer()
-                                    Text(ssdModelName).foregroundColor(.white).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                                    Text(ssdModelName).foregroundColor(.themeText).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                                 }
                                 HStack {
-                                    Text("物理容量").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                    Text("物理容量").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                     Spacer()
-                                    Text(ssdCapacity).foregroundColor(.white).font(.system(size: 11, design: .monospaced))
+                                    Text(ssdCapacity).foregroundColor(.themeText).font(.system(size: 11, design: .monospaced))
                                 }
                                 HStack {
-                                    Text("物理通道").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                    Text("物理通道").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                     Spacer()
-                                    Text(isSilicon ? "Apple Fabric (PCIe)" : "NVM Express").foregroundColor(.white.opacity(0.7)).font(.system(size: 11))
+                                    Text(isSilicon ? "Apple Fabric (PCIe)" : "NVM Express").foregroundColor(.themeTextSecondary).font(.system(size: 11))
                                 }
                             }
                         }
                         .padding(14)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
                     }
                     .frame(maxWidth: .infinity)
                     
@@ -1142,16 +1205,16 @@ struct DashboardView: View {
                         VStack(spacing: 12) {
                             Text("累计读写统计 (TBW)")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.themeTextSecondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             
-                            Divider().background(Color.white.opacity(0.06))
+                            Divider().background(Color.themeDivider)
                             
                             VStack(alignment: .leading, spacing: 10) {
                                 // Write Card
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Text("累计写入 (TBW)").foregroundColor(.white.opacity(0.45)).font(.system(size: 11))
+                                        Text("累计写入 (TBW)").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                         Spacer()
                                         Text(String(format: "%.3f TB", ssdBytesWrittenTB))
                                             .font(.system(size: 13, weight: .bold, design: .monospaced))
@@ -1162,7 +1225,7 @@ struct DashboardView: View {
                                     GeometryReader { geo in
                                         ZStack(alignment: .leading) {
                                             Capsule()
-                                                .fill(Color.white.opacity(0.06))
+                                                .fill(Color.themeDivider)
                                                 .frame(height: 5)
                                             Capsule()
                                                 .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
@@ -1174,15 +1237,15 @@ struct DashboardView: View {
                                     
                                     Text("已消耗 512GB 标称寿命 (300 TBW) 的 \(String(format: "%.2f%%", (ssdBytesWrittenTB / 300.0) * 100.0))")
                                         .font(.system(size: 9))
-                                        .foregroundColor(.white.opacity(0.35))
+                                        .foregroundColor(.themeTextTertiary)
                                 }
                                 
-                                Divider().background(Color.white.opacity(0.04))
+                                Divider().background(Color.themeCardBg)
                                 
                                 // Read Card
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Text("累计读取").foregroundColor(.white.opacity(0.45)).font(.system(size: 11))
+                                        Text("累计读取").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                         Spacer()
                                         Text(String(format: "%.3f TB", ssdBytesReadTB))
                                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -1192,37 +1255,38 @@ struct DashboardView: View {
                             }
                         }
                         .padding(14)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(14)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
                         
                         // SMART Detail stats card / Brew Install card
                         if smartctlInstalled {
                             VStack(spacing: 12) {
                                 Text("SMART 物理诊断指标")
                                     .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.8))
+                                    .foregroundColor(.themeTextSecondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 
-                                Divider().background(Color.white.opacity(0.06))
+                                Divider().background(Color.themeDivider)
                                 
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack {
-                                        Text("累计通电时间").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                        Text("累计通电时间").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                         Spacer()
-                                        Text("\(ssdPowerOnHours) 小时").foregroundColor(.white).font(.system(size: 11, design: .monospaced))
+                                        Text("\(ssdPowerOnHours) 小时").foregroundColor(.themeText).font(.system(size: 11, design: .monospaced))
                                     }
-                                    Divider().background(Color.white.opacity(0.04))
+                                    Divider().background(Color.themeCardBg)
                                     HStack {
-                                        Text("异常断电次数").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                        Text("异常断电次数").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                         Spacer()
                                         Text("\(ssdUnsafeShutdowns) 次")
                                             .foregroundColor(ssdUnsafeShutdowns > 25 ? .orange : .white)
                                             .font(.system(size: 11, design: .monospaced))
                                     }
-                                    Divider().background(Color.white.opacity(0.04))
+                                    Divider().background(Color.themeCardBg)
                                     HStack {
-                                        Text("媒介完整性错误").foregroundColor(.white.opacity(0.4)).font(.system(size: 11))
+                                        Text("媒介完整性错误").foregroundColor(.themeTextTertiary).font(.system(size: 11))
                                         Spacer()
                                         Text("\(ssdMediaErrors)")
                                             .foregroundColor(ssdMediaErrors > 0 ? .red : .green)
@@ -1231,9 +1295,10 @@ struct DashboardView: View {
                                 }
                             }
                             .padding(14)
-                            .background(Color.white.opacity(0.03))
-                            .cornerRadius(14)
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+                            .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
                         } else {
                             // Guide to setup environments with nice breathing layout
                             VStack(spacing: 10) {
@@ -1244,7 +1309,7 @@ struct DashboardView: View {
                                 
                                 Text("macOS 普通权限被沙箱限制。通过 Homebrew 一键部署轻量级 smartmontools 开源模块，即可无缝穿透物理层，解锁上表高精细的写入小时、异常断电及完整性错误指标！")
                                     .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.55))
+                                    .foregroundColor(.themeTextSecondary)
                                     .lineSpacing(2)
                                 
                                 if isSettingUpEnvironment {
@@ -1403,12 +1468,12 @@ struct DashboardView: View {
                         Text("物理内存释放")
                             .font(.system(size: 11, weight: .bold))
                     }
-                    .foregroundColor(activeTab0 == 0 ? .white : .white.opacity(0.45))
+                    .foregroundColor(activeTab0 == 0 ? .white : .themeTextTertiary)
                     .padding(.vertical, 6)
                     .padding(.horizontal, 16)
                     .background(
                         Capsule()
-                            .fill(activeTab0 == 0 ? Color.white.opacity(0.12) : Color.clear)
+                            .fill(activeTab0 == 0 ? Color.themeBorder : Color.clear)
                     )
                 }
                 .buttonStyle(.plain)
@@ -1424,20 +1489,21 @@ struct DashboardView: View {
                         Text("磁盘深度清理与重复文件")
                             .font(.system(size: 11, weight: .bold))
                     }
-                    .foregroundColor(activeTab0 == 1 ? .white : .white.opacity(0.45))
+                    .foregroundColor(activeTab0 == 1 ? .white : .themeTextTertiary)
                     .padding(.vertical, 6)
                     .padding(.horizontal, 16)
                     .background(
                         Capsule()
-                            .fill(activeTab0 == 1 ? Color.white.opacity(0.12) : Color.clear)
+                            .fill(activeTab0 == 1 ? Color.themeBorder : Color.clear)
                     )
                 }
                 .buttonStyle(.plain)
             }
             .padding(4)
-            .background(Color.white.opacity(0.04))
-            .cornerRadius(20)
-            .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 1))
+            .background(Color.themeCardBg)
+.cornerRadius(20)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+            .overlay(Capsule().stroke(Color.themeDivider, lineWidth: 1))
             .padding(.top, 4)
             .padding(.bottom, 8)
             
@@ -1448,13 +1514,13 @@ struct DashboardView: View {
                         VStack(spacing: 12) {
                             Text("内存状态")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white.opacity(0.5))
+                                .foregroundColor(.themeTextSecondary)
                             
                             // Circular Gauge
                             ZStack {
                                 // Background track
                                 Circle()
-                                    .stroke(Color.white.opacity(0.06), lineWidth: 14)
+                                    .stroke(Color.themeDivider, lineWidth: 14)
                                     .frame(width: 140, height: 140)
                                 
                                 // Active track (gradient)
@@ -1484,10 +1550,10 @@ struct DashboardView: View {
                                 VStack(spacing: 2) {
                                     Text(String(format: "%.0f%%", currentRAMUsagePercent))
                                         .font(.system(size: 32, weight: .bold, design: .rounded))
-                                        .foregroundColor(.white)
+                                        .foregroundColor(.themeText)
                                     Text("已用空间")
                                         .font(.system(size: 10))
-                                        .foregroundColor(.white.opacity(0.5))
+                                        .foregroundColor(.themeTextSecondary)
                                 }
                             }
                             .frame(width: 150, height: 150)
@@ -1501,11 +1567,12 @@ struct DashboardView: View {
                                 .frame(height: 24)
                         }
                         .padding(16)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(14)
+                        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                         .overlay(
                             RoundedRectangle(cornerRadius: 14)
-                                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                                .stroke(Color.themeDivider, lineWidth: 1)
                         )
                         
                         // Clean Button
@@ -1527,7 +1594,7 @@ struct DashboardView: View {
                                         .font(.system(size: 13, weight: .bold))
                                 }
                             }
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                             .frame(maxWidth: .infinity)
                             .frame(height: 40)
                             .background(
@@ -1558,7 +1625,7 @@ struct DashboardView: View {
                             Spacer()
                             Text("前 7 位活跃应用")
                                 .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.themeTextTertiary)
                         }
                         .padding(.horizontal, 4)
                         
@@ -1572,13 +1639,14 @@ struct DashboardView: View {
                                             .controlSize(.regular)
                                         Text("正在分析 system 活跃应用...")
                                             .font(.system(size: 12))
-                                            .foregroundColor(.white.opacity(0.5))
+                                            .foregroundColor(.themeTextSecondary)
                                         Spacer()
                                     }
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 280)
-                                    .background(Color.white.opacity(0.02))
-                                    .cornerRadius(12)
+                                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                                 } else {
                                     // Display List
                                     let enumerated = Array(activeProcesses.enumerated())
@@ -1594,33 +1662,33 @@ struct DashboardView: View {
                                                             ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
                                                             : (rank == 3 
                                                                 ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
-                                                                : LinearGradient(colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)], startPoint: .top, endPoint: .bottom)
+                                                                : LinearGradient(colors: [Color.themeBorder, Color.themeDivider], startPoint: .top, endPoint: .bottom)
                                                             )
                                                         )
                                                     )
                                                     .frame(width: 24, height: 24)
-                                                    .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? Color.white.opacity(0.2) : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
+                                                    .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? .themeTextTertiary : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
                                                 
                                                 Text("\(rank)")
                                                     .font(.system(size: 11, weight: .bold, design: .rounded))
-                                                    .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .white.opacity(0.6))
+                                                    .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .themeTextSecondary)
                                             }
                                             
                                             // Mini icon mockup
                                             ZStack {
                                                 RoundedRectangle(cornerRadius: 6)
-                                                    .fill(LinearGradient(colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                                                    .fill(LinearGradient(colors: [Color.themeBorder, Color.themeCardBg], startPoint: .top, endPoint: .bottom))
                                                     .frame(width: 28, height: 28)
                                                 
                                                 Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
                                                     .font(.system(size: 12))
-                                                    .foregroundColor(.white.opacity(0.8))
+                                                    .foregroundColor(.themeTextSecondary)
                                             }
                                             
                                             VStack(alignment: .leading, spacing: 4) {
                                                 Text(proc.name)
                                                     .font(.system(size: 12, weight: .semibold))
-                                                    .foregroundColor(.white)
+                                                    .foregroundColor(.themeText)
                                                     .lineLimit(1)
                                                 
                                                 // RAM and CPU pill badges
@@ -1684,11 +1752,12 @@ struct DashboardView: View {
                                         }
                                         .padding(.horizontal, 10)
                                         .padding(.vertical, 6)
-                                        .background(Color.white.opacity(0.02))
-                                        .cornerRadius(10)
+                                        .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 10)
-                                                .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                                                .stroke(Color.themeCardBg, lineWidth: 1)
                                         )
                                     }
                                 }
@@ -1715,6 +1784,7 @@ struct DashboardView: View {
             VStack(spacing: 16) {
                 leftoversSectionView
                 duplicatesSectionView
+                largeFilesSectionView
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
@@ -1759,13 +1829,39 @@ struct DashboardView: View {
                 }
                 .padding(.horizontal, 16)
             }
+            
+            if trackingTargetId != nil {
+                SignalTrackingCabinView(
+                    targetId: trackingTargetId ?? "",
+                    targetType: trackingTargetType,
+                    targetName: trackingTargetName,
+                    currentRssi: trackingCurrentRssi,
+                    rssiHistory: trackingRssiHistory,
+                    radarHeading: radarHeading,
+                    isAudioEnabled: $isAudioLocatorEnabled,
+                    onClose: {
+                        self.stopTracking()
+                    }
+                )
+                .transition(.asymmetric(insertion: .move(edge: .bottom), removal: .opacity))
+                .zIndex(100)
+                .onChange(of: isAudioLocatorEnabled) { _ in
+                    self.setupAudioTimer()
+                }
+            }
         }
         .padding(.bottom, 12)
         .popover(item: $selectedWiFi) { selectedNet in
-            WiFiDetailView(net: selectedNet)
+            WiFiDetailView(net: selectedNet) {
+                self.selectedWiFi = nil
+                self.startTrackingWiFi(net: selectedNet)
+            }
         }
         .popover(item: $selectedBT) { selectedDev in
-            BluetoothDetailView(dev: selectedDev)
+            BluetoothDetailView(dev: selectedDev) {
+                self.selectedBT = nil
+                self.startTrackingBluetooth(dev: selectedDev)
+            }
         }
     }
     
@@ -1893,14 +1989,13 @@ struct DashboardView: View {
                     }
                     .rotationEffect(.degrees(-radarHeading))
                     
-                    // Plot Node Points inside the Radar
                     Group {
                         if wirelessMode == 0 {
                             // Plot Wi-Fi nodes (scaled up for radar diameter)
-                            ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
+                            ForEach(Array(wifiScanner.scanResults.enumerated()), id: \.element.id) { idx, net in
                                 WiFiRadarChartNodeView(
                                     idx: idx,
-                                    net: wifiScanner.scanResults[idx],
+                                    net: net,
                                     totalCount: wifiScanner.scanResults.count,
                                     zoomScale: zoomScale,
                                     userPosition: userPosition,
@@ -1913,10 +2008,10 @@ struct DashboardView: View {
                             }
                         } else {
                             // Plot Bluetooth nodes
-                            ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
+                            ForEach(Array(bluetoothScanner.scanResults.enumerated()), id: \.element.id) { idx, dev in
                                 BluetoothRadarChartNodeView(
                                     idx: idx,
-                                    dev: bluetoothScanner.scanResults[idx],
+                                    dev: dev,
                                     totalCount: bluetoothScanner.scanResults.count,
                                     zoomScale: zoomScale,
                                     userPosition: userPosition,
@@ -1946,7 +2041,7 @@ struct DashboardView: View {
                     }
                 }
                 .frame(width: 240, height: 240)
-                .overlay(RoundedRectangle(cornerRadius: 120).stroke(Color.white.opacity(0.08), lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: 120).stroke(Color.themeBorder, lineWidth: 1))
                 .shadow(color: .cyan.opacity(0.05), radius: 10)
             } else {
                 signalHeatmapView
@@ -1954,84 +2049,218 @@ struct DashboardView: View {
             }
             
             // HUD Control & Telemetry Bar
-            VStack(spacing: 8) {
-                // Calibrate slider and digital HUD readouts
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("🧭 标定航向: \(headingString) \(headingCardinalDirection)")
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+            if radarViewMode == 0 {
+                VStack(spacing: 8) {
+                    // Calibrate slider and digital HUD readouts
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("🧭 标定航向: \(headingString) \(headingCardinalDirection)")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan)
+                        }
+                        
+                        Spacer()
+                        
+                        // Reset Button
+                        Button(action: {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                                radarHeading = 0.0
+                                zoomScale = 1.0
+                            }
+                        }) {
+                            Image(systemName: "arrow.counterclockwise.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.themeTextSecondary)
+                                .help("重置雷达与航向")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 6)
+                    
+                    // Sliders & Zoom Control
+                    HStack(spacing: 12) {
+                        Image(systemName: "safari")
+                            .font(.system(size: 11))
+                            .foregroundColor(.cyan.opacity(0.7))
+                        
+                        Slider(value: $radarHeading, in: 0...360)
+                            .accentColor(.cyan)
+                            .frame(maxWidth: .infinity)
+                        
+                        HStack(spacing: 4) {
+                            Button(action: {
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    zoomScale = max(0.5, zoomScale - 0.1)
+                                }
+                            }) {
+                                Image(systemName: "minus.magnifyingglass")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.themeTextSecondary)
+                                    .frame(width: 18, height: 18)
+                                    .background(Color.themeBorder)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Text(String(format: "%d%%", Int(zoomScale * 100)))
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundColor(.themeTextSecondary)
+                                .frame(width: 32)
+                            
+                            Button(action: {
+                                withAnimation(.easeOut(duration: 0.15)) {
+                                    zoomScale = min(3.0, zoomScale + 0.1)
+                                }
+                            }) {
+                                Image(systemName: "plus.magnifyingglass")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.themeTextSecondary)
+                                    .frame(width: 18, height: 18)
+                                    .background(Color.themeBorder)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                }
+                .padding(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeCardBg, lineWidth: 1))
+            } else {
+                VStack(spacing: 8) {
+                    HStack {
+                        Text("📊 热力图标定与操作")
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.cyan)
-                    }
-                    
-                    Spacer()
-                    
-                    // Reset Button
-                    Button(action: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                            radarHeading = 0.0
-                            zoomScale = 1.0
+                        Spacer()
+                        
+                        Button(action: {
+                            showHeatmapHelpPopover.toggle()
+                        }) {
+                            Image(systemName: "questionmark.circle")
+                                .font(.system(size: 13))
+                                .foregroundColor(.cyan.opacity(0.8))
                         }
-                    }) {
-                        Image(systemName: "arrow.counterclockwise.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.5))
-                            .help("重置雷达与航向")
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showHeatmapHelpPopover, arrowEdge: .top) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("信号热力图使用指南")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.cyan)
+                                
+                                Text("用于展示周边无线信号（Wi-Fi / 蓝牙）在室内物理空间的覆盖热度与场强分布。")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.themeTextSecondary)
+                                
+                                Text("使用说明：")
+                                    .font(.system(size: 11, weight: .semibold))
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("1. 🚶‍♂️ **手动采样**：带着电脑到房间不同物理位置，点击 6x6 网格中的格子，即可记录当前位置的信号值 (dBm)。")
+                                    Text("2. 🪄 **自动仿真**：点击下方的“自动仿真”按钮，系统将以当前扫描到的无线 AP 强度与位置为基准，利用对数路径损耗算法生成空间电磁场辐射分布模拟图。")
+                                }
+                                .font(.system(size: 10.5))
+                                .foregroundColor(.themeTextSecondary)
+                                
+                                Divider()
+                                
+                                Text("信号强度色彩说明：")
+                                    .font(.system(size: 11, weight: .semibold))
+                                HStack(spacing: 12) {
+                                    Label("极佳 (> -55 dBm)", systemImage: "circle.fill").foregroundColor(Color(red: 0.0, green: 0.9, blue: 0.46))
+                                    Label("良好 (-55 ~ -75 dBm)", systemImage: "circle.fill").foregroundColor(Color(red: 1.0, green: 0.57, blue: 0.0))
+                                    Label("较弱 (< -75 dBm)", systemImage: "circle.fill").foregroundColor(Color(red: 0.96, green: 0.0, blue: 0.34))
+                                }
+                                .font(.system(size: 10))
+                            }
+                            .padding(14)
+                            .frame(width: 300)
+                        }
                     }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 6)
-                
-                // Sliders & Zoom Control
-                HStack(spacing: 12) {
-                    Image(systemName: "safari")
-                        .font(.system(size: 11))
-                        .foregroundColor(.cyan.opacity(0.7))
                     
-                    Slider(value: $radarHeading, in: 0...360)
-                        .accentColor(.cyan)
+                    HStack {
+                        Text("🎯 目标:")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeTextSecondary)
+                        
+                        Picker("", selection: $selectedMappingTarget) {
+                            Text("所有可见设备 (综合最强)").tag("ALL_DEVICES")
+                            if wirelessMode == 0 {
+                                ForEach(wifiScanner.scanResults.prefix(5), id: \.bssid) { net in
+                                    Text("📶 \(net.ssid.isEmpty ? "隐藏网络" : net.ssid) (\(net.rssi)dBm)").tag(net.bssid)
+                                }
+                            } else {
+                                ForEach(bluetoothScanner.scanResults.prefix(5), id: \.peripheralId) { dev in
+                                    Text("💎 \(dev.name.isEmpty ? "未命名设备" : dev.name) (\(dev.rssi)dBm)").tag(dev.peripheralId)
+                                }
+                            }
+                        }
+                        .pickerStyle(.menu)
                         .frame(maxWidth: .infinity)
+                    }
                     
-                    HStack(spacing: 4) {
+                    HStack(spacing: 8) {
                         Button(action: {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                zoomScale = max(0.5, zoomScale - 0.1)
-                            }
+                            simulateHeatmapField()
                         }) {
-                            Image(systemName: "minus.magnifyingglass")
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.8))
-                                .frame(width: 18, height: 18)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(Circle())
+                            HStack(spacing: 4) {
+                                Image(systemName: "wand.and.stars")
+                                Text("自动仿真")
+                            }
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.black)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .background(Color.cyan)
+                            .cornerRadius(6)
                         }
                         .buttonStyle(.plain)
                         
-                        Text(String(format: "%d%%", Int(zoomScale * 100)))
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.8))
-                            .frame(width: 32)
-                        
                         Button(action: {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                zoomScale = min(3.0, zoomScale + 0.1)
-                            }
+                            heatmapData.removeAll()
+                            selectedCellCoords = nil
                         }) {
-                            Image(systemName: "plus.magnifyingglass")
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.8))
-                                .frame(width: 18, height: 18)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(Circle())
+                            HStack(spacing: 4) {
+                                Image(systemName: "trash")
+                                Text("重置")
+                            }
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.themeText)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .background(Color.themeBorder)
+                            .cornerRadius(6)
                         }
                         .buttonStyle(.plain)
+                        
+                        Spacer()
+                        
+                        if let coords = selectedCellCoords, let val = heatmapData[coords] {
+                            Text("📍 (\(coords)) : \(Int(val)) dBm")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(heatmapColor(for: val))
+                        } else {
+                            Text("👈 点击网格采样")
+                                .font(.system(size: 10))
+                                .foregroundColor(.themeTextTertiary)
+                        }
                     }
                 }
-                .padding(.horizontal, 6)
+                .padding(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeCardBg, lineWidth: 1))
+                .onChange(of: wirelessMode) { _ in
+                    selectedMappingTarget = "ALL_DEVICES"
+                    selectedCellCoords = nil
+                }
+                .onChange(of: selectedMappingTarget) { _ in
+                    simulateHeatmapField()
+                }
             }
-            .padding(10)
-            .background(Color.white.opacity(0.02))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.04), lineWidth: 1))
         }
         .frame(maxWidth: .infinity)
     }
@@ -2039,49 +2268,104 @@ struct DashboardView: View {
     // ── Sub-view 1b: Signal Heatmap View Grid ──
     private var signalHeatmapView: some View {
         VStack(spacing: 8) {
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 6)
-            LazyVGrid(columns: columns, spacing: 4) {
-                ForEach(0..<6, id: \.self) { y in
-                    ForEach(0..<6, id: \.self) { x in
-                        Button(action: {
-                            let key = "\(x),\(y)"
-                            let maxWifi = wifiScanner.scanResults.first?.rssi ?? -100
-                            let maxBt = bluetoothScanner.scanResults.first?.rssi ?? -100
-                            var sampled = max(maxWifi, maxBt)
-                            if sampled == -100 {
-                                sampled = Int.random(in: -75...(-45))
+            ZStack {
+                let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 6)
+                LazyVGrid(columns: columns, spacing: 4) {
+                    ForEach(0..<6, id: \.self) { y in
+                        ForEach(0..<6, id: \.self) { x in
+                            Button(action: {
+                                let key = "\(x),\(y)"
+                                selectedCellCoords = key
+                                
+                                var sampled: Int = -100
+                                if selectedMappingTarget == "ALL_DEVICES" {
+                                    let maxWifi = wifiScanner.scanResults.first?.rssi ?? -100
+                                    let maxBt = bluetoothScanner.scanResults.first?.rssi ?? -100
+                                    sampled = max(maxWifi, maxBt)
+                                } else {
+                                    if wirelessMode == 0 {
+                                        if let net = wifiScanner.scanResults.first(where: { $0.bssid == selectedMappingTarget }) {
+                                            sampled = net.rssi
+                                        }
+                                    } else {
+                                        if let dev = bluetoothScanner.scanResults.first(where: { $0.peripheralId == selectedMappingTarget }) {
+                                            sampled = dev.rssi
+                                        }
+                                    }
+                                }
+                                
+                                if sampled == -100 {
+                                    sampled = Int.random(in: -70...(-50))
+                                }
+                                heatmapData[key] = Double(sampled)
+                            }) {
+                                heatmapCell(x: x, y: y)
                             }
-                            heatmapData[key] = Double(sampled)
-                        }) {
-                            heatmapCell(x: x, y: y)
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    }
+                }
+                
+                // Overlay Draggable Transmitter Icons on Top
+                if wirelessMode == 0 {
+                    let activeResults = wifiScanner.scanResults.isEmpty ? wifiScanner.generateMockScanResults() : wifiScanner.scanResults
+                    ForEach(activeResults.sorted(by: { $0.rssi > $1.rssi }).prefix(3), id: \.bssid) { net in
+                        if let pos = transmitterPositions[net.bssid] {
+                            TransmitterNodeIconView(
+                                name: net.ssid.isEmpty ? "隐藏网络" : net.ssid,
+                                rssi: net.rssi,
+                                icon: "wifi.circle.fill",
+                                color: .cyan,
+                                isSelected: selectedMappingTarget == net.bssid
+                            )
+                            .position(x: 20.0 + pos.x * 40.0, y: 20.0 + pos.y * 40.0)
+                            .gesture(
+                                DragGesture(coordinateSpace: .named("heatmap"))
+                                    .onChanged { val in
+                                        let gridX = max(0.0, min(5.0, Double((val.location.x - 20.0) / 40.0)))
+                                        let gridY = max(0.0, min(5.0, Double((val.location.y - 20.0) / 40.0)))
+                                        transmitterPositions[net.bssid] = CGPoint(x: gridX, y: gridY)
+                                        simulateHeatmapField()
+                                    }
+                            )
+                        }
+                    }
+                } else {
+                    let activeResults = bluetoothScanner.scanResults.isEmpty ? bluetoothScanner.generateMockScanResults() : bluetoothScanner.scanResults
+                    ForEach(activeResults.sorted(by: { $0.rssi > $1.rssi }).prefix(3), id: \.peripheralId) { dev in
+                        if let pos = transmitterPositions[dev.peripheralId] {
+                            TransmitterNodeIconView(
+                                name: dev.name.isEmpty ? "未命名设备" : dev.name,
+                                rssi: dev.rssi,
+                                icon: "sensor.tag.radiowaves.forward.fill",
+                                color: .purple,
+                                isSelected: selectedMappingTarget == dev.peripheralId
+                            )
+                            .position(x: 20.0 + pos.x * 40.0, y: 20.0 + pos.y * 40.0)
+                            .gesture(
+                                DragGesture(coordinateSpace: .named("heatmap"))
+                                    .onChanged { val in
+                                        let gridX = max(0.0, min(5.0, Double((val.location.x - 20.0) / 40.0)))
+                                        let gridY = max(0.0, min(5.0, Double((val.location.y - 20.0) / 40.0)))
+                                        transmitterPositions[dev.peripheralId] = CGPoint(x: gridX, y: gridY)
+                                        simulateHeatmapField()
+                                    }
+                            )
+                        }
                     }
                 }
             }
             .frame(width: 240, height: 240)
+            .coordinateSpace(name: "heatmap")
+            .onAppear {
+                initializeTransmitterPositions()
+            }
             
             HStack {
-                Text(currentLanguage == "zh-Hans" ? "无线信号采样网格 (6x6)" : "Signal Sampling Grid (6x6)")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.white.opacity(0.4))
-                
+                Text(currentLanguage == "zh-Hans" ? "🛜 发射源与场强热图 (可拖拽发射源)" : "Draggable Emitters & EMF Heatmap")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundColor(.themeTextSecondary)
                 Spacer()
-                
-                if !heatmapData.isEmpty {
-                    Button(action: {
-                        heatmapData.removeAll()
-                    }) {
-                        Text(currentLanguage == "zh-Hans" ? "重置" : "Clear")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.red.opacity(0.7))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.red.opacity(0.1))
-                            .cornerRadius(4)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
             .padding(.horizontal, 4)
         }
@@ -2090,39 +2374,41 @@ struct DashboardView: View {
     @ViewBuilder
     private func heatmapCell(x: Int, y: Int) -> some View {
         let key = "\(x),\(y)"
+        let isSelected = selectedCellCoords == key
+        
         if let val = heatmapData[key] {
             let color = heatmapColor(for: val)
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(color.opacity(0.85))
+                    .fill(color.opacity(isSelected ? 0.95 : 0.75))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(color, lineWidth: 1.5)
+                            .stroke(isSelected ? Color.white : color, lineWidth: isSelected ? 2.0 : 1.0)
                     )
-                    .shadow(color: color.opacity(0.4), radius: 3)
+                    .shadow(color: isSelected ? .themeTextSecondary : color.opacity(0.4), radius: isSelected ? 6 : 3)
                 
                 VStack(spacing: 1) {
                     Text("\(Int(val))")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(.themeText)
                     Text("dBm")
-                        .font(.system(size: 6, weight: .regular))
-                        .foregroundColor(.white.opacity(0.7))
+                        .font(.system(size: 6, weight: .semibold))
+                        .foregroundColor(.themeTextSecondary)
                 }
             }
             .frame(height: 35)
         } else {
             ZStack {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.black.opacity(0.2))
+                    .fill(Color.black.opacity(isSelected ? 0.35 : 0.2))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            .stroke(isSelected ? Color.cyan : Color.themeBorder, style: StrokeStyle(lineWidth: isSelected ? 1.5 : 1, dash: isSelected ? [] : [3, 3]))
                     )
                 
                 Image(systemName: "plus")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.25))
+                    .font(.system(size: 10, weight: isSelected ? .bold : .regular))
+                    .foregroundColor(isSelected ? .cyan : .themeTextTertiary)
             }
             .frame(height: 35)
         }
@@ -2135,6 +2421,96 @@ struct DashboardView: View {
             return Color(red: 1.0, green: 0.57, blue: 0.0) // Orange
         } else {
             return Color(red: 0.96, green: 0.0, blue: 0.34) // Pinkish Red
+        }
+    }
+    
+    private func initializeTransmitterPositions() {
+        if wirelessMode == 0 {
+            let activeResults = wifiScanner.scanResults.isEmpty ? wifiScanner.generateMockScanResults() : wifiScanner.scanResults
+            for (idx, net) in activeResults.sorted(by: { $0.rssi > $1.rssi }).enumerated() {
+                if transmitterPositions[net.bssid] == nil {
+                    let angle = SignalSourceEstimator.shared.getEstimatedAzimuth(forKey: net.bssid) ?? Double(idx * 120 + 45)
+                    let rad = angle * .pi / 180.0
+                    let x = 2.5 + cos(rad) * 1.5
+                    let y = 2.5 + sin(rad) * 1.5
+                    transmitterPositions[net.bssid] = CGPoint(x: max(0.2, min(4.8, x)), y: max(0.2, min(4.8, y)))
+                }
+            }
+        } else {
+            let activeResults = bluetoothScanner.scanResults.isEmpty ? bluetoothScanner.generateMockScanResults() : bluetoothScanner.scanResults
+            for (idx, dev) in activeResults.sorted(by: { $0.rssi > $1.rssi }).enumerated() {
+                if transmitterPositions[dev.peripheralId] == nil {
+                    let angle = SignalSourceEstimator.shared.getEstimatedAzimuth(forKey: dev.peripheralId) ?? Double(idx * 120 + 200)
+                    let rad = angle * .pi / 180.0
+                    let x = 2.5 + cos(rad) * 1.5
+                    let y = 2.5 + sin(rad) * 1.5
+                    transmitterPositions[dev.peripheralId] = CGPoint(x: max(0.2, min(4.8, x)), y: max(0.2, min(4.8, y)))
+                }
+            }
+        }
+    }
+    
+    private func simulateHeatmapField() {
+        initializeTransmitterPositions()
+        
+        heatmapData.removeAll()
+        
+        // Find transmitter sources
+        var sources: [(x: Double, y: Double, rssi: Double, name: String)] = []
+        
+        if wirelessMode == 0 {
+            let activeResults = wifiScanner.scanResults.isEmpty ? wifiScanner.generateMockScanResults() : wifiScanner.scanResults
+            if selectedMappingTarget == "ALL_DEVICES" {
+                for net in activeResults.sorted(by: { $0.rssi > $1.rssi }).prefix(3) {
+                    if let pos = transmitterPositions[net.bssid] {
+                        sources.append((x: Double(pos.x), y: Double(pos.y), rssi: Double(net.rssi), name: net.ssid.isEmpty ? "隐藏网络" : net.ssid))
+                    }
+                }
+            } else {
+                if let net = activeResults.first(where: { $0.bssid == selectedMappingTarget }),
+                   let pos = transmitterPositions[net.bssid] {
+                    sources.append((x: Double(pos.x), y: Double(pos.y), rssi: Double(net.rssi), name: net.ssid.isEmpty ? "隐藏网络" : net.ssid))
+                }
+            }
+        } else {
+            let activeResults = bluetoothScanner.scanResults.isEmpty ? bluetoothScanner.generateMockScanResults() : bluetoothScanner.scanResults
+            if selectedMappingTarget == "ALL_DEVICES" {
+                for dev in activeResults.sorted(by: { $0.rssi > $1.rssi }).prefix(3) {
+                    if let pos = transmitterPositions[dev.peripheralId] {
+                        sources.append((x: Double(pos.x), y: Double(pos.y), rssi: Double(dev.rssi), name: dev.name.isEmpty ? "未命名设备" : dev.name))
+                    }
+                }
+            } else {
+                if let dev = activeResults.first(where: { $0.peripheralId == selectedMappingTarget }),
+                   let pos = transmitterPositions[dev.peripheralId] {
+                    sources.append((x: Double(pos.x), y: Double(pos.y), rssi: Double(dev.rssi), name: dev.name.isEmpty ? "未命名设备" : dev.name))
+                }
+            }
+        }
+        
+        // Generate simulated RSSI for each grid cell using RF path loss formula
+        for y in 0..<6 {
+            for x in 0..<6 {
+                let key = "\(x),\(y)"
+                var maxRssi = -100.0
+                
+                for src in sources {
+                    let dx = Double(x) - src.x
+                    let dy = Double(y) - src.y
+                    let dist = sqrt(dx*dx + dy*dy) + 1.0 // Offset by 1.0 to prevent division by zero and abnormal log gain when dist < 1.0
+                    
+                    // Path loss exponent = 2.5 for typical indoor environment
+                    let attenuation = 10.0 * 2.5 * log10(dist)
+                    let rssiAtCell = src.rssi - attenuation
+                    if rssiAtCell > maxRssi {
+                        maxRssi = rssiAtCell
+                    }
+                }
+                
+                // Capping
+                let finalRssi = max(-95.0, min(-30.0, maxRssi))
+                heatmapData[key] = finalRssi
+            }
         }
     }
     
@@ -2152,14 +2528,14 @@ struct DashboardView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 if wirelessMode == 0 {
                     // Wi-Fi Scanned Devices List (matching original styling)
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Image(systemName: "wifi")
                                 .font(.system(size: 13))
                                 .foregroundColor(.cyan)
-                            Text("已扫频无线 AP (\(wifiScanner.scanResults.count))")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.white)
+                            Text("无线 AP (\(filteredWiFiResults.count))")
+                                .font(.system(size: 11.5, weight: .bold))
+                                .foregroundColor(.themeText)
                             Spacer()
                             
                             HStack(spacing: 6) {
@@ -2195,28 +2571,110 @@ struct DashboardView: View {
                             }
                         }
                         
-                        Divider().background(Color.white.opacity(0.08))
+                        Divider().background(Color.themeBorder)
                         
-                        if wifiScanner.isScanning && wifiScanner.scanResults.isEmpty {
+                        // Sleek search input field
+                        HStack(spacing: 6) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 10))
+                                .foregroundColor(.themeTextTertiary)
+                            TextField("搜索 SSID 或 MAC...", text: $wifiSearchText)
+                                .textFieldStyle(PlainTextFieldStyle())
+                                .font(.system(size: 10.5))
+                                .foregroundColor(.themeText)
+                            if !wifiSearchText.isEmpty {
+                                Button(action: { wifiSearchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.themeTextTertiary)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.themeDivider.opacity(0.3))
+                        .cornerRadius(6)
+                        
+                        // Filters (Band & Sort)
+                        HStack(spacing: 8) {
+                            HStack(spacing: 2) {
+                                Text("频段:")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.themeTextTertiary)
+                                Picker("", selection: $wifiBandFilter) {
+                                    Text("全部").tag("All")
+                                    Text("2.4G").tag("2.4")
+                                    Text("5G").tag("5")
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .font(.system(size: 9.5))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            
+                            HStack(spacing: 2) {
+                                Text("排序:")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.themeTextTertiary)
+                                Picker("", selection: $wifiSortOrder) {
+                                    Text("信号").tag(0)
+                                    Text("名称").tag(1)
+                                    Text("距离").tag(2)
+                                }
+                                .pickerStyle(MenuPickerStyle())
+                                .font(.system(size: 9.5))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        
+                        Divider().background(Color.themeBorder)
+                        
+                        if wifiScanner.isScanning && filteredWiFiResults.isEmpty {
                             VStack(spacing: 12) {
                                 ProgressView().controlSize(.small)
-                                Text("嗅探高维热点中...")
+                                Text("嗅探中...")
                                     .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.3))
+                                    .foregroundColor(.themeTextTertiary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                        } else if filteredWiFiResults.isEmpty {
+                            VStack(spacing: 6) {
+                                Image(systemName: "wifi.slash")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.themeTextTertiary)
+                                Text("未找到无线 AP")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.themeTextTertiary)
                             }
                             .frame(maxWidth: .infinity, minHeight: 120)
                         } else {
                             VStack(spacing: 2) {
-                                ForEach(wifiScanner.scanResults) { net in
-                                    WiFiNetworkRowView(net: net)
+                                ForEach(filteredWiFiResults) { net in
+                                    WiFiNetworkRowView(
+                                        net: net,
+                                        isExpanded: expandedWiFiId == net.id,
+                                        onTap: {
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                                if expandedWiFiId == net.id {
+                                                    expandedWiFiId = nil
+                                                } else {
+                                                    expandedWiFiId = net.id
+                                                }
+                                            }
+                                        },
+                                        onStartTracking: {
+                                            startTrackingWiFi(net: net)
+                                        }
+                                    )
                                 }
                             }
                         }
                     }
-                    .padding(12)
-                    .background(Color.white.opacity(0.02))
+                    .padding(10)
+                    .background(Color.themeCardBg)
                     .cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                    .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.themeCardBg, lineWidth: 1))
                 } else {
                     // Bluetooth BLE Devices List (matching original styling)
                     VStack(alignment: .leading, spacing: 12) {
@@ -2226,7 +2684,7 @@ struct DashboardView: View {
                                 .foregroundColor(.purple)
                             Text("已侦测 BLE 设备 (\(bluetoothScanner.scanResults.count))")
                                 .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                             Spacer()
                             
                             HStack(spacing: 6) {
@@ -2262,14 +2720,14 @@ struct DashboardView: View {
                             }
                         }
                         
-                        Divider().background(Color.white.opacity(0.08))
+                        Divider().background(Color.themeBorder)
                         
                         if bluetoothScanner.isScanning && bluetoothScanner.scanResults.isEmpty {
                             VStack(spacing: 12) {
                                 ProgressView().controlSize(.small)
                                 Text("扫描周围蓝牙外设中...")
                                     .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.3))
+                                    .foregroundColor(.themeTextTertiary)
                             }
                             .frame(maxWidth: .infinity, minHeight: 120)
                         } else {
@@ -2291,9 +2749,10 @@ struct DashboardView: View {
                         }
                     }
                     .padding(12)
-                    .background(Color.white.opacity(0.02))
-                    .cornerRadius(12)
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.themeCardBg, lineWidth: 1))
                 }
             }
             .frame(maxHeight: 330)
@@ -2310,18 +2769,18 @@ struct DashboardView: View {
                     .foregroundColor(.cyan)
                 Text("网络连接与高可用速率测试")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 Spacer()
                 Text("上次测试: \(speedTester.lastTestTime)")
                     .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             
             // Selectable speed test nodes picker
             VStack(alignment: .leading, spacing: 4) {
                 Text("选择测速节点服务器:")
                     .font(.system(size: 9.5))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
                 
                 Picker("", selection: $speedTester.selectedNodeId) {
                     ForEach(speedTester.nodes) { node in
@@ -2333,15 +2792,16 @@ struct DashboardView: View {
                 .padding(.vertical, 2)
             }
             .padding(8)
-            .background(Color.white.opacity(0.02))
-            .cornerRadius(8)
+            .background(Color.themeCardBg)
+.cornerRadius(8)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
             
             HStack(spacing: 16) {
                 // Download speed
                 VStack(spacing: 6) {
                     Text("下载速率")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                     Text(String(format: "%.2f", speedTester.downloadSpeedMBs))
                         .font(.system(size: 20, weight: .black, design: .monospaced))
                         .foregroundColor(.green)
@@ -2353,14 +2813,14 @@ struct DashboardView: View {
                 
                 // Divider
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.themeBorder)
                     .frame(width: 1, height: 50)
                 
                 // Upload speed
                 VStack(spacing: 6) {
                     Text("上传速率")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                     Text(String(format: "%.2f", speedTester.uploadSpeedMBsValue))
                         .font(.system(size: 20, weight: .black, design: .monospaced))
                         .foregroundColor(.cyan)
@@ -2387,7 +2847,7 @@ struct DashboardView: View {
                 } else {
                     Text(speedTester.statusText.isEmpty ? "准备就绪 (已加载最佳高可用测速通道)" : speedTester.statusText)
                         .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                         .lineLimit(1)
                     
                     Spacer()
@@ -2397,7 +2857,7 @@ struct DashboardView: View {
                     }) {
                         Text("一键测速")
                             .font(.system(size: 10.5, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                             .padding(.vertical, 6)
                             .padding(.horizontal, 12)
                             .background(LinearGradient(colors: [.cyan, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -2409,9 +2869,10 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
     }
     
     // ── Sub-view 4: Active Process Traffic View ──
@@ -2423,18 +2884,18 @@ struct DashboardView: View {
                     .foregroundColor(.green)
                 Text("活跃进程网络流量排行榜")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 Spacer()
                 Text("Top 10")
                     .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(.themeTextTertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.white.opacity(0.05))
+                    .background(Color.themeDivider)
                     .cornerRadius(5)
             }
             
-            Divider().background(Color.white.opacity(0.08))
+            Divider().background(Color.themeBorder)
             
             if processMonitor.topProcesses.isEmpty {
                 VStack(spacing: 8) {
@@ -2442,7 +2903,7 @@ struct DashboardView: View {
                         .controlSize(.small)
                     Text("正在捕获活跃端口与进程连接...")
                         .font(.system(size: 10.5))
-                        .foregroundColor(.white.opacity(0.3))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 180)
             } else {
@@ -2457,9 +2918,10 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
     }
     
     private var leftoversSectionView: some View {
@@ -2471,7 +2933,7 @@ struct DashboardView: View {
                     .foregroundColor(.cyan)
                 Text("系统垃圾与应用残留清理")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 Spacer()
                 
                 if isScanningDisk {
@@ -2501,9 +2963,10 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
     }
     
     private var leftoversEmptyView: some View {
@@ -2513,7 +2976,7 @@ struct DashboardView: View {
                 .foregroundColor(.green.opacity(0.8))
             Text("未发现系统垃圾，系统运转极速清爽")
                 .font(.system(size: 11.5))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(.themeTextSecondary)
             
             Button(action: {
                 triggerDiskScan()
@@ -2531,7 +2994,7 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
     
@@ -2542,11 +3005,11 @@ struct DashboardView: View {
                 .frame(width: 160)
             Text(scanDiskStatusText)
                 .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.5))
+                .foregroundColor(.themeTextSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
     
@@ -2569,7 +3032,7 @@ struct DashboardView: View {
                     Text("一键深度清理选中垃圾 (\(selectedSizeStr))")
                         .font(.system(size: 12, weight: .bold))
                 }
-                .foregroundColor(.white)
+                .foregroundColor(.themeText)
                 .frame(maxWidth: .infinity)
                 .frame(height: 34)
                 .background(
@@ -2592,7 +3055,7 @@ struct DashboardView: View {
                     .foregroundColor(.purple)
                 Text("重复文件智能扫描与清理")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 Spacer()
                 
                 if isScanningDuplicates {
@@ -2621,9 +3084,10 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
     }
     
     private var duplicatesEmptyView: some View {
@@ -2633,7 +3097,7 @@ struct DashboardView: View {
                 .foregroundColor(.purple.opacity(0.8))
             Text("未扫描重复文件，点击按钮深度匹配")
                 .font(.system(size: 11.5))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(.themeTextSecondary)
             
             HStack(spacing: 12) {
                 Button(action: scanDownloadsDirectory) {
@@ -2651,19 +3115,19 @@ struct DashboardView: View {
                 Button(action: selectCustomFolderForDuplicateScan) {
                     Text("自定义文件夹...")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.8))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.vertical, 6)
                         .padding(.horizontal, 14)
-                        .background(Color.white.opacity(0.06))
+                        .background(Color.themeDivider)
                         .cornerRadius(6)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.1), lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.themeBorder, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
     
@@ -2674,16 +3138,71 @@ struct DashboardView: View {
                 .frame(width: 160)
             Text(scanDupStatusText)
                 .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.5))
+                .foregroundColor(.themeTextSecondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
     
     private var duplicatesResultsView: some View {
         VStack(spacing: 10) {
+            // Smart Selection Bar
+            HStack(spacing: 8) {
+                Text("智能选择:")
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundColor(.themeTextSecondary)
+                
+                Button(action: {
+                    selectedDuplicateFiles = MemoryPurger.autoSelectDuplicates(groups: scannedDuplicateGroups, rule: .oldest)
+                }) {
+                    Text("保留最早")
+                        .font(.system(size: 9.5))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.themeBorder)
+                        .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                
+                Button(action: {
+                    selectedDuplicateFiles = MemoryPurger.autoSelectDuplicates(groups: scannedDuplicateGroups, rule: .newest)
+                }) {
+                    Text("保留最新")
+                        .font(.system(size: 9.5))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.themeBorder)
+                        .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                
+                Button(action: {
+                    selectedDuplicateFiles = MemoryPurger.autoSelectDuplicates(groups: scannedDuplicateGroups, rule: .shortestPath)
+                }) {
+                    Text("保留短路径")
+                        .font(.system(size: 9.5))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.themeBorder)
+                        .cornerRadius(4)
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                Button(action: {
+                    selectedDuplicateFiles.removeAll()
+                }) {
+                    Text("清空")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(.purple)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 2)
+
             ScrollView(.vertical) {
                 VStack(spacing: 10) {
                     ForEach(scannedDuplicateGroups, id: \.id) { group in
@@ -2712,7 +3231,7 @@ struct DashboardView: View {
                         Text("安全移至回收站 (\(selectedSizeStr))")
                             .font(.system(size: 11, weight: .bold))
                     }
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .frame(maxWidth: .infinity)
                     .frame(height: 32)
                     .background(
@@ -2724,14 +3243,16 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
                 
                 Button(action: {
-                    performDeleteDuplicates(permanently: true)
+                    confirmPermanentDelete {
+                        performDeleteDuplicates(permanently: true)
+                    }
                 }) {
                     HStack {
                         Image(systemName: "xmark.shield")
                         Text("物理永久删除")
                             .font(.system(size: 11, weight: .bold))
                     }
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .frame(maxWidth: .infinity)
                     .frame(height: 32)
                     .background(
@@ -2749,7 +3270,7 @@ struct DashboardView: View {
             }) {
                 Text("清除扫描结果以重新扫描")
                     .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             .buttonStyle(.plain)
             .padding(.top, 2)
@@ -2765,7 +3286,7 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(currentLanguage == "zh-Hans" ? "⚡ 安全审计日志" : "⚡ SECURITY AUDIT")
                         .font(.system(size: 8.5, weight: .bold))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                         .padding(.bottom, 2)
                     
                     ScrollView(.vertical, showsIndicators: false) {
@@ -2778,7 +3299,7 @@ struct DashboardView: View {
                                 ForEach(privacyLogs, id: \.self) { log in
                                     Text(log)
                                         .font(.system(size: 7.8, design: .monospaced))
-                                        .foregroundColor(.white.opacity(0.6))
+                                        .foregroundColor(.themeTextSecondary)
                                         .lineLimit(2)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
@@ -2792,7 +3313,7 @@ struct DashboardView: View {
                 .cornerRadius(8)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                        .stroke(Color.themeCardBg, lineWidth: 1)
                 )
             }
             .frame(width: 140)
@@ -2801,7 +3322,7 @@ struct DashboardView: View {
             VStack(spacing: 8) {
                 Text(currentLanguage == "zh-Hans" ? "实时设备设备隐私保护" : "DEVICE PRIVACY")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.themeTextSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 4)
                 
@@ -2858,12 +3379,13 @@ struct DashboardView: View {
                         .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                     Text(currentLanguage == "zh-Hans" ? "系统级底层隐私过滤已生效" : "System-level privacy filtering active")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(8)
+                .background(Color.themeCardBg)
+.cornerRadius(8)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
             }
             .frame(width: 260)
             
@@ -2912,11 +3434,11 @@ struct DashboardView: View {
                     if isPasswordVisible {
                         Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : securePasswordInput)
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(securePasswordInput.isEmpty ? .white.opacity(0.3) : .white)
+                            .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
                     } else {
                         Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : String(repeating: "•", count: securePasswordInput.count))
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(securePasswordInput.isEmpty ? .white.opacity(0.3) : .white)
+                            .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
                     }
                     
                     Spacer()
@@ -2940,7 +3462,7 @@ struct DashboardView: View {
                         Button(action: { isPasswordVisible.toggle() }) {
                             Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
                                 .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
+                                .foregroundColor(.themeTextSecondary)
                         }
                         .buttonStyle(.plain)
                         
@@ -2962,7 +3484,7 @@ struct DashboardView: View {
                 .cornerRadius(8)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                        .stroke(Color.themeBorder, lineWidth: 1)
                 )
                 
                 // Shuffled keys grid (6x6)
@@ -2986,11 +3508,12 @@ struct DashboardView: View {
                                             Text(key)
                                                 .font(.system(size: 12, weight: .bold, design: .rounded))
                                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                                .background(Color.white.opacity(0.04))
-                                                .cornerRadius(6)
+                                                .background(Color.themeCardBg)
+.cornerRadius(6)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                                                 .overlay(
                                                     RoundedRectangle(cornerRadius: 6)
-                                                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                                                        .stroke(Color.themeDivider, lineWidth: 1)
                                                 )
                                         }
                                         .buttonStyle(ScrambledKeyButtonStyle())
@@ -3002,11 +3525,12 @@ struct DashboardView: View {
                     }
                 }
                 .padding(6)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                        .stroke(Color.themeCardBg, lineWidth: 1)
                 )
             }
             .frame(width: 220)
@@ -3039,7 +3563,7 @@ struct DashboardView: View {
                     
                     Text(powerStats.isConnected ? "\(t("charger_mode")) (\(Int(powerStats.adapterPower))\(t("watt")))" : t("battery_mode"))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                 }
             }
             
@@ -3068,7 +3592,7 @@ struct DashboardView: View {
                                     .brightness(2.0)
                                 Text("整理中...")
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.themeText)
                             } else if showPurgeSuccess {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.system(size: 10, weight: .bold))
@@ -3079,7 +3603,7 @@ struct DashboardView: View {
                             } else {
                                 Text("🧹 一键整理内存")
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.themeText)
                             }
                         }
                         .padding(.horizontal, 10)
@@ -3090,13 +3614,10 @@ struct DashboardView: View {
                                 LinearGradient(colors: [Color.purple.opacity(0.3), Color.pink.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing)
                         )
                         .cornerRadius(12)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(showPurgeSuccess ? Color.green.opacity(0.3) : Color.white.opacity(0.15), lineWidth: 1)
-                        )
                         .shadow(color: showPurgeSuccess ? Color.green.opacity(0.2) : Color.purple.opacity(0.2), radius: 4)
                     }
                     .buttonStyle(.plain)
+                    .focusable(false)
                     
                     // Settings Gear Button — opens the full AppDelegate Settings window (v1.9.6)
                     ZStack(alignment: .topTrailing) {
@@ -3107,13 +3628,13 @@ struct DashboardView: View {
                         }) {
                             Image(systemName: "gearshape.fill")
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.themeTextSecondary)
                                 .padding(8)
-                                .background(Color.white.opacity(0.06))
+                                .background(Color.themeDivider)
                                 .clipShape(Circle())
                                 .overlay(
                                     Circle()
-                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                        .stroke(Color.themeBorder, lineWidth: 1)
                                 )
                         }
                         .buttonStyle(.plain)
@@ -3159,18 +3680,18 @@ struct DashboardView: View {
         VStack(alignment: .center, spacing: 2) {
             Text(title)
                 .font(.system(size: 9, weight: .bold))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.themeTextTertiary)
             Text(String(format: "%.1f°C", temp))
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(color)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color.white.opacity(0.05))
+        .background(Color.themeDivider)
         .cornerRadius(8)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.themeBorder, lineWidth: 1)
         )
     }
     
@@ -3182,16 +3703,16 @@ struct DashboardView: View {
                     .foregroundColor(powerStats.isConnected ? Color(red: 0.22, green: 0.80, blue: 0.45) : .gray)
                 Text(t("power_monitor"))
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(.themeText)
                 Spacer()
                 
                 if powerStats.isConnected {
                     Text(powerStats.adapterName)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.white.opacity(0.06))
+                        .background(Color.themeDivider)
                         .cornerRadius(4)
                 }
             }
@@ -3240,19 +3761,20 @@ struct DashboardView: View {
                         .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
                     Text(t("mode_instructions"))
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.themeTextSecondary)
                 }
                 
                 let modeText = powerStats.isConnected ? t("charging_desc") : t("discharging_desc")
                 
                 Text(modeText)
                     .font(.system(size: 9.5))
-                    .foregroundColor(.white.opacity(0.45))
+                    .foregroundColor(.themeTextTertiary)
                     .lineSpacing(3)
             }
             .padding(10)
-            .background(Color.white.opacity(0.02))
-            .cornerRadius(10)
+            .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
             
             // Battery Health Info Panel
             if powerStats.hasBattery {
@@ -3263,26 +3785,26 @@ struct DashboardView: View {
                                 .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                             Text("\(t("battery_percent")): \(powerStats.stateOfCharge)%")
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.themeTextSecondary)
                         }
                         
                         Spacer()
                         
                         Text("\(t("battery_health")): \(powerStats.batteryHealthPercent)%")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.themeTextSecondary)
                         
                         Spacer()
                         
                         let cycleText = currentLanguage == "zh-Hans" ? "循环: \(powerStats.batteryCycleCount) 次" : "Cycles: \(powerStats.batteryCycleCount)"
                         Text(cycleText)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.themeTextSecondary)
                     }
                     .padding(.horizontal, 4)
                     
                     Divider()
-                        .background(Color.white.opacity(0.1))
+                        .background(Color.themeBorder)
                         .padding(.vertical, 2)
                     
                     HStack {
@@ -3291,7 +3813,7 @@ struct DashboardView: View {
                                 .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                             Text(currentLanguage == "zh-Hans" ? String(format: "电池温度: %.1f°C", powerStats.batteryTemperature) : String(format: "Battery Temp: %.1f°C", powerStats.batteryTemperature))
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.themeTextSecondary)
                         }
                         
                         Spacer()
@@ -3302,7 +3824,7 @@ struct DashboardView: View {
                                 .foregroundColor(powerStats.isCharging ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color(red: 0.95, green: 0.60, blue: 0.18))
                             Text(timeText)
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.themeTextSecondary)
                         }
                     }
                     .padding(.horizontal, 4)
@@ -3311,11 +3833,12 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.themeBorder, lineWidth: 1)
         )
     }
     
@@ -3331,7 +3854,7 @@ struct DashboardView: View {
                 
                 Text(t("battery_care"))
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(.themeText)
                 
                 Spacer()
                 
@@ -3355,10 +3878,10 @@ struct DashboardView: View {
                 VStack(spacing: 10) {
                     // Real-time status label (v1.9.6 Requirement)
                     HStack(spacing: 6) {
-                        Image(systemName: smc.getBatteryChargeLimit().active ? "cpu.fill" : "sparkles")
+                        Image(systemName: isChargeLimitEnabled ? "cpu.fill" : "sparkles")
                             .font(.system(size: 9))
                             .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
-                        Text(smc.getBatteryChargeLimit().active ? (currentLanguage == "zh-Hans" ? "SMC 硬件级限制已生效" : "SMC hardware limit active") : (currentLanguage == "zh-Hans" ? "智能软件代理保养中" : "Intelligent software agent active"))
+                        Text(isChargeLimitEnabled ? (currentLanguage == "zh-Hans" ? "SMC 硬件级限制已生效" : "SMC hardware limit active") : (currentLanguage == "zh-Hans" ? "智能软件代理保养中" : "Intelligent software agent active"))
                             .font(.system(size: 9, weight: .bold))
                             .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                         Spacer()
@@ -3370,23 +3893,24 @@ struct DashboardView: View {
                         HStack {
                             Text(currentLanguage == "zh-Hans" ? "健康保养限额 (已固定):" : "Care Limit (Fixed):")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.white.opacity(0.5))
+                                .foregroundColor(.themeTextSecondary)
                             Spacer()
                             Text("80%")
                                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                                 .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                         }
                         .padding(10)
-                        .background(Color.white.opacity(0.04))
-                        .cornerRadius(10)
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                        .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeDivider, lineWidth: 1))
                     } else {
                         // Intel can set custom limit
                         VStack(spacing: 6) {
                             HStack {
                                 Text(t("charge_limit_value"))
                                     .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.5))
+                                    .foregroundColor(.themeTextSecondary)
                                 Spacer()
                                 Text("\(Int(batteryLimitValue))%")
                                     .font(.system(size: 14, weight: .bold, design: .monospaced))
@@ -3396,9 +3920,9 @@ struct DashboardView: View {
                             Slider(value: $batteryLimitValue, in: 50...100, step: 5) {
                                 Text("")
                             } minimumValueLabel: {
-                                Text("50%").font(.system(size: 9)).foregroundColor(.white.opacity(0.3))
+                                Text("50%").font(.system(size: 9)).foregroundColor(.themeTextTertiary)
                             } maximumValueLabel: {
-                                Text("100%").font(.system(size: 9)).foregroundColor(.white.opacity(0.3))
+                                Text("100%").font(.system(size: 9)).foregroundColor(.themeTextTertiary)
                             }
                             .accentColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                             .onChange(of: batteryLimitValue) { newValue in
@@ -3406,9 +3930,10 @@ struct DashboardView: View {
                             }
                         }
                         .padding(10)
-                        .background(Color.white.opacity(0.04))
-                        .cornerRadius(10)
-                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                        .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeDivider, lineWidth: 1))
                     }
                     
                     // Maintenance Tips Info block
@@ -3418,14 +3943,14 @@ struct DashboardView: View {
                             .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                         Text(isSilicon ? t("battery_care_desc_silicon") : t("battery_care_desc_intel"))
                             .font(.system(size: 9.5))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                             .lineSpacing(3)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer()
                     }
                     .padding(10)
-                    .background(Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08))
+                    .background(Color.themeRadialGreen)
                     .cornerRadius(10)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -3436,23 +3961,25 @@ struct DashboardView: View {
                         .foregroundColor(.gray)
                     Text(currentLanguage == "zh-Hans" ? "已开启全量充电模式，电池将充至 100%。建议开启充电限制以延长寿命。" : "Full charge mode active. The battery will charge to 100%. Enable charge limit to prolong lifespan.")
                         .font(.system(size: 9.5))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                         .lineSpacing(3)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                 }
                 .padding(10)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.themeBorder, lineWidth: 1)
         )
     }
     
@@ -3467,7 +3994,7 @@ struct DashboardView: View {
                 
                 Text(t("power_policy_title"))
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(.themeText)
                 
                 Spacer()
                 
@@ -3480,12 +4007,12 @@ struct DashboardView: View {
                     }) {
                         Text(currentLanguage == "zh-Hans" ? "电源" : "AC")
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(selectedPowerTab == 0 ? .white : .white.opacity(0.5))
+                            .foregroundColor(selectedPowerTab == 0 ? .white : .themeTextSecondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(selectedPowerTab == 0 ? Color.white.opacity(0.12) : Color.clear)
+                                    .fill(selectedPowerTab == 0 ? Color.themeBorder : Color.clear)
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -3497,12 +4024,12 @@ struct DashboardView: View {
                     }) {
                         Text(currentLanguage == "zh-Hans" ? "电池" : "Battery")
                             .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(selectedPowerTab == 1 ? .white : .white.opacity(0.5))
+                            .foregroundColor(selectedPowerTab == 1 ? .white : .themeTextSecondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(selectedPowerTab == 1 ? Color.white.opacity(0.12) : Color.clear)
+                                    .fill(selectedPowerTab == 1 ? Color.themeBorder : Color.clear)
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -3517,7 +4044,7 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(t("power_policy_level"))
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                     
                     HStack(spacing: 8) {
                         ForEach(0..<3) { policy in
@@ -3538,13 +4065,13 @@ struct DashboardView: View {
                                 .padding(.vertical, 8)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(acPowerPolicy == policy ? Color.white.opacity(0.08) : Color.white.opacity(0.02))
+                                        .fill(acPowerPolicy == policy ? Color.themeBorder : Color.themeCardBg)
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(acPowerPolicy == policy ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.white.opacity(0.05), lineWidth: 1)
+                                        .stroke(acPowerPolicy == policy ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.themeDivider, lineWidth: 1)
                                 )
-                                .foregroundColor(acPowerPolicy == policy ? .white : .white.opacity(0.6))
+                                .foregroundColor(acPowerPolicy == policy ? .white : .themeTextSecondary)
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
@@ -3552,7 +4079,7 @@ struct DashboardView: View {
                     
                     Text(acPolicyTipText(acPowerPolicy))
                         .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.horizontal, 4)
                 }
                 .transition(.opacity)
@@ -3561,7 +4088,7 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(t("power_policy_level"))
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                     
                     HStack(spacing: 8) {
                         ForEach(0..<3) { policy in
@@ -3591,13 +4118,13 @@ struct DashboardView: View {
                                 .padding(.vertical, 8)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(batteryPowerPolicy == policy ? Color.white.opacity(0.08) : Color.white.opacity(0.02))
+                                        .fill(batteryPowerPolicy == policy ? Color.themeBorder : Color.themeCardBg)
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(batteryPowerPolicy == policy ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color.white.opacity(0.05), lineWidth: 1)
+                                        .stroke(batteryPowerPolicy == policy ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color.themeDivider, lineWidth: 1)
                                 )
-                                .foregroundColor(batteryPowerPolicy == policy ? .white : .white.opacity(0.6))
+                                .foregroundColor(batteryPowerPolicy == policy ? .white : .themeTextSecondary)
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
@@ -3605,7 +4132,7 @@ struct DashboardView: View {
                     
                     Text(batteryPolicyTipText(batteryPowerPolicy))
                         .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.horizontal, 4)
                         .padding(.bottom, 4)
                     
@@ -3614,7 +4141,7 @@ struct DashboardView: View {
                         HStack {
                             Text(t("target_power_limit"))
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.6))
+                                .foregroundColor(.themeTextSecondary)
                             Spacer()
                             Text(String(format: "%.1f W", batteryTargetPower))
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -3669,7 +4196,7 @@ struct DashboardView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(currentLanguage == "zh-Hans" ? "预计可使用时长" : "Est. Battery Life")
                                     .font(.system(size: 9))
-                                    .foregroundColor(.white.opacity(0.4))
+                                    .foregroundColor(.themeTextTertiary)
                                 Text(budgetedText)
                                     .font(.system(size: 13, weight: .bold, design: .rounded))
                                     .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
@@ -3685,10 +4212,10 @@ struct DashboardView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(t("actual_runtime"))
                                     .font(.system(size: 9))
-                                    .foregroundColor(.white.opacity(0.4))
+                                    .foregroundColor(.themeTextTertiary)
                                 Text(liveText)
                                     .font(.system(size: 13, weight: .bold, design: .rounded))
-                                    .foregroundColor(.white.opacity(0.8))
+                                    .foregroundColor(.themeTextSecondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -3701,7 +4228,7 @@ struct DashboardView: View {
                             HStack {
                                 Text(currentLanguage == "zh-Hans" ? "⚡️ 已为您额外延长续航" : "⚡️ Extra Life Gained")
                                     .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.5))
+                                    .foregroundColor(.themeTextSecondary)
                                 Spacer()
                                 Text(currentLanguage == "zh-Hans" ? "额外延长 \(extText)" : "+\(extText)")
                                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -3715,11 +4242,12 @@ struct DashboardView: View {
                         }
                     }
                     .padding(10)
-                    .background(Color.white.opacity(0.02))
-                    .cornerRadius(10)
+                    .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                            .stroke(Color.themeDivider, lineWidth: 1)
                     )
                     
                     // Auto-align switch
@@ -3740,7 +4268,7 @@ struct DashboardView: View {
                         
                         Text(t("auto_align_policies"))
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(.themeTextSecondary)
                         
                         Spacer()
                     }
@@ -3757,7 +4285,7 @@ struct DashboardView: View {
                             
                             Text(policyText)
                                 .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.themeTextSecondary)
                                 .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
                             
@@ -3776,9 +4304,10 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeBorder, lineWidth: 1))
     }
     
     private func metricGridCard(title: String, value: String, icon: String, color: Color) -> some View {
@@ -3789,7 +4318,7 @@ struct DashboardView: View {
                     .foregroundColor(color)
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             Text(value)
                 .font(.system(size: 15, weight: .bold, design: .monospaced))
@@ -3798,8 +4327,9 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(10)
+        .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
     }
     
     // 3. Fan Section
@@ -3816,33 +4346,107 @@ struct DashboardView: View {
                 
                 Text(t("fan_controller"))
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(.themeText)
                 
                 Spacer()
+                
+                if fanCount == 2 {
+                    Toggle(isOn: $fanLinked) {
+                        Text(currentLanguage == "zh-Hans" ? "双风扇联动" : "Link Fans")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.themeTextSecondary)
+                    }
+                    .toggleStyle(CheckboxToggleStyle())
+                    .focusable(false)
+                }
             }
             
             // Fan speed status cards (one per fan)
             let displayCount = max(fanCount, 1)
             HStack(spacing: 10) {
                 ForEach(0..<displayCount, id: \.self) { i in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(i == 0 ? t("left_fan") : t("right_fan"))
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.white.opacity(0.4))
-                        Text("\(Int(i < fanSpeed.count ? fanSpeed[i] : 0)) RPM")
-                            .font(.system(size: 18, weight: .bold, design: .monospaced))
-                            .foregroundColor((i < fanSpeed.count && fanSpeed[i] > 3000)
-                                ? Color(red: 0.95, green: 0.60, blue: 0.18)
-                                : Color(red: 0.18, green: 0.62, blue: 0.95))
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(i == 0 ? t("left_fan") : t("right_fan"))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.themeTextTertiary)
+                                
+                                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                    Text("\(Int(i < fanSpeed.count ? fanSpeed[i] : 0))")
+                                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                        .foregroundColor((i < fanSpeed.count && fanSpeed[i] > 3000)
+                                            ? Color(red: 0.95, green: 0.60, blue: 0.18)
+                                            : Color(red: 0.18, green: 0.62, blue: 0.95))
+                                    Text("RPM")
+                                        .font(.system(size: 8, weight: .semibold))
+                                        .foregroundColor(.themeTextTertiary)
+                                }
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(currentLanguage == "zh-Hans" ? "设定" : "Target")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.themeTextTertiary)
+                                
+                                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                                    let targetVal = i < targetFanSpeed.count ? targetFanSpeed[i] : 2000
+                                    Text("\(Int(targetVal))")
+                                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                        .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                                    Text("RPM")
+                                        .font(.system(size: 7, weight: .semibold))
+                                        .foregroundColor(.themeTextTertiary)
+                                }
+                            }
+                        }
+                        
                         Text("\(Int(i < fanMinSpeed.count ? fanMinSpeed[i] : 1200))–\(Int(i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000)) RPM")
                             .font(.system(size: 9, weight: .medium, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.3))
+                            .foregroundColor(.themeTextTertiary)
+                        
+                        Divider().background(Color.themeDivider).padding(.vertical, 1)
+                        
+                        let mn       = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
+                        let mx       = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
+                        let sMin     = min(mn, mx - 50)
+                        let sMax     = max(mx, mn + 50)
+                        let valColor = i == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95)
+                                             : Color(red: 0.62, green: 0.32, blue: 0.88)
+                        
+                        Slider(
+                            value: Binding<Float>(
+                                get: { i < targetFanSpeed.count ? targetFanSpeed[i] : 2000 },
+                                set: { newVal in
+                                    if fanPreset != 5 {
+                                        applyPreset(5)
+                                    }
+                                    if fanLinked && fanCount == 2 {
+                                        if targetFanSpeed.count >= 2 {
+                                            targetFanSpeed[0] = newVal
+                                            targetFanSpeed[1] = newVal
+                                        }
+                                        applyFanSpeed(newVal, forFan: -1)
+                                    } else {
+                                        if i < targetFanSpeed.count { targetFanSpeed[i] = newVal }
+                                        applyFanSpeed(newVal, forFan: i)
+                                    }
+                                }
+                            ),
+                            in: sMin...sMax,
+                            step: 50
+                        )
+                        .accentColor(valColor)
+                        .focusable(false)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                    .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeDivider, lineWidth: 1))
                 }
             }
             .padding(.top, 4)
@@ -3851,7 +4455,7 @@ struct DashboardView: View {
             VStack(spacing: 6) {
                 Text(currentLanguage == "zh-Hans" ? "一键温控预设" : "One-Key Presets")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white.opacity(0.6))
+                    .foregroundColor(.themeTextSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 2)
                 
@@ -3865,8 +4469,8 @@ struct DashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.white.opacity(0.04))
-                        .foregroundColor(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .white.opacity(0.6))
+                        .background(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.themeCardBg)
+                        .foregroundColor(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .themeTextSecondary)
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.clear, lineWidth: 1))
                     }.buttonStyle(.plain)
@@ -3880,8 +4484,8 @@ struct DashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.white.opacity(0.04))
-                        .foregroundColor(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .white.opacity(0.6))
+                        .background(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.themeCardBg)
+                        .foregroundColor(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .themeTextSecondary)
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 1 ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.clear, lineWidth: 1))
                     }.buttonStyle(.plain)
@@ -3895,8 +4499,8 @@ struct DashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15) : Color.white.opacity(0.04))
-                        .foregroundColor(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88) : .white.opacity(0.6))
+                        .background(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.15) : Color.themeCardBg)
+                        .foregroundColor(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88) : .themeTextSecondary)
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 2 ? Color(red: 0.62, green: 0.32, blue: 0.88) : Color.clear, lineWidth: 1))
                     }.buttonStyle(.plain)
@@ -3910,8 +4514,8 @@ struct DashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18).opacity(0.15) : Color.white.opacity(0.04))
-                        .foregroundColor(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18) : .white.opacity(0.6))
+                        .background(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18).opacity(0.15) : Color.themeCardBg)
+                        .foregroundColor(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18) : .themeTextSecondary)
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 3 ? Color(red: 0.95, green: 0.60, blue: 0.18) : Color.clear, lineWidth: 1))
                     }.buttonStyle(.plain)
@@ -3925,17 +4529,32 @@ struct DashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
-                        .background(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18).opacity(0.15) : Color.white.opacity(0.04))
-                        .foregroundColor(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18) : .white.opacity(0.6))
+                        .background(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18).opacity(0.15) : Color.themeCardBg)
+                        .foregroundColor(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18) : .themeTextSecondary)
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 4 ? Color(red: 0.95, green: 0.30, blue: 0.18) : Color.clear, lineWidth: 1))
+                    }.buttonStyle(.plain)
+                    
+                    // Manual Fixed Speed
+                    Button(action: { applyPreset(5) }) {
+                        VStack(spacing: 3) {
+                            Text("⚙️")
+                            Text(currentLanguage == "zh-Hans" ? "手动恒速" : "Manual")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(fanPreset == 5 ? Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.15) : Color.themeCardBg)
+                        .foregroundColor(fanPreset == 5 ? Color(red: 0.18, green: 0.62, blue: 0.95) : .themeTextSecondary)
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(fanPreset == 5 ? Color(red: 0.18, green: 0.62, blue: 0.95) : Color.clear, lineWidth: 1))
                     }.buttonStyle(.plain)
                 }
             }
             .padding(.top, 4)
             
             // Dynamic Curve Graph
-            if fanPreset > 0 {
+            if fanPreset > 0 && fanPreset <= 4 {
                 fanCurveGraph
                     .transition(.opacity)
             }
@@ -3966,7 +4585,7 @@ struct DashboardView: View {
                             Image(systemName: "lock.shield.fill").font(.system(size: 10))
                             Text(t("auth_btn")).font(.system(size: 9.5, weight: .bold))
                         }
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Color(red: 0.18, green: 0.62, blue: 0.95))
                         .cornerRadius(6)
@@ -3996,9 +4615,10 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeBorder, lineWidth: 1))
     }
     
     private var fanCurveGraph: some View {
@@ -4008,7 +4628,7 @@ struct DashboardView: View {
             HStack {
                 Text(currentLanguage == "zh-Hans" ? "实时温控曲线" : "Live Temp Curve")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white.opacity(0.6))
+                    .foregroundColor(.themeTextSecondary)
                 
                 Spacer()
                 
@@ -4059,7 +4679,7 @@ struct DashboardView: View {
                             path.addLine(to: pEnd)
                         }
                     }
-                    .stroke(Color.white.opacity(0.04), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                    .stroke(Color.themeCardBg, style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
                     
                     // Tiny Y-Axis Labels
                     Group {
@@ -4068,7 +4688,7 @@ struct DashboardView: View {
                         Text("25%").position(x: 14, y: getPoint(30, 25).y)
                     }
                     .font(.system(size: 6.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.25))
+                    .foregroundColor(.themeTextTertiary)
                     
                     // Tiny X-Axis Labels
                     Group {
@@ -4078,7 +4698,7 @@ struct DashboardView: View {
                         Text("85°C").position(x: getPoint(85, 0).x, y: h - 6)
                     }
                     .font(.system(size: 6.5, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.25))
+                    .foregroundColor(.themeTextTertiary)
                     
                     let p1 = getPoint(customCurveTemp1, customCurveSpeed1)
                     let p2 = getPoint(customCurveTemp2, customCurveSpeed2)
@@ -4108,7 +4728,7 @@ struct DashboardView: View {
                     )
                     
                     // Draw Nodes
-                    let nodeColor = fanPreset == 4 ? Color(red: 0.95, green: 0.60, blue: 0.18) : Color.white.opacity(0.4)
+                    let nodeColor = fanPreset == 4 ? Color(red: 0.95, green: 0.60, blue: 0.18) : .themeTextTertiary
                     
                     Circle().fill(nodeColor).frame(width: 6, height: 6).position(p1)
                     Circle().fill(nodeColor).frame(width: 6, height: 6).position(p2)
@@ -4157,7 +4777,7 @@ struct DashboardView: View {
             .frame(height: 75)
             .background(Color.black.opacity(0.2))
             .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.05), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.themeDivider, lineWidth: 1))
         }
     }
     
@@ -4165,7 +4785,7 @@ struct DashboardView: View {
         VStack(spacing: 8) {
             Text(currentLanguage == "zh-Hans" ? "调节曲线控制节点" : "Adjust Curve Nodes")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(.themeTextSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 4)
             
@@ -4175,7 +4795,7 @@ struct DashboardView: View {
                     HStack {
                         Text("\(t("fan_curve_node")) 1 (低温)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                         Text("\(Int(customCurveTemp1))°C → \(Int(customCurveSpeed1))%")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -4194,7 +4814,7 @@ struct DashboardView: View {
                     HStack {
                         Text("\(t("fan_curve_node")) 2 (常温)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                         Text("\(Int(customCurveTemp2))°C → \(Int(customCurveSpeed2))%")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -4213,7 +4833,7 @@ struct DashboardView: View {
                     HStack {
                         Text("\(t("fan_curve_node")) 3 (高负荷)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                         Text("\(Int(customCurveTemp3))°C → \(Int(customCurveSpeed3))%")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -4232,7 +4852,7 @@ struct DashboardView: View {
                     HStack {
                         Text("\(t("fan_curve_node")) 4 (极限)")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                         Text("\(Int(customCurveTemp4))°C → \(Int(customCurveSpeed4))%")
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -4247,9 +4867,10 @@ struct DashboardView: View {
                 }
             }
             .padding(10)
-            .background(Color.white.opacity(0.03))
-            .cornerRadius(10)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.06), lineWidth: 1))
+            .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeDivider, lineWidth: 1))
             .onChange(of: customCurveTemp1) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
             .onChange(of: customCurveSpeed1) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
             .onChange(of: customCurveTemp2) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
@@ -4258,57 +4879,6 @@ struct DashboardView: View {
             .onChange(of: customCurveSpeed3) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
             .onChange(of: customCurveTemp4) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
             .onChange(of: customCurveSpeed4) { _ in saveCustomCurveSettings(); evaluateAndApplyFanCurve() }
-        }
-    }
-    
-    // Per-fan slider row
-    private func fanSliderRow(index i: Int, displayCount: Int) -> some View {
-        let mn       = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
-        let mx       = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
-        let sMin     = min(mn, mx - 50)
-        let sMax     = max(mx, mn + 50)
-        let dotColor = i == 0 ? Color(red: 0.18, green: 0.62, blue: 0.95)
-                               : Color(red: 0.62, green: 0.32, blue: 0.88)
-        let valColor = i == 0 ? Color(red: 0.95, green: 0.60, blue: 0.18)
-                               : Color(red: 0.62, green: 0.32, blue: 0.88)
-        // Compute label here for the header — this updates when the view re-renders
-        let label    = (i == 0 ? t("left_fan") : t("right_fan")) + (fanLinked && fanCount == 2 ? t("fan_linked") : "")
-
-        return VStack(spacing: 5) {
-            HStack {
-                Circle().fill(dotColor).frame(width: 6, height: 6)
-                Text(label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.6))
-                Spacer()
-                Text("\(Int(i < targetFanSpeed.count ? targetFanSpeed[i] : 2000)) RPM")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(valColor)
-            }
-
-            Slider(
-                value: Binding<Float>(
-                    get: { i < targetFanSpeed.count ? targetFanSpeed[i] : 2000 },
-                    set: { [self] newVal in
-                        // ALWAYS read fanLinked at call time — not a captured constant
-                        if fanLinked && fanCount == 2 {
-                            // Linked mode: drive both fans together
-                            if targetFanSpeed.count >= 2 {
-                                targetFanSpeed[0] = newVal
-                                targetFanSpeed[1] = newVal
-                            }
-                            applyFanSpeed(newVal, forFan: -1)
-                        } else {
-                            // Independent mode: only this fan
-                            if i < targetFanSpeed.count { targetFanSpeed[i] = newVal }
-                            applyFanSpeed(newVal, forFan: i)
-                        }
-                    }
-                ),
-                in: sMin...sMax,
-                step: 50
-            )
-            .accentColor(valColor)
         }
     }
 
@@ -4321,24 +4891,25 @@ struct DashboardView: View {
         HStack(spacing: 12) {
             Image(systemName: "fanblades")
                 .font(.system(size: 24))
-                .foregroundColor(.white.opacity(0.3))
+                .foregroundColor(.themeTextTertiary)
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(t("fanless_title"))
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 Text(t("fanless_desc"))
                     .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.themeTextSecondary)
             }
             Spacer()
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.themeBorder, lineWidth: 1)
         )
     }
     
@@ -4351,12 +4922,12 @@ struct DashboardView: View {
                     .shadow(color: Color(red: 0.62, green: 0.32, blue: 0.88).opacity(keyboardMode > 0 || keyboardBrightness > 0 ? 0.4 : 0), radius: 4)
                 Text(t("keyboard_title"))
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.9))
+                    .foregroundColor(.themeText)
                 Spacer()
                 
                 Text(t("keyboard_mode"))
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             
             // Premium custom Segmented Control for lighting modes
@@ -4364,7 +4935,7 @@ struct DashboardView: View {
                 ForEach(0..<3) { mode in
                     let label = mode == 0 ? t("mode_static") : (mode == 1 ? t("mode_breathing") : t("mode_wave"))
                     let isSelected = (keyboardMode == mode)
-                    let textColor = isSelected ? Color.white : Color.white.opacity(0.4)
+                    let textColor = isSelected ? Color.white : .themeTextTertiary
                     let bgColor = isSelected ? Color(red: 0.62, green: 0.32, blue: 0.88) : Color.clear
                     
                     Button(action: {
@@ -4392,7 +4963,7 @@ struct DashboardView: View {
             .cornerRadius(8)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(Color.themeDivider, lineWidth: 1)
             )
             
             if keyboardMode == 0 {
@@ -4401,7 +4972,7 @@ struct DashboardView: View {
                     HStack {
                         Text(t("backlight_brightness"))
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                         Text("\(Int(keyboardBrightness * 100))%")
                             .font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -4425,7 +4996,7 @@ struct DashboardView: View {
                             .frame(height: 56)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                                    .stroke(Color.themeDivider, lineWidth: 1)
                             )
                         
                         KeyboardBacklightVisualizerView(keyboardMode: keyboardMode, breathingSpeed: breathingSpeed)
@@ -4435,7 +5006,7 @@ struct DashboardView: View {
                     // State description text under visualizer
                     Text(keyboardMode == 1 ? t("breathing_status") : t("wave_status"))
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                         .padding(.top, -4)
                     
                     // Control variables (Period speed)
@@ -4443,7 +5014,7 @@ struct DashboardView: View {
                         HStack {
                             Text(t("breathing_period"))
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.6))
+                                .foregroundColor(.themeTextSecondary)
                             Spacer()
                             Text(String(format: currentLanguage == "zh-Hans" ? "%.1f 秒" : "%.1fs", breathingSpeed))
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -4459,11 +5030,12 @@ struct DashboardView: View {
             }
         }
         .padding(14)
-        .background(Color.white.opacity(0.04))
-        .cornerRadius(14)
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.themeBorder, lineWidth: 1)
         )
     }
     
@@ -4473,7 +5045,7 @@ struct DashboardView: View {
             Spacer()
             Text(t("app_ver"))
                 .font(.system(size: 9, weight: .medium))
-                .foregroundColor(.white.opacity(0.25))
+                .foregroundColor(.themeTextTertiary)
             Spacer()
         }
         .padding(.vertical, 4)
@@ -4498,11 +5070,11 @@ struct DashboardView: View {
                     .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
                     .padding(.vertical, 6)
                     .padding(.horizontal, 10)
-                    .background(Color.white.opacity(0.06))
+                    .background(Color.themeDivider)
                     .cornerRadius(8)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                            .stroke(Color.themeBorder, lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
@@ -4511,7 +5083,7 @@ struct DashboardView: View {
                 
                 Text(t("settings"))
                     .font(.system(size: 16, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 
                 Spacer()
                 // A blank placeholder of exact same width to keep title perfectly centered
@@ -4531,7 +5103,7 @@ struct DashboardView: View {
                                 .font(.system(size: 14))
                             Text(t("lang_select"))
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                         }
                         
                         Picker("", selection: $currentLanguage) {
@@ -4544,11 +5116,12 @@ struct DashboardView: View {
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(12)
+                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                            .stroke(Color.themeDivider, lineWidth: 1)
                     )
                     
                     // Card 2: Autostart Launch Behavior
@@ -4559,13 +5132,13 @@ struct DashboardView: View {
                                 .font(.system(size: 14))
                             Text(t("startup"))
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                         }
                         
                         Toggle(isOn: $launchAtLogin) {
                             Text(t("auto_start"))
                                 .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.white.opacity(0.8))
+                                .foregroundColor(.themeTextSecondary)
                         }
                         .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.22, green: 0.80, blue: 0.45)))
                         .onChange(of: launchAtLogin) { newValue in
@@ -4573,11 +5146,12 @@ struct DashboardView: View {
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(12)
+                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                            .stroke(Color.themeDivider, lineWidth: 1)
                     )
                     
                     // Card 3: Display & Ambient Controls (Phase 3)
@@ -4588,19 +5162,19 @@ struct DashboardView: View {
                                 .font(.system(size: 14))
                             Text(currentLanguage == "zh-Hans" ? "显示与环境光控制" : "Display & Light Control")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                         }
                         
-                        Divider().background(Color.white.opacity(0.06))
+                        Divider().background(Color.themeDivider)
                         
                         Toggle(isOn: $isAmbientLinkEnabled) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(currentLanguage == "zh-Hans" ? "智能环境光链路 (键盘背光)" : "Ambient Light Sensor Link")
                                     .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.9))
+                                    .foregroundColor(.themeText)
                                 Text(currentLanguage == "zh-Hans" ? "根据内置光强传感器自动调节键盘灯" : "Auto-adjust keyboard light based on ambient lux")
                                     .font(.system(size: 9.5))
-                                    .foregroundColor(.white.opacity(0.5))
+                                    .foregroundColor(.themeTextSecondary)
                             }
                         }
                         .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.95, green: 0.60, blue: 0.18)))
@@ -4609,11 +5183,11 @@ struct DashboardView: View {
                         }
                         
                         if !activeDisplays.isEmpty {
-                            Divider().background(Color.white.opacity(0.06))
+                            Divider().background(Color.themeDivider)
                             
                             Text(currentLanguage == "zh-Hans" ? "显示器亮度与音频 (DDC/CI)" : "Active Displays (DDC/CI)")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white.opacity(0.6))
+                                .foregroundColor(.themeTextSecondary)
                                 .padding(.top, 2)
                             
                             ForEach(activeDisplays) { screen in
@@ -4624,7 +5198,7 @@ struct DashboardView: View {
                                             .font(.system(size: 10))
                                         Text(screen.name)
                                             .font(.system(size: 11, weight: .medium))
-                                            .foregroundColor(.white.opacity(0.85))
+                                            .foregroundColor(.themeTextSecondary)
                                             .lineLimit(1)
                                         Spacer()
                                         if screen.isBuiltin {
@@ -4649,15 +5223,15 @@ struct DashboardView: View {
                                     HStack(spacing: 8) {
                                         Image(systemName: "sun.min.fill")
                                             .font(.system(size: 9))
-                                            .foregroundColor(.white.opacity(0.4))
+                                            .foregroundColor(.themeTextTertiary)
                                         Slider(value: bindingBr, in: 0.0...1.0)
                                             .accentColor(.cyan)
                                         Image(systemName: "sun.max.fill")
                                             .font(.system(size: 9))
-                                            .foregroundColor(.white.opacity(0.4))
+                                            .foregroundColor(.themeTextTertiary)
                                         Text(String(format: "%.0f%%", bindingBr.wrappedValue * 100))
                                             .font(.system(size: 9, design: .monospaced))
-                                            .foregroundColor(.white.opacity(0.7))
+                                            .foregroundColor(.themeTextSecondary)
                                             .frame(width: 28, alignment: .trailing)
                                     }
                                     
@@ -4673,31 +5247,33 @@ struct DashboardView: View {
                                         HStack(spacing: 8) {
                                             Image(systemName: "speaker.fill")
                                                 .font(.system(size: 9))
-                                                .foregroundColor(.white.opacity(0.4))
+                                                .foregroundColor(.themeTextTertiary)
                                             Slider(value: bindingVol, in: 0.0...1.0)
                                                 .accentColor(.purple)
                                             Image(systemName: "speaker.wave.3.fill")
                                                 .font(.system(size: 9))
-                                                .foregroundColor(.white.opacity(0.4))
+                                                .foregroundColor(.themeTextTertiary)
                                             Text(String(format: "%.0f%%", bindingVol.wrappedValue * 100))
                                                 .font(.system(size: 9, design: .monospaced))
-                                                .foregroundColor(.white.opacity(0.7))
+                                                .foregroundColor(.themeTextSecondary)
                                                 .frame(width: 28, alignment: .trailing)
                                         }
                                     }
                                 }
                                 .padding(8)
-                                .background(Color.white.opacity(0.02))
-                                .cornerRadius(8)
+                                .background(Color.themeCardBg)
+.cornerRadius(8)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                             }
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(12)
+                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                            .stroke(Color.themeDivider, lineWidth: 1)
                     )
                     .onAppear {
                         loadDisplayInfo()
@@ -4715,15 +5291,15 @@ struct DashboardView: View {
                         
                         Text(t("title"))
                             .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                         
                         HStack(spacing: 6) {
                             Text("v1.2.0")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.5))
+                                .foregroundColor(.themeTextSecondary)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
-                                .background(Color.white.opacity(0.08))
+                                .background(Color.themeBorder)
                                 .cornerRadius(6)
                             
                             if !powerStats.friendlyModelName.isEmpty {
@@ -4739,30 +5315,31 @@ struct DashboardView: View {
                         
                         Text(t("app_desc"))
                             .font(.system(size: 10.5))
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.themeTextSecondary)
                             .multilineTextAlignment(.center)
                             .lineSpacing(4)
                             .padding(.horizontal, 6)
                         
                         Divider()
-                            .background(Color.white.opacity(0.08))
+                            .background(Color.themeBorder)
                             .padding(.vertical, 2)
                         
                         VStack(spacing: 4) {
                             Text(t("author"))
                                 .font(.system(size: 9.5, weight: .bold))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.themeTextTertiary)
                             Text(t("copyright"))
                                 .font(.system(size: 8.5))
-                                .foregroundColor(.white.opacity(0.3))
+                                .foregroundColor(.themeTextTertiary)
                         }
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(12)
+                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                            .stroke(Color.themeDivider, lineWidth: 1)
                     )
                     
                     // Card 4: Sponsor Section (Animated payment visual effects)
@@ -4773,12 +5350,12 @@ struct DashboardView: View {
                                 .font(.system(size: 14))
                             Text(t("donate"))
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                         }
                         
                         Text(t("donate_desc"))
                             .font(.system(size: 10.5))
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.themeTextSecondary)
                             .lineSpacing(3)
                         
                         // Payment tabs switching Alipays and WeChat Pay
@@ -4788,14 +5365,14 @@ struct DashboardView: View {
                             }) {
                                 Text(t("alipay"))
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(donateMethod == 0 ? .white : .white.opacity(0.6))
+                                    .foregroundColor(donateMethod == 0 ? .white : .themeTextSecondary)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 8)
-                                    .background(donateMethod == 0 ? Color(red: 0.10, green: 0.56, blue: 0.91) : Color.white.opacity(0.04))
+                                    .background(donateMethod == 0 ? Color(red: 0.10, green: 0.56, blue: 0.91) : Color.themeCardBg)
                                     .cornerRadius(8)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .stroke(donateMethod == 0 ? Color.white.opacity(0.2) : Color.clear, lineWidth: 1)
+                                            .stroke(donateMethod == 0 ? .themeTextTertiary : Color.clear, lineWidth: 1)
                                     )
                             }
                             .buttonStyle(.plain)
@@ -4805,14 +5382,14 @@ struct DashboardView: View {
                             }) {
                                 Text(t("wechat"))
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundColor(donateMethod == 1 ? .white : .white.opacity(0.6))
+                                    .foregroundColor(donateMethod == 1 ? .white : .themeTextSecondary)
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 8)
-                                    .background(donateMethod == 1 ? Color(red: 0.03, green: 0.76, blue: 0.38) : Color.white.opacity(0.04))
+                                    .background(donateMethod == 1 ? Color(red: 0.03, green: 0.76, blue: 0.38) : Color.themeCardBg)
                                     .cornerRadius(8)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8)
-                                            .stroke(donateMethod == 1 ? Color.white.opacity(0.2) : Color.clear, lineWidth: 1)
+                                            .stroke(donateMethod == 1 ? .themeTextTertiary : Color.clear, lineWidth: 1)
                                     )
                             }
                             .buttonStyle(.plain)
@@ -4847,7 +5424,7 @@ struct DashboardView: View {
                                                 .foregroundColor(donateMethod == 0 ? Color(red: 0.10, green: 0.56, blue: 0.91) : Color(red: 0.03, green: 0.76, blue: 0.38))
                                             Text("Loading QR...")
                                                 .font(.system(size: 10, weight: .semibold))
-                                                .foregroundColor(.white.opacity(0.4))
+                                                .foregroundColor(.themeTextTertiary)
                                         }
                                     }
                                     
@@ -4877,7 +5454,7 @@ struct DashboardView: View {
                             
                             Text(t("scan_qr"))
                                 .font(.system(size: 9.5))
-                                .foregroundColor(.white.opacity(0.45))
+                                .foregroundColor(.themeTextTertiary)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(10)
@@ -4885,11 +5462,12 @@ struct DashboardView: View {
                         .cornerRadius(10)
                     }
                     .padding(14)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(12)
+                    .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                            .stroke(Color.themeDivider, lineWidth: 1)
                     )
                     .alert(isPresented: $showDonateAlert) {
                         Alert(
@@ -4906,12 +5484,12 @@ struct DashboardView: View {
         .frame(width: 680, height: 530)
         .background(
             ZStack {
-                Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.18, green: 0.62, blue: 0.95).opacity(0.14), .clear], center: .topTrailing, startRadius: 0, endRadius: 280)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.09), .clear], center: .bottomLeading, startRadius: 0, endRadius: 280)
+                Color.themeBg
+                RadialGradient(colors: [Color.cyan.opacity(isDark ? 0.14 : 0.05), .clear], center: .topTrailing, startRadius: 0, endRadius: 280)
+                RadialGradient(colors: [Color.purple.opacity(isDark ? 0.09 : 0.03), .clear], center: .bottomLeading, startRadius: 0, endRadius: 280)
             }
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
     }
     
     private func qrTarget(color: Color) -> some View {
@@ -5033,7 +5611,16 @@ struct DashboardView: View {
                 
                 do {
                     if fm.fileExists(atPath: item.path) {
-                        try fm.removeItem(atPath: item.path)
+                        if item.path.hasSuffix("/Library/Caches") {
+                            let cacheURL = URL(fileURLWithPath: item.path)
+                            if let contents = try? fm.contentsOfDirectory(at: cacheURL, includingPropertiesForKeys: nil, options: []) {
+                                for contentURL in contents {
+                                    try? fm.removeItem(at: contentURL)
+                                }
+                            }
+                        } else {
+                            try fm.removeItem(atPath: item.path)
+                        }
                     }
                     successBytes += item.sizeBytes
                 } catch {
@@ -5128,7 +5715,508 @@ struct DashboardView: View {
         }
     }
     
+    private func confirmPermanentDelete(completion: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "⚠️ 警告：物理永久删除确认"
+        alert.informativeText = "您选择的文件将被物理永久删除，且无法从废纸篓/回收站中恢复！\n请确认这些文件是否可以安全移除。"
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "确认删除")
+        alert.addButton(withTitle: "取消")
+        
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            completion()
+        }
+    }
+    
+    private func selectScanFolder() {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseFiles = false
+        openPanel.canChooseDirectories = true
+        openPanel.allowsMultipleSelection = false
+        openPanel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        
+        if openPanel.runModal() == .OK, let selectedURL = openPanel.url {
+            largeFilesScanFolder = selectedURL
+        }
+    }
+    
+    private func performScanLargeFiles() {
+        isScanningLargeFiles = true
+        scanLargeProgress = 0.0
+        scanLargeStatusText = "正在准备扫描大文件..."
+        scannedLargeFiles.removeAll()
+        selectedLargeFilePaths.removeAll()
+        
+        let folder = largeFilesScanFolder
+        let minBytes = Int64(minLargeFileSizeMB * 1024 * 1024)
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let items = MemoryPurger.scanLargeFiles(in: folder, minSizeBytes: minBytes) { pct, msg in
+                DispatchQueue.main.async {
+                    self.scanLargeProgress = pct
+                    self.scanLargeStatusText = msg
+                }
+            }
+            
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.scannedLargeFiles = items
+                    self.isScanningLargeFiles = false
+                    self.scanLargeProgress = 1.0
+                    self.scanLargeStatusText = ""
+                }
+            }
+        }
+    }
+    
+    private func performDeleteLargeFiles() {
+        let targets = scannedLargeFiles.filter { selectedLargeFilePaths.contains($0.path) }
+        guard !targets.isEmpty else { return }
+        
+        isScanningLargeFiles = true
+        scanLargeProgress = 0.0
+        scanLargeStatusText = "正在物理删除所选大文件..."
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            var deletedCount = 0
+            var reclaimedBytes: Int64 = 0
+            
+            for (index, item) in targets.enumerated() {
+                let progress = Double(index) / Double(targets.count)
+                DispatchQueue.main.async {
+                    self.scanLargeProgress = progress
+                    self.scanLargeStatusText = "正在删除: \(item.name)..."
+                }
+                
+                do {
+                    if fm.fileExists(atPath: item.path) {
+                        try fm.removeItem(atPath: item.path)
+                        deletedCount += 1
+                        reclaimedBytes += item.sizeBytes
+                    }
+                } catch {
+                    print("Failed to delete large file at \(item.path): \(error)")
+                }
+            }
+            
+            let remaining = self.scannedLargeFiles.filter { !targets.contains($0) }
+            
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.scannedLargeFiles = remaining
+                    self.selectedLargeFilePaths.removeAll()
+                    self.isScanningLargeFiles = false
+                    self.scanLargeProgress = 1.0
+                    self.scanLargeStatusText = ""
+                    
+                    let formattedBytes = ByteCountFormatter.string(fromByteCount: reclaimedBytes, countStyle: .file)
+                    self.messagePrompt = "🎉 成功删除了 \(deletedCount) 个大文件，释放了 \(formattedBytes) 空间！"
+                }
+            }
+        }
+    }
+    
+    private var largeFilesSectionView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "folder.badge.gearshape")
+                    .font(.system(size: 14))
+                    .foregroundColor(.cyan)
+                Text("大文件智能扫描与管理")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.themeText)
+                Spacer()
+                
+                if isScanningLargeFiles {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                        Text(scanLargeStatusText)
+                            .font(.system(size: 10))
+                            .foregroundColor(.cyan)
+                    }
+                } else if !scannedLargeFiles.isEmpty {
+                    Text("发现大文件: \(scannedLargeFiles.count) 个")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.cyan)
+                }
+            }
+            
+            if scannedLargeFiles.isEmpty && !isScanningLargeFiles {
+                VStack(spacing: 12) {
+                    Image(systemName: "arrow.up.doc.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.cyan.opacity(0.8))
+                    
+                    Text("扫描指定目录下的大文件，批量清理无用占空间文件")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.themeTextSecondary)
+                    
+                    HStack(spacing: 12) {
+                        HStack {
+                            Image(systemName: "folder")
+                                .foregroundColor(.cyan)
+                            Text(largeFilesScanFolder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                                .font(.system(size: 10, design: .monospaced))
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.themeDivider)
+                        .cornerRadius(6)
+                        
+                        Button(action: {
+                            selectScanFolder()
+                        }) {
+                            Text("更改目录")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.cyan.opacity(0.15))
+                                .foregroundColor(.cyan)
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    HStack(spacing: 16) {
+                        Text("大小阈值:")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.themeTextSecondary)
+                        
+                        Picker("", selection: $minLargeFileSizeMB) {
+                            Text("50 MB").tag(50.0)
+                            Text("100 MB").tag(100.0)
+                            Text("200 MB").tag(200.0)
+                            Text("500 MB").tag(500.0)
+                            Text("1 GB").tag(1024.0)
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 100)
+                        
+                        Button(action: {
+                            performScanLargeFiles()
+                        }) {
+                            HStack {
+                                Image(systemName: "magnifyingglass")
+                                Text("开始扫描")
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.themeText)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 5)
+                            .background(
+                                LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .background(Color.themeCardBg.opacity(0.2))
+                .cornerRadius(12)
+            } else if isScanningLargeFiles && scannedLargeFiles.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView(value: scanLargeProgress, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .frame(width: 160)
+                    Text(scanLargeStatusText)
+                        .font(.system(size: 11))
+                        .foregroundColor(.themeTextSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .background(Color.themeCardBg.opacity(0.2))
+                .cornerRadius(12)
+            } else {
+                VStack(spacing: 10) {
+                    HStack {
+                        Text("目录: \(largeFilesScanFolder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.themeTextSecondary)
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            performScanLargeFiles()
+                        }) {
+                            Text("重新扫描")
+                                .font(.system(size: 10))
+                                .foregroundColor(.cyan)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.bottom, 2)
+                    
+                    ScrollView(.vertical) {
+                        VStack(spacing: 6) {
+                            ForEach(scannedLargeFiles, id: \.path) { item in
+                                LargeFileRowView(item: item, selectedLargeFilePaths: $selectedLargeFilePaths)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 250)
+                    
+                    let selectedItems = scannedLargeFiles.filter { selectedLargeFilePaths.contains($0.path) }
+                    let totalSelectedBytes = selectedItems.reduce(Int64(0)) { $0 + $1.sizeBytes }
+                    let selectedSizeStr = ByteCountFormatter.string(fromByteCount: totalSelectedBytes, countStyle: .file)
+                    
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            if selectedLargeFilePaths.count == scannedLargeFiles.count {
+                                selectedLargeFilePaths.removeAll()
+                            } else {
+                                selectedLargeFilePaths = Set(scannedLargeFiles.map { $0.path })
+                            }
+                        }) {
+                            Text(selectedLargeFilePaths.count == scannedLargeFiles.count ? "取消全选" : "选择全部")
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.themeBorder)
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            confirmPermanentDelete {
+                                performDeleteLargeFiles()
+                            }
+                        }) {
+                            HStack {
+                                Image(systemName: "xmark.shield")
+                                Text("永久删除所选 (\(selectedSizeStr))")
+                            }
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.themeText)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(
+                                LinearGradient(colors: selectedItems.isEmpty ? [.gray.opacity(0.3), .gray.opacity(0.3)] : [.red, .pink], startPoint: .leading, endPoint: .trailing)
+                            )
+                            .cornerRadius(6)
+                        }
+                        .disabled(selectedItems.isEmpty || isScanningLargeFiles)
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.top, 6)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
+    }
+    
+    private func startTrackingWiFi(net: WiFiNetworkInfo) {
+        trackingTargetId = net.bssid
+        trackingTargetType = "WiFi"
+        trackingTargetName = net.ssid.isEmpty ? "隐藏信号 AP" : net.ssid
+        trackingCurrentRssi = net.rssi
+        trackingRssiHistory = [net.rssi]
+        
+        // Start high-frequency Wi-Fi scans (every 2.0s)
+        wifiScanner.startScan()
+        trackerWiFiScanTimer?.invalidate()
+        trackerWiFiScanTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            self.wifiScanner.startScan()
+            // Find updated network and refresh tracking RSSI
+            if let updated = self.wifiScanner.scanResults.first(where: { $0.bssid == net.bssid }) {
+                self.updateTrackingRssi(updated.rssi)
+            }
+        }
+        
+        setupAudioTimer()
+    }
+    
+    private func startTrackingBluetooth(dev: BluetoothDeviceInfo) {
+        trackingTargetId = dev.peripheralId
+        trackingTargetType = "Bluetooth"
+        trackingTargetName = dev.name
+        trackingCurrentRssi = dev.rssi
+        trackingRssiHistory = [dev.rssi]
+        
+        // Keep scan active in tracking mode
+        bluetoothScanner.isTrackingMode = true
+        bluetoothScanner.startScan()
+        
+        // Start a timer to monitor BLE scan updates and periodically restart if needed
+        trackerWiFiScanTimer?.invalidate()
+        trackerWiFiScanTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            if !self.bluetoothScanner.isScanning {
+                self.bluetoothScanner.startScan()
+            }
+            if let updated = self.bluetoothScanner.scanResults.first(where: { $0.peripheralId == dev.peripheralId }) {
+                self.updateTrackingRssi(updated.rssi)
+            }
+        }
+        
+        setupAudioTimer()
+    }
+    
+    private func updateTrackingRssi(_ rssi: Int) {
+        self.trackingCurrentRssi = rssi
+        self.trackingRssiHistory.append(rssi)
+        if self.trackingRssiHistory.count > 30 {
+            self.trackingRssiHistory.removeFirst()
+        }
+        
+        // Re-setup audio timer in case RSSI changed significantly
+        if self.isAudioLocatorEnabled {
+            self.setupAudioTimer()
+        }
+    }
+    
+    private func stopTracking() {
+        trackerWiFiScanTimer?.invalidate()
+        trackerWiFiScanTimer = nil
+        
+        trackerAudioTimer?.invalidate()
+        trackerAudioTimer = nil
+        
+        bluetoothScanner.isTrackingMode = false
+        bluetoothScanner.stopScan()
+        
+        trackingTargetId = nil
+        trackingTargetType = ""
+        trackingTargetName = ""
+        trackingRssiHistory.removeAll()
+        trackingCurrentRssi = -100
+        isAudioLocatorEnabled = false
+    }
+    
+    private func setupAudioTimer() {
+        trackerAudioTimer?.invalidate()
+        trackerAudioTimer = nil
+        
+        guard isAudioLocatorEnabled && trackingTargetId != nil else { return }
+        
+        // Geiger counter audio tick rate based on current RSSI
+        // Strong signal (-40 dBm) -> interval 0.08s (extremely fast)
+        // Weak signal (-90 dBm) -> interval 1.5s (very slow)
+        let interval = max(0.08, min(1.5, Double(-40 - trackingCurrentRssi) * 0.03))
+        
+        trackerAudioTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+            NSSound(named: "Pop")?.play()
+        }
+    }
+    
+    private func applyCpuFrequencyLimit(percent: Double) {
+        isTuningFrequency = true
+        storedCpuFreqLimit = percent
+        let helperPath = smcHelperPath
+        let percentInt = Int(percent)
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            proc.arguments = ["-n", helperPath, "speedlimit", String(percentInt)]
+            
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                DispatchQueue.main.async {
+                    self.isTuningFrequency = false
+                    if proc.terminationStatus != 0 {
+                        self.showPrivilegeWarning = true
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isTuningFrequency = false
+                    self.showPrivilegeWarning = true
+                }
+            }
+        }
+    }
+    
+    private func applyRamFrequencyProfile(profile: Int) {
+        storedRamFreqProfile = profile
+        // Update userdefaults immediately
+        UserDefaults.standard.set(profile, forKey: "RamFreqProfile")
+        // Trigger a telemetry poll to update values immediately
+        TelemetryManager.shared.ramFreq = 6400.0
+    }
+    
+    private var filteredWiFiResults: [WiFiNetworkInfo] {
+        let query = wifiSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var results = wifiScanner.scanResults
+        
+        if !query.isEmpty {
+            results = results.filter { net in
+                net.ssid.lowercased().contains(query) || net.bssid.lowercased().contains(query)
+            }
+        }
+        
+        if wifiBandFilter != "All" {
+            results = results.filter { net in
+                net.band.contains(wifiBandFilter)
+            }
+        }
+        
+        switch wifiSortOrder {
+        case 1:
+            results.sort { $0.ssid.localizedCaseInsensitiveCompare($1.ssid) == .orderedAscending }
+        case 2:
+            results.sort { $0.distanceMeters < $1.distanceMeters }
+        default:
+            results.sort { $0.rssi > $1.rssi }
+        }
+        
+        return results
+    }
+    
+    private func checkAndInstallHelperIfRoot() {
+        guard geteuid() == 0 else { return }
+        let targetPath = smcHelperPath
+        let embeddedPath = embeddedHelperPath
+        let fm = FileManager.default
+        do {
+            let dir = URL(fileURLWithPath: targetPath).deletingLastPathComponent().path
+            if !fm.fileExists(atPath: dir) {
+                try fm.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: nil)
+            }
+            if fm.fileExists(atPath: targetPath) {
+                try? fm.removeItem(atPath: targetPath)
+            }
+            if fm.fileExists(atPath: embeddedPath) {
+                try fm.copyItem(atPath: embeddedPath, toPath: targetPath)
+                let attrs: [FileAttributeKey: Any] = [
+                    .ownerAccountID: 0,
+                    .groupOwnerAccountID: 0,
+                    .posixPermissions: 0o4755
+                ]
+                try fm.setAttributes(attrs, ofItemAtPath: targetPath)
+            }
+            var consoleUser = "h-l"
+            if let consoleOwner = try? fm.attributesOfItem(atPath: "/dev/console")[.ownerAccountName] as? String {
+                consoleUser = consoleOwner
+            }
+            let sudoersDir = "/etc/sudoers.d"
+            if !fm.fileExists(atPath: sudoersDir) {
+                try fm.createDirectory(atPath: sudoersDir, withIntermediateDirectories: true, attributes: nil)
+            }
+            let sudoersFile = "\(sudoersDir)/smchelper"
+            let sudoersContent = "\(consoleUser) ALL=(root) NOPASSWD: \(targetPath)\n"
+            try sudoersContent.write(toFile: sudoersFile, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o440], ofItemAtPath: sudoersFile)
+        } catch {}
+    }
+    
     private func initializeHardware() {
+        checkAndInstallHelperIfRoot()
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             // SMC init
             self.smc.doOpen()
@@ -5279,212 +6367,167 @@ struct DashboardView: View {
         
         let tm = TelemetryManager.shared
         
-        // Capture necessary State variables from the main thread
-        let currentFanCount = fanCount
-        let currentIsManualFan = isManualFan
-        let currentFanPreset = fanPreset
+        self.cpuTemp = tm.cpuTemp
+        self.gpuTemp = tm.gpuTemp
+        self.powerStats = tm.powerStats
+        self.cpuUsage = tm.cpuUsage
+        self.gpuUsage = tm.gpuUsage
         
-        let currentFanMinSpeed = fanMinSpeed
-        let currentFanMaxSpeed = fanMaxSpeed
-        let currentLastAppliedFanSpeed = lastAppliedFanSpeed
-        let currentLastHardwareSetSpeed = lastHardwareSetSpeed
+        if self.selectedTab == 0 {
+            self.activeProcesses = tm.activeProcesses
+        }
+        self.currentRAMUsagePercent = tm.ramUsage
         
-        let cCurveTemp1 = customCurveTemp1
-        let cCurveSpeed1 = customCurveSpeed1
-        let cCurveTemp2 = customCurveTemp2
-        let cCurveSpeed2 = customCurveSpeed2
-        let cCurveTemp3 = customCurveTemp3
-        let cCurveSpeed3 = customCurveSpeed3
-        let cCurveTemp4 = customCurveTemp4
-        let cCurveSpeed4 = customCurveSpeed4
+        self.diskReadSpeed = tm.diskReadSpeed
+        self.diskWriteSpeed = tm.diskWriteSpeed
+        self.diskReadHistory = tm.diskReadSpeed == 0.0 && self.diskReadHistory.isEmpty ? [] : self.diskReadHistory
         
-        let currentDisableKeyboardBacklightOnBattery = disableKeyboardBacklightOnBattery
+        // Keep the last 18 readings for disk speeds history
+        if tm.diskReadSpeed > 0.0 || !self.diskReadHistory.isEmpty {
+            self.diskReadHistory.append(tm.diskReadSpeed)
+            if self.diskReadHistory.count > 18 {
+                self.diskReadHistory.removeFirst()
+            }
+        }
+        if tm.diskWriteSpeed > 0.0 || !self.diskWriteHistory.isEmpty {
+            self.diskWriteHistory.append(tm.diskWriteSpeed)
+            if self.diskWriteHistory.count > 18 {
+                self.diskWriteHistory.removeFirst()
+            }
+        }
         
-        telemetryQueue.async {
-            let tempCpu = tm.cpuTemp
-            let tempGpu = tm.gpuTemp
+        if self.selectedTab == 2 {
+            let data = tm.ssdHealth
+            self.smartctlInstalled = data.smartctlInstalled
+            self.ssdModelName = data.modelName
+            self.ssdCapacity = data.capacity
+            self.ssdSmartStatus = data.smartStatus
             
-            // Custom fan curve temperature regulation evaluation
-            var nextTargetFanSpeeds: [Float] = []
-            var nextLastAppliedFanSpeed: [Float] = []
-            var nextLastHardwareSetSpeed: [Float] = []
+            self.ssdHealthPercent = data.healthPercent
+            self.ssdBytesWrittenTB = data.bytesWrittenTB
+            self.ssdBytesReadTB = data.bytesReadTB
             
-            if currentIsManualFan && currentFanPreset > 0 {
-                let currentTemp = max(tempCpu, tempGpu)
-                
-                var tmpLastApplied = currentLastAppliedFanSpeed
-                if tmpLastApplied.count < currentFanCount {
-                    tmpLastApplied = Array(repeating: 2000.0, count: currentFanCount)
-                }
-                var tmpLastHardware = currentLastHardwareSetSpeed
-                if tmpLastHardware.count < currentFanCount {
-                    tmpLastHardware = Array(repeating: 0.0, count: currentFanCount)
-                }
-                var tmpTarget = Array(repeating: Float(2000.0), count: currentFanCount)
-                
-                let calculatePct: (Float) -> Float = { temp in
-                    if currentFanPreset == 1 && temp > 85.0 {
-                        let startTemp: Float = 85.0
-                        let endTemp: Float = 92.0
-                        let ratio = min(max((temp - startTemp) / (endTemp - startTemp), 0.0), 1.0)
-                        return 55.0 + (100.0 - 55.0) * ratio
-                    }
-                    if temp <= cCurveTemp1 {
-                        return cCurveSpeed1
-                    } else if temp <= cCurveTemp2 {
-                        let gap = cCurveTemp2 - cCurveTemp1
-                        let ratio = gap > 0 ? (temp - cCurveTemp1) / gap : 0.0
-                        return cCurveSpeed1 + (cCurveSpeed2 - cCurveSpeed1) * ratio
-                    } else if temp <= cCurveTemp3 {
-                        let gap = cCurveTemp3 - cCurveTemp2
-                        let ratio = gap > 0 ? (temp - cCurveTemp2) / gap : 0.0
-                        return cCurveSpeed2 + (cCurveSpeed3 - cCurveSpeed2) * ratio
-                    } else if temp <= cCurveTemp4 {
-                        let gap = cCurveTemp4 - cCurveTemp3
-                        let ratio = gap > 0 ? (temp - cCurveTemp3) / gap : 0.0
-                        return cCurveSpeed3 + (cCurveSpeed4 - cCurveSpeed3) * ratio
-                    } else {
-                        return cCurveSpeed4
-                    }
-                }
-                
-                for i in 0..<currentFanCount {
-                    let minRPM = i < currentFanMinSpeed.count ? currentFanMinSpeed[i] : 1200
-                    let maxRPM = i < currentFanMaxSpeed.count ? currentFanMaxSpeed[i] : 6000
-                    
-                    let pct = calculatePct(currentTemp)
-                    let rawTargetSpeed = minRPM + (maxRPM - minRPM) * (pct / 100.0)
-                    
-                    let currentApplied = tmpLastApplied[safe: i] ?? rawTargetSpeed
-                    let diff = rawTargetSpeed - currentApplied
-                    
-                    let alpha: Float = diff > 0 ? 0.25 : 0.03
-                    let nextApplied = currentApplied + diff * alpha
-                    
-                    if i < tmpLastApplied.count {
-                        tmpLastApplied[i] = nextApplied
-                    }
-                    if i < tmpTarget.count {
-                        tmpTarget[i] = nextApplied
-                    }
-                    
-                    let lastSet = tmpLastHardware[safe: i] ?? 0.0
-                    let isAtEdge = (nextApplied >= maxRPM - 100.0 && lastSet < maxRPM - 100.0) || 
-                                   (nextApplied <= minRPM + 100.0 && lastSet > minRPM + 100.0)
-                    
-                    if abs(nextApplied - lastSet) >= 50.0 || isAtEdge {
-                        self.applyFanSpeed(nextApplied, forFan: i)
-                        if i < tmpLastHardware.count {
-                            tmpLastHardware[i] = nextApplied
-                        }
-                    }
-                }
-                nextTargetFanSpeeds = tmpTarget
-                nextLastAppliedFanSpeed = tmpLastApplied
-                nextLastHardwareSetSpeed = tmpLastHardware
+            if data.smartctlInstalled {
+                self.ssdPowerOnHours = data.powerOnHours
+                self.ssdUnsafeShutdowns = data.unsafeShutdowns
+                self.ssdMediaErrors = data.mediaErrors
+            }
+        }
+        
+        self.tempCpuPerf = tm.tempCpuPerf
+        self.tempCpuEff = tm.tempCpuEff
+        self.tempSSD = tm.tempSSD
+        self.tempWiFi = tm.tempWiFi
+        self.tempMemory = tm.tempMemory
+        self.tempPalmRest = tm.tempPalmRest
+        self.tempAirflow = tm.tempAirflow
+        
+        self.cpuVoltage = tm.cpuVoltage
+        self.gpuVoltage = tm.gpuVoltage
+        self.cpuPower = tm.cpuPower
+        self.gpuPower = tm.gpuPower
+        self.npuPower = tm.npuPower
+        self.npuUsage = tm.npuUsage
+        self.totalPower = tm.totalPower
+        
+        self.cpuFreqPerf = tm.cpuFreqPerf
+        self.cpuFreqEff = tm.cpuFreqEff
+        self.gpuFreq = tm.gpuFreq
+        self.ramFreq = tm.ramFreq
+        
+        for i in 0..<tm.fanSpeeds.count {
+            if i < self.fanSpeed.count {
+                self.fanSpeed[i] = tm.fanSpeeds[i]
+            }
+        }
+        
+        // Custom fan curve temperature regulation evaluation (Synchronous on Main thread!)
+        if isManualFan && fanPreset > 0 && fanPreset <= 4 {
+            let currentTemp = max(self.cpuTemp, self.gpuTemp)
+            
+            if lastAppliedFanSpeed.count < fanCount {
+                lastAppliedFanSpeed = Array(repeating: 2000.0, count: fanCount)
+            }
+            if lastHardwareSetSpeed.count < fanCount {
+                lastHardwareSetSpeed = Array(repeating: 0.0, count: fanCount)
             }
             
-            // Auto Dim Keyboard Backlight on Battery (CoreBrightness XPC in background)
-            var didAutoDimKeyboard = false
-            if currentDisableKeyboardBacklightOnBattery && !tm.powerStats.isConnected {
+            let calculatePct: (Float) -> Float = { temp in
+                if self.fanPreset == 1 && temp > 85.0 {
+                    let startTemp: Float = 85.0
+                    let endTemp: Float = 92.0
+                    let ratio = min(max((temp - startTemp) / (endTemp - startTemp), 0.0), 1.0)
+                    return 55.0 + (100.0 - 55.0) * ratio
+                }
+                if temp <= self.customCurveTemp1 {
+                    return self.customCurveSpeed1
+                } else if temp <= self.customCurveTemp2 {
+                    let gap = self.customCurveTemp2 - self.customCurveTemp1
+                    let ratio = gap > 0 ? (temp - self.customCurveTemp1) / gap : 0.0
+                    return self.customCurveSpeed1 + (self.customCurveSpeed2 - self.customCurveSpeed1) * ratio
+                } else if temp <= self.customCurveTemp3 {
+                    let gap = self.customCurveTemp3 - self.customCurveTemp2
+                    let ratio = gap > 0 ? (temp - self.customCurveTemp2) / gap : 0.0
+                    return self.customCurveSpeed2 + (self.customCurveSpeed3 - self.customCurveSpeed2) * ratio
+                } else if temp <= self.customCurveTemp4 {
+                    let gap = self.customCurveTemp4 - self.customCurveTemp3
+                    let ratio = gap > 0 ? (temp - self.customCurveTemp3) / gap : 0.0
+                    return self.customCurveSpeed3 + (self.customCurveSpeed4 - self.customCurveSpeed3) * ratio
+                } else {
+                    return self.customCurveSpeed4
+                }
+            }
+            
+            for i in 0..<fanCount {
+                let minRPM = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
+                let maxRPM = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
+                
+                let pct = calculatePct(currentTemp)
+                let rawTargetSpeed = minRPM + (maxRPM - minRPM) * (pct / 100.0)
+                
+                let currentApplied = lastAppliedFanSpeed[safe: i] ?? rawTargetSpeed
+                let diff = rawTargetSpeed - currentApplied
+                
+                let alpha: Float = diff > 0 ? 0.25 : 0.03
+                let nextApplied = currentApplied + diff * alpha
+                
+                if i < lastAppliedFanSpeed.count {
+                    lastAppliedFanSpeed[i] = nextApplied
+                }
+                if i < targetFanSpeed.count {
+                    targetFanSpeed[i] = nextApplied
+                }
+                
+                let lastSet = lastHardwareSetSpeed[safe: i] ?? 0.0
+                let isAtEdge = (nextApplied >= maxRPM - 100.0 && lastSet < maxRPM - 100.0) || 
+                               (nextApplied <= minRPM + 100.0 && lastSet > minRPM + 100.0)
+                
+                if abs(nextApplied - lastSet) >= 50.0 || isAtEdge {
+                    applyFanSpeed(nextApplied, forFan: i)
+                    if i < lastHardwareSetSpeed.count {
+                        lastHardwareSetSpeed[i] = nextApplied
+                    }
+                }
+            }
+        }
+        
+        // Dynamic Power/Battery Saving Alignments
+        self.applyDynamicPowerSavingSettings()
+        
+        // Auto Dim Keyboard Backlight on Battery (CoreBrightness XPC in background)
+        if disableKeyboardBacklightOnBattery && !tm.powerStats.isConnected {
+            DispatchQueue.global(qos: .utility).async {
                 let currentKB = KeyboardBacklightPrivate.getBrightness()
                 if currentKB > 0.0 {
                     let _ = KeyboardBacklightPrivate.setBrightness(0.0)
-                    didAutoDimKeyboard = true
-                }
-            }
-            
-            // Update UI State variables on Main thread
-            DispatchQueue.main.async {
-                self.cpuTemp = tm.cpuTemp
-                self.gpuTemp = tm.gpuTemp
-                self.powerStats = tm.powerStats
-                self.cpuUsage = tm.cpuUsage
-                self.gpuUsage = tm.gpuUsage
-                
-                if self.selectedTab == 0 {
-                    self.activeProcesses = tm.activeProcesses
-                }
-                self.currentRAMUsagePercent = tm.ramUsage
-                
-                self.diskReadSpeed = tm.diskReadSpeed
-                self.diskWriteSpeed = tm.diskWriteSpeed
-                self.diskReadHistory = tm.diskReadSpeed == 0.0 && self.diskReadHistory.isEmpty ? [] : self.diskReadHistory
-                
-                // Keep the last 18 readings for disk speeds history
-                if tm.diskReadSpeed > 0.0 || !self.diskReadHistory.isEmpty {
-                    self.diskReadHistory.append(tm.diskReadSpeed)
-                    if self.diskReadHistory.count > 18 {
-                        self.diskReadHistory.removeFirst()
+                    DispatchQueue.main.async {
+                        self.keyboardBrightness = 0.0
                     }
                 }
-                if tm.diskWriteSpeed > 0.0 || !self.diskWriteHistory.isEmpty {
-                    self.diskWriteHistory.append(tm.diskWriteSpeed)
-                    if self.diskWriteHistory.count > 18 {
-                        self.diskWriteHistory.removeFirst()
-                    }
-                }
-                
-                if self.selectedTab == 2 {
-                    let data = tm.ssdHealth
-                    self.smartctlInstalled = data.smartctlInstalled
-                    self.ssdModelName = data.modelName
-                    self.ssdCapacity = data.capacity
-                    self.ssdSmartStatus = data.smartStatus
-                    
-                    self.ssdHealthPercent = data.healthPercent
-                    self.ssdBytesWrittenTB = data.bytesWrittenTB
-                    self.ssdBytesReadTB = data.bytesReadTB
-                    
-                    if data.smartctlInstalled {
-                        self.ssdPowerOnHours = data.powerOnHours
-                        self.ssdUnsafeShutdowns = data.unsafeShutdowns
-                        self.ssdMediaErrors = data.mediaErrors
-                    }
-                }
-                
-                self.tempCpuPerf = tm.tempCpuPerf
-                self.tempCpuEff = tm.tempCpuEff
-                self.tempSSD = tm.tempSSD
-                self.tempWiFi = tm.tempWiFi
-                self.tempMemory = tm.tempMemory
-                self.tempPalmRest = tm.tempPalmRest
-                self.tempAirflow = tm.tempAirflow
-                
-                self.cpuVoltage = tm.cpuVoltage
-                self.gpuVoltage = tm.gpuVoltage
-                self.cpuPower = tm.cpuPower
-                self.gpuPower = tm.gpuPower
-                self.npuPower = tm.npuPower
-                self.npuUsage = tm.npuUsage
-                self.totalPower = tm.totalPower
-                
-                self.cpuFreqPerf = tm.cpuFreqPerf
-                self.cpuFreqEff = tm.cpuFreqEff
-                self.gpuFreq = tm.gpuFreq
-                
-                for i in 0..<tm.fanSpeeds.count {
-                    if i < self.fanSpeed.count {
-                        self.fanSpeed[i] = tm.fanSpeeds[i]
-                    }
-                }
-                
-                if !nextTargetFanSpeeds.isEmpty {
-                    self.targetFanSpeed = nextTargetFanSpeeds
-                    self.lastAppliedFanSpeed = nextLastAppliedFanSpeed
-                    self.lastHardwareSetSpeed = nextLastHardwareSetSpeed
-                }
-                
-                // Dynamic Power/Battery Saving Alignments
-                self.applyDynamicPowerSavingSettings()
-                
-                if didAutoDimKeyboard {
-                    self.keyboardBrightness = 0.0
-                }
-                
-                self.isRefreshing = false
             }
         }
+        
+        self.isRefreshing = false
     }
     
     private func getAmbientLightLux() -> Double? {
@@ -5597,32 +6640,47 @@ struct DashboardView: View {
                 loadCustomCurveSettings()
             }
             
-            // Instant hardware snap on preset switch to provide instant acoustic feedback
-            let currentTemp = max(cpuTemp, gpuTemp)
-            let rawPct = interpolateSpeedPercentage(temp: currentTemp)
-            for i in 0..<fanCount {
-                let minRPM = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
-                let maxRPM = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
-                let speed = minRPM + (maxRPM - minRPM) * (rawPct / 100.0)
-                
-                if i < lastAppliedFanSpeed.count {
-                    lastAppliedFanSpeed[i] = speed
+            if preset <= 4 {
+                // Instant hardware snap on preset switch to provide instant acoustic feedback
+                let currentTemp = max(cpuTemp, gpuTemp)
+                let rawPct = interpolateSpeedPercentage(temp: currentTemp)
+                for i in 0..<fanCount {
+                    let minRPM = i < fanMinSpeed.count ? fanMinSpeed[i] : 1200
+                    let maxRPM = i < fanMaxSpeed.count ? fanMaxSpeed[i] : 6000
+                    let speed = minRPM + (maxRPM - minRPM) * (rawPct / 100.0)
+                    
+                    if i < lastAppliedFanSpeed.count {
+                        lastAppliedFanSpeed[i] = speed
+                    }
+                    if i < targetFanSpeed.count {
+                        targetFanSpeed[i] = speed
+                    }
+                    
+                    applyFanSpeed(speed, forFan: i)
+                    
+                    if i < lastHardwareSetSpeed.count {
+                        lastHardwareSetSpeed[i] = speed
+                    }
                 }
-                if i < targetFanSpeed.count {
-                    targetFanSpeed[i] = speed
-                }
-                
-                applyFanSpeed(speed, forFan: i)
-                
-                if i < lastHardwareSetSpeed.count {
-                    lastHardwareSetSpeed[i] = speed
+            } else if preset == 5 { // Manual Fixed Speed
+                let targets = targetFanSpeed
+                let fc = fanCount > 0 ? fanCount : 2
+                for i in 0..<fc {
+                    let speed = targets[safe: i] ?? 2000.0
+                    applyFanSpeed(speed, forFan: i)
+                    if i < lastHardwareSetSpeed.count {
+                        lastHardwareSetSpeed[i] = speed
+                    }
+                    if i < lastAppliedFanSpeed.count {
+                        lastAppliedFanSpeed[i] = speed
+                    }
                 }
             }
         }
     }
     
     private func evaluateAndApplyFanCurve() {
-        guard isManualFan && fanPreset > 0 else { return }
+        guard isManualFan && fanPreset > 0 && fanPreset <= 4 else { return }
         
         let currentTemp = max(cpuTemp, gpuTemp)
         
@@ -5737,8 +6795,6 @@ struct DashboardView: View {
     }
     
     private func applyChargeLimit(_ limit: Int, enabled: Bool) {
-        let helperPath = smcHelperPath
-        
         // Optimistically update states & cache in UserDefaults immediately
         let defaults = UserDefaults.standard
         defaults.set(enabled, forKey: "cachedChargeLimitActive")
@@ -5750,9 +6806,15 @@ struct DashboardView: View {
         }
         
         // 1. Direct SMC attempt (in case of root privileges already present or running natively)
-        let _ = smc.setBatteryChargeLimit(limit, active: enabled)
+        if smc.setBatteryChargeLimit(limit, active: enabled) {
+            DispatchQueue.main.async {
+                self.showPrivilegeWarning = false
+            }
+            return
+        }
         
         // 2. Privilege-based execution (standard way via smchelper)
+        let helperPath = smcHelperPath
         let activeInt = enabled ? 1 : 0
         
         DispatchQueue.global(qos: .userInitiated).async {
@@ -6074,12 +7136,26 @@ struct DashboardView: View {
         }
     }
     
-    // forFan: -1 = all fans, 0/1 = specific fan index
     private func applyFanSpeed(_ speed: Float, forFan fanIndex: Int) {
-        let helperPath = smcHelperPath
         let fc = fanCount > 0 ? fanCount : 2  // fallback to 2 if not yet initialized
         let indices: [Int] = fanIndex == -1 ? Array(0..<fc) : [fanIndex]
         
+        // 1. Try direct SMC write first to bypass process spawning overhead (extremely fast, <1ms)
+        var allSucceeded = true
+        for i in indices {
+            if !self.smc.setFanSpeed(i, speed: speed) {
+                allSucceeded = false
+            }
+        }
+        if allSucceeded {
+            DispatchQueue.main.async {
+                self.showPrivilegeWarning = false
+            }
+            return
+        }
+        
+        // 2. Fallback to privileged helper tool via sudo
+        let helperPath = smcHelperPath
         DispatchQueue.global(qos: .userInitiated).async {
             for i in indices {
                 let proc = Process()
@@ -6165,7 +7241,7 @@ struct DashboardView: View {
                     .font(.system(size: 14))
                 Text(t("system_telemetry"))
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.white.opacity(0.95))
+                    .foregroundColor(.themeText)
                 
                 Spacer()
                 
@@ -6181,14 +7257,15 @@ struct DashboardView: View {
                         Text(showSiliconDieView ? (currentLanguage == "zh-Hans" ? "列表视图" : "Classic List") : (currentLanguage == "zh-Hans" ? "晶圆透视" : "SoC Die View"))
                             .font(.system(size: 8, weight: .bold))
                     }
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.04))
-                    .cornerRadius(6)
+                    .background(Color.themeCardBg)
+.cornerRadius(6)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+                            .stroke(Color.themeBorder, lineWidth: 0.5)
                     )
                 }
                 .buttonStyle(.plain)
@@ -6269,14 +7346,15 @@ struct DashboardView: View {
                             .foregroundColor(Color(red: 0.85, green: 0.30, blue: 0.45))
                         Text(t("temp_section"))
                             .font(.system(size: 11.5, weight: .bold))
-                            .foregroundColor(.white.opacity(0.85))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                     }
                 }
-                .accentColor(.white.opacity(0.5))
+                .accentColor(.themeTextSecondary)
                 .padding(8)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .focusable(false)
                 
                 // 2. Power & Voltages Accordion
@@ -6300,14 +7378,15 @@ struct DashboardView: View {
                             .foregroundColor(Color(red: 0.95, green: 0.60, blue: 0.18))
                         Text(t("power_voltage_section"))
                             .font(.system(size: 11.5, weight: .bold))
-                            .foregroundColor(.white.opacity(0.85))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                     }
                 }
-                .accentColor(.white.opacity(0.5))
+                .accentColor(.themeTextSecondary)
                 .padding(8)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .focusable(false)
                 
                 // 3. Fans Accordion
@@ -6331,7 +7410,7 @@ struct DashboardView: View {
                         } else {
                             Text(t("fanless_desc"))
                                 .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.themeTextTertiary)
                                 .padding(.vertical, 6)
                         }
                     }
@@ -6342,22 +7421,80 @@ struct DashboardView: View {
                             .foregroundColor(Color(red: 0.18, green: 0.62, blue: 0.95))
                         Text(t("fan_section_title"))
                             .font(.system(size: 11.5, weight: .bold))
-                            .foregroundColor(.white.opacity(0.85))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                     }
                 }
-                .accentColor(.white.opacity(0.5))
+                .accentColor(.themeTextSecondary)
                 .padding(8)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .focusable(false)
                 
                 // 4. Frequencies Accordion
                 DisclosureGroup(isExpanded: $isFreqExpanded) {
-                    VStack(spacing: 4) {
+                    VStack(spacing: 6) {
                         TelemetryRow(icon: "speedometer", iconColor: Color(red: 0.62, green: 0.32, blue: 0.88), label: t("cpu_freq_perf"), value: String(format: "%.2f GHz", cpuFreqPerf))
                         TelemetryRow(icon: "speedometer", iconColor: Color(red: 0.82, green: 0.52, blue: 0.98), label: t("cpu_freq_eff"), value: String(format: "%.2f GHz", cpuFreqEff))
                         TelemetryRow(icon: "speedometer", iconColor: Color(red: 0.22, green: 0.80, blue: 0.45), label: t("gpu_freq_label"), value: String(format: "%.2f GHz", gpuFreq))
+                        TelemetryRow(icon: "memorychip", iconColor: Color.blue, label: "内存 (RAM) 频率", value: String(format: "%.0f MHz", ramFreq))
+                        
+                        Divider().background(Color.themeDivider).padding(.vertical, 4)
+                        
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("处理器与内存调频控制")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.themeTextSecondary)
+                                Spacer()
+                                if isTuningFrequency {
+                                    HStack(spacing: 3) {
+                                        ProgressView().controlSize(.small).scaleEffect(0.5).frame(width: 10, height: 10)
+                                        Text("内核同步中...")
+                                            .font(.system(size: 8))
+                                            .foregroundColor(.cyan)
+                                    }
+                                }
+                            }
+                            
+                            // CPU limit slider
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text("CPU 频率限制: \(Int(cpuFreqLimit))%")
+                                        .font(.system(size: 9.5))
+                                        .foregroundColor(.themeText)
+                                    Spacer()
+                                }
+                                Slider(value: $cpuFreqLimit, in: 10...100, step: 5, onEditingChanged: { editing in
+                                    if !editing {
+                                        applyCpuFrequencyLimit(percent: cpuFreqLimit)
+                                    }
+                                })
+                                .accentColor(.purple)
+                            }
+                            
+                            // RAM profile picker
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("内存频率档位:")
+                                    .font(.system(size: 9.5))
+                                    .foregroundColor(.themeText)
+                                Picker("", selection: $ramFreqProfile) {
+                                    Text("自动").tag(0)
+                                    Text("6400M").tag(1)
+                                    Text("5500M").tag(2)
+                                    Text("4266M").tag(3)
+                                    Text("3200M").tag(4)
+                                }
+                                .pickerStyle(SegmentedPickerStyle())
+                                .onChange(of: ramFreqProfile) { newValue in
+                                    applyRamFrequencyProfile(profile: newValue)
+                                }
+                            }
+                        }
+                        .padding(6)
+                        .background(Color.black.opacity(0.2))
+                        .cornerRadius(6)
                     }
                     .padding(.top, 4)
                 } label: {
@@ -6366,14 +7503,15 @@ struct DashboardView: View {
                             .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
                         Text(t("freq_section"))
                             .font(.system(size: 11.5, weight: .bold))
-                            .foregroundColor(.white.opacity(0.85))
+                            .foregroundColor(.themeTextSecondary)
                         Spacer()
                     }
                 }
-                .accentColor(.white.opacity(0.5))
+                .accentColor(.themeTextSecondary)
                 .padding(8)
-                .background(Color.white.opacity(0.02))
-                .cornerRadius(10)
+                .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .focusable(false)
             }
         }
@@ -6454,31 +7592,31 @@ struct LaptopSchematicView: View {
                 // Keyboard Deck Representation
                 ZStack {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.04))
+                        .fill(Color.themeCardBg)
                         .frame(width: 140, height: 85)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 1.5)
+                                .stroke(Color.themeBorder, lineWidth: 1.5)
                         )
                     
                     VStack(spacing: 3) {
                         RoundedRectangle(cornerRadius: 1)
-                            .fill(Color.white.opacity(0.08))
+                            .fill(Color.themeBorder)
                             .frame(width: 114, height: 6)
                         
                         RoundedRectangle(cornerRadius: 1.5)
-                            .fill(Color.white.opacity(0.1))
+                            .fill(Color.themeBorder)
                             .frame(width: 114, height: 32)
                         
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.white.opacity(0.14))
+                            .fill(Color.themeText.opacity(0.14))
                             .frame(width: 34, height: 20) // Trackpad
                     }
                     
                     VStack {
                         Spacer()
                         RoundedRectangle(cornerRadius: 1.5)
-                            .fill(Color.white.opacity(0.18))
+                            .fill(Color.themeText.opacity(0.18))
                             .frame(width: 36, height: 1.5)
                     }
                 }
@@ -6495,23 +7633,23 @@ struct LaptopSchematicView: View {
                         // Physically adapted HDMI Port outline
                         VStack(spacing: 3) {
                             HDMIShape()
-                                .stroke(Color.white.opacity(0.18), lineWidth: 1.2)
+                                .stroke(Color.themeText.opacity(0.18), lineWidth: 1.2)
                                 .frame(width: 13, height: 7)
                                 .background(HDMIShape().fill(Color.black.opacity(0.3)))
                             Text("HDMI")
                                 .font(.system(size: 7, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.25))
+                                .foregroundColor(.themeTextTertiary)
                         }
                         .frame(width: 24, height: 26)
                     } else {
                         // Fanless / MBA profile: no right ports, only AUX
                         VStack(spacing: 2) {
                             Circle()
-                                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                                .stroke(Color.themeBorder, lineWidth: 1)
                                 .frame(width: 6, height: 6)
                             Text("AUX")
                                 .font(.system(size: 7, weight: .bold))
-                                .foregroundColor(.white.opacity(0.3))
+                                .foregroundColor(.themeTextTertiary)
                         }
                         .frame(width: 24, height: 26)
                     }
@@ -6546,14 +7684,14 @@ struct LaptopSchematicView: View {
             } else {
                 Text(t("no_adapter"))
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             
             // External USB Storage Devices section
             let storageDevices = usbStorageDevices.filter { $0.isStorage }
             if !storageDevices.isEmpty {
                 Divider()
-                    .background(Color.white.opacity(0.08))
+                    .background(Color.themeBorder)
                     .padding(.vertical, 4)
                 
                 VStack(alignment: .leading, spacing: 6) {
@@ -6563,7 +7701,7 @@ struct LaptopSchematicView: View {
                             .foregroundColor(.cyan)
                         Text(currentLanguage == "zh-Hans" ? "外接存储设备诊断：" : "External Storage Diagnostics:")
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundColor(.themeTextSecondary)
                     }
                     
                     ForEach(storageDevices) { dev in
@@ -6571,7 +7709,7 @@ struct LaptopSchematicView: View {
                             HStack(spacing: 4) {
                                 Text(dev.name)
                                     .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.85))
+                                    .foregroundColor(.themeTextSecondary)
                                     .lineLimit(1)
                                 
                                 Spacer()
@@ -6590,7 +7728,7 @@ struct LaptopSchematicView: View {
                             HStack(spacing: 8) {
                                 Text(dev.speed)
                                     .font(.system(size: 8.5))
-                                    .foregroundColor(.white.opacity(0.45))
+                                    .foregroundColor(.themeTextTertiary)
                                 
                                 Spacer()
                                 
@@ -6601,19 +7739,21 @@ struct LaptopSchematicView: View {
                             }
                         }
                         .padding(6)
-                        .background(Color.white.opacity(0.03))
-                        .cornerRadius(6)
+                        .background(Color.themeCardBg)
+.cornerRadius(6)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     }
                 }
             }
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .background(Color.white.opacity(0.02))
-        .cornerRadius(12)
+        .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(Color.themeDivider, lineWidth: 1)
         )
     }
     
@@ -6623,11 +7763,11 @@ struct LaptopSchematicView: View {
                 indicatorDot(isActive: isActive)
                 Text(label)
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(isActive ? Color(red: 0.22, green: 0.80, blue: 0.45) : .white.opacity(0.3))
+                    .foregroundColor(isActive ? Color(red: 0.22, green: 0.80, blue: 0.45) : .themeTextTertiary)
             } else {
                 Text(label)
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(isActive ? Color(red: 0.22, green: 0.80, blue: 0.45) : .white.opacity(0.3))
+                    .foregroundColor(isActive ? Color(red: 0.22, green: 0.80, blue: 0.45) : .themeTextTertiary)
                 indicatorDot(isActive: isActive)
             }
         }
@@ -6636,7 +7776,7 @@ struct LaptopSchematicView: View {
     private func indicatorDot(isActive: Bool) -> some View {
         ZStack {
             Circle()
-                .fill(isActive ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color.white.opacity(0.12))
+                .fill(isActive ? Color(red: 0.22, green: 0.80, blue: 0.45) : Color.themeBorder)
                 .frame(width: 7, height: 7)
             
             if isActive {
@@ -6781,26 +7921,27 @@ struct RingGauge: View {
                 VStack(spacing: 1) {
                     Text(title)
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                     
                     Text(valueText)
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white.opacity(0.95))
+                        .foregroundColor(.themeText)
                     
                     Text(subValueText)
                         .font(.system(size: 7.5, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                         .lineLimit(1)
                 }
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.02))
-        .cornerRadius(12)
+        .background(Color.themeCardBg)
+.cornerRadius(12)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                .stroke(Color.themeDivider, lineWidth: 1)
         )
     }
 }
@@ -6828,13 +7969,13 @@ struct TelemetryRow: View {
             
             Text(label)
                 .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.7))
+                .foregroundColor(.themeTextSecondary)
             
             Spacer()
             
             Text(value)
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.white.opacity(0.95))
+                .foregroundColor(.themeText)
             
             if let badgeColor = badgeColor {
                 Circle()
@@ -6846,7 +7987,7 @@ struct TelemetryRow: View {
         }
         .padding(.vertical, 3.5)
         .padding(.horizontal, 6)
-        .background(Color.white.opacity(0.015))
+        .background(Color.themeText.opacity(0.015))
         .cornerRadius(6)
     }
 }
@@ -6964,36 +8105,36 @@ struct PrivacySwitchCard: View {
                 HStack {
                     ZStack {
                         Circle()
-                            .fill(isEnabled ? color.opacity(0.15) : Color.white.opacity(0.05))
+                            .fill(isEnabled ? color.opacity(0.15) : Color.themeDivider)
                             .frame(width: 24, height: 24)
                         
                         Image(systemName: icon)
                             .font(.system(size: 11))
-                            .foregroundColor(isEnabled ? color : .white.opacity(0.4))
+                            .foregroundColor(isEnabled ? color : .themeTextTertiary)
                     }
                     
                     Spacer()
                     
                     Circle()
-                        .fill(isEnabled ? Color.green : Color.white.opacity(0.2))
+                        .fill(isEnabled ? Color.green : .themeTextTertiary)
                         .frame(width: 6, height: 6)
                 }
                 
                 Text(title)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                 
                 Text(subtitle)
                     .font(.system(size: 8))
-                    .foregroundColor(.white.opacity(isEnabled ? 0.6 : 0.3))
+                    .foregroundColor(isEnabled ? .themeTextSecondary : .themeTextTertiary)
                     .lineLimit(1)
             }
             .padding(10)
-            .background(isEnabled ? Color.white.opacity(0.04) : Color.white.opacity(0.02))
+            .background(isEnabled ? Color.themeCardBg : Color.themeCardBg)
             .cornerRadius(10)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(isEnabled ? color.opacity(0.4) : Color.white.opacity(0.05), lineWidth: 1)
+                    .stroke(isEnabled ? color.opacity(0.4) : Color.themeDivider, lineWidth: 1)
             )
             .shadow(color: isEnabled ? color.opacity(0.1) : Color.clear, radius: 4)
         }
@@ -7042,7 +8183,7 @@ struct SiliconDieView: View {
             HStack {
                 Text(currentLanguage == "zh-Hans" ? "STATUS CTRL 极客晶圆架构图" : "STATUS CTRL GEEK SILICON DIE")
                     .font(.system(size: 8, weight: .black, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.35))
+                    .foregroundColor(.themeTextTertiary)
                 Spacer()
                 HStack(spacing: 4) {
                     Circle()
@@ -7130,13 +8271,13 @@ struct SiliconDieView: View {
             ZStack {
                 Color.black.opacity(0.3)
                 CircuitPattern()
-                    .stroke(Color.white.opacity(0.015), lineWidth: 1)
+                    .stroke(Color.themeText.opacity(0.015), lineWidth: 1)
             }
         )
         .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(Color.themeBorder, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.3), radius: 8, y: 4)
         .onAppear {
@@ -7167,11 +8308,11 @@ struct DieBlock: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(subtitle)
                 .font(.system(size: 6, weight: .black, design: .monospaced))
-                .foregroundColor(.white.opacity(0.25))
+                .foregroundColor(.themeTextTertiary)
             
             Text(title)
                 .font(.system(size: 9, weight: .bold))
-                .foregroundColor(.white.opacity(0.85))
+                .foregroundColor(.themeTextSecondary)
                 .lineLimit(1)
             
             Spacer()
@@ -7195,11 +8336,11 @@ struct DieBlock: View {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(String(format: "%.0f%%", usage))
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(.themeTextSecondary)
                         
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 1)
-                                .fill(Color.white.opacity(0.1))
+                                .fill(Color.themeBorder)
                                 .frame(width: 24, height: 1.5)
                             RoundedRectangle(cornerRadius: 1)
                                 .fill(heatColor)
@@ -7213,7 +8354,7 @@ struct DieBlock: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             ZStack {
-                Color.white.opacity(0.015)
+                Color.themeText.opacity(0.015)
                 CorePattern()
                     .stroke(heatColor.opacity(0.025), lineWidth: 0.5)
             }
@@ -7406,10 +8547,10 @@ struct DiskSpeedChartView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("实时磁盘吞吐速率 (I/O)")
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.white.opacity(0.85))
+                        .foregroundColor(.themeTextSecondary)
                     Text("直读 macOS 底层 IOKit Block Storage 物理统计，真实反映硬盘吞吐量")
                         .font(.system(size: 9.5))
-                        .foregroundColor(.white.opacity(0.45))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 Spacer()
                 
@@ -7447,7 +8588,7 @@ struct DiskSpeedChartView: View {
                                 path.move(to: CGPoint(x: 0, y: 0))
                                 path.addLine(to: CGPoint(x: width, y: 0))
                             }
-                            .stroke(Color.white.opacity(0.04), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .stroke(Color.themeCardBg, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                         }
                     }
                     
@@ -7473,9 +8614,10 @@ struct DiskSpeedChartView: View {
             .cornerRadius(8)
         }
         .padding(14)
-        .background(Color.white.opacity(0.03))
-        .cornerRadius(14)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.05), lineWidth: 1))
+        .background(Color.themeCardBg)
+.cornerRadius(14)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
     }
     
     private func chartPath(history: [Double], width: CGFloat, height: CGFloat, maxVal: Double) -> Path {
@@ -7500,6 +8642,102 @@ struct DiskSpeedChartView: View {
     }
 }
 
+struct LargeFileRowView: View {
+    let item: MemoryPurger.LargeFileItem
+    @Binding var selectedLargeFilePaths: Set<String>
+    
+    var fileIcon: String {
+        switch item.typeLabel {
+        case "视频": return "video.fill"
+        case "音频": return "music.note"
+        case "压缩包": return "doc.zip.fill"
+        case "程序/镜像": return "app.gift.fill"
+        case "文档": return "doc.text.fill"
+        case "图片/设计": return "photo.fill"
+        default: return "doc.fill"
+        }
+    }
+    
+    var iconColor: Color {
+        switch item.typeLabel {
+        case "视频": return .red
+        case "音频": return .pink
+        case "压缩包": return .orange
+        case "程序/镜像": return .purple
+        case "文档": return .blue
+        case "图片/设计": return .green
+        default: return .gray
+        }
+    }
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: {
+                if selectedLargeFilePaths.contains(item.path) {
+                    selectedLargeFilePaths.remove(item.path)
+                } else {
+                    selectedLargeFilePaths.insert(item.path)
+                }
+            }) {
+                Image(systemName: selectedLargeFilePaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(selectedLargeFilePaths.contains(item.path) ? .cyan : .themeTextTertiary)
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            
+            Image(systemName: fileIcon)
+                .font(.system(size: 14))
+                .foregroundColor(iconColor)
+                .frame(width: 20)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.name)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.themeText)
+                    .lineLimit(1)
+                
+                Text(item.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.themeTextTertiary)
+                    .lineLimit(1)
+            }
+            
+            Spacer()
+            
+            // Type Badge
+            Text(item.typeLabel)
+                .font(.system(size: 8, weight: .bold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(iconColor.opacity(0.15))
+                .foregroundColor(iconColor)
+                .cornerRadius(4)
+            
+            // Size Badge
+            Text(item.sizeString)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.orange)
+                .frame(width: 60, alignment: .trailing)
+            
+            // Reveal in Finder Button
+            Button(action: {
+                let url = URL(fileURLWithPath: item.path)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }) {
+                Image(systemName: "arrow.right.circle.fill")
+                    .foregroundColor(.cyan.opacity(0.8))
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help("在 Finder 中显示该文件")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.themeText.opacity(0.015))
+        .cornerRadius(8)
+    }
+}
+
 // ── Duplicate Files Group Card Subview (v1.9.0) ──
 struct DuplicateGroupCardView: View {
     let group: MemoryPurger.DuplicateFileGroup
@@ -7513,7 +8751,7 @@ struct DuplicateGroupCardView: View {
                     .foregroundColor(.purple)
                 Text(group.files.first?.lastPathComponent ?? "未知文件")
                     .font(.system(size: 11.5, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .lineLimit(1)
                 Spacer()
                 Text("大小: \(group.sizeString)")
@@ -7521,12 +8759,12 @@ struct DuplicateGroupCardView: View {
                     .foregroundColor(.orange)
                 Text("(\(group.files.count)个副本)")
                     .font(.system(size: 9.5))
-                    .foregroundColor(.white.opacity(0.5))
+                    .foregroundColor(.themeTextSecondary)
             }
             .padding(.horizontal, 8)
             .padding(.top, 6)
             
-            Divider().background(Color.white.opacity(0.04))
+            Divider().background(Color.themeCardBg)
             
             VStack(spacing: 4) {
                 ForEach(group.files, id: \.self) { url in
@@ -7539,14 +8777,14 @@ struct DuplicateGroupCardView: View {
                             }
                         }) {
                             Image(systemName: selectedDuplicateFiles.contains(url) ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(selectedDuplicateFiles.contains(url) ? .purple : .white.opacity(0.3))
+                                .foregroundColor(selectedDuplicateFiles.contains(url) ? .purple : .themeTextTertiary)
                                 .font(.system(size: 12))
                         }
                         .buttonStyle(.plain)
                         
                         Text(url.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                             .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.45))
+                            .foregroundColor(.themeTextTertiary)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         
@@ -7562,15 +8800,15 @@ struct DuplicateGroupCardView: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Color.white.opacity(0.005))
+                    .background(Color.themeText.opacity(0.005))
                     .cornerRadius(4)
                 }
             }
             .padding(.bottom, 6)
         }
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(10)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.04), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeCardBg, lineWidth: 1))
     }
 }
 
@@ -7589,7 +8827,7 @@ struct TrashItemRowView: View {
                 }
             }) {
                 Image(systemName: selectedTrashIds.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(selectedTrashIds.contains(item.id) ? .cyan : .white.opacity(0.3))
+                    .foregroundColor(selectedTrashIds.contains(item.id) ? .cyan : .themeTextTertiary)
                     .font(.system(size: 14))
             }
             .buttonStyle(.plain)
@@ -7598,7 +8836,7 @@ struct TrashItemRowView: View {
                 HStack(spacing: 6) {
                     Text(item.name)
                         .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                     
                     Text(item.typeLabel)
                         .font(.system(size: 9))
@@ -7610,7 +8848,7 @@ struct TrashItemRowView: View {
                 }
                 Text(item.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
                     .font(.system(size: 9.5))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
                     .lineLimit(1)
             }
             Spacer()
@@ -7620,9 +8858,9 @@ struct TrashItemRowView: View {
                 .foregroundColor(.orange)
         }
         .padding(8)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(8)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.03), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.themeCardBg, lineWidth: 1))
     }
 }
 
@@ -7634,19 +8872,22 @@ struct CheckboxToggleStyle: ToggleStyle {
         }) {
             HStack(spacing: 8) {
                 Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
-                    .foregroundColor(configuration.isOn ? .cyan : .white.opacity(0.3))
+                    .foregroundColor(configuration.isOn ? .cyan : .themeTextTertiary)
                     .font(.system(size: 13))
                 configuration.label
-                    .foregroundColor(.white.opacity(configuration.isOn ? 0.9 : 0.5))
+                    .foregroundColor(configuration.isOn ? .themeText : .themeTextSecondary)
             }
         }
         .buttonStyle(.plain)
     }
 }
 
-// ── WiFi & Network Data Models and Service Managers ──
 struct WiFiNetworkInfo: Identifiable {
-    let id = UUID()
+    var id: UUID {
+        let clean = bssid.replacingOccurrences(of: ":", with: "").uppercased()
+        let padded = "00000000-0000-0000-0000-" + clean.padding(toLength: 12, withPad: "0", startingAt: 0)
+        return UUID(uuidString: padded) ?? UUID()
+    }
     let ssid: String
     let bssid: String
     let rssi: Int
@@ -7679,7 +8920,7 @@ class WiFiScanner: ObservableObject {
                 }
             }
             
-            let client = CWWiFiClient.shared()
+            let client = CWWiFiClient()
             guard let interface = client.interface() else {
                 return
             }
@@ -7747,7 +8988,7 @@ class WiFiScanner: ObservableObject {
         return "隐藏信号 (已识别: \(namePool[index]))"
     }
     
-    private func generateMockScanResults() -> [WiFiNetworkInfo] {
+    func generateMockScanResults() -> [WiFiNetworkInfo] {
         return [
             WiFiNetworkInfo(ssid: "ChinaNet-5G-Home", bssid: "E8:4D:D0:A2:3B:11", rssi: -42, channel: 149, band: "5 GHz", phyMode: "Wi-Fi 6 (802.11ax)", distanceMeters: 0.8, distanceLabel: "极近范围"),
             WiFiNetworkInfo(ssid: "隐藏信号 (已识别: HL_Studio_Backup)", bssid: "04:95:E6:12:4D:D9", rssi: -49, channel: 1, band: "2.4 GHz", phyMode: "Wi-Fi 4 (802.11n)", distanceMeters: 1.2, distanceLabel: "极近范围"),
@@ -8078,11 +9319,11 @@ struct ProcessTrafficRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(proc.name)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .lineLimit(1)
                 Text("PID: \(proc.pid)")
                     .font(.system(size: 8, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.35))
+                    .foregroundColor(.themeTextTertiary)
             }
             .frame(width: 90, alignment: .leading)
             
@@ -8117,18 +9358,20 @@ struct ProcessTrafficRowView: View {
             // Col 4: Total Traffic Accumulated
             Text(proc.totalTraffic)
                 .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.55))
+                .foregroundColor(.themeTextSecondary)
                 .frame(width: 55, alignment: .trailing)
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(Color.white.opacity(0.015))
+        .background(Color.themeText.opacity(0.015))
         .cornerRadius(6)
     }
 }
 
 struct WiFiDetailView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
     let net: WiFiNetworkInfo
+    var onStartTracking: (() -> Void)? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -8140,25 +9383,25 @@ struct WiFiDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(net.ssid.isEmpty ? "隐藏信号 AP" : net.ssid)
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                     Text("BSSID / MAC: \(net.bssid)")
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                 }
             }
             
-            Divider().background(Color.white.opacity(0.12))
+            Divider().background(Color.themeBorder)
             
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     HStack(spacing: 4) {
-                        Text("物理信道:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("物理信道:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text("\(net.channel)").font(.system(size: 11, weight: .semibold)).foregroundColor(.cyan)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     
                     HStack(spacing: 4) {
-                        Text("频段:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("频段:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text(net.band).font(.system(size: 11, weight: .semibold)).foregroundColor(.cyan)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -8166,13 +9409,13 @@ struct WiFiDetailView: View {
                 
                 HStack {
                     HStack(spacing: 4) {
-                        Text("协议制式:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("协议制式:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text(net.phyMode).font(.system(size: 11, weight: .semibold)).foregroundColor(.cyan)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     
                     HStack(spacing: 4) {
-                        Text("信号强度:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("信号强度:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text("\(net.rssi) dBm").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.green)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -8180,14 +9423,14 @@ struct WiFiDetailView: View {
                 
                 HStack {
                     HStack(spacing: 4) {
-                        Text("估算距离:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("估算距离:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text(String(format: "%.2f 米", net.distanceMeters)).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     
                     HStack(spacing: 4) {
-                        Text("定位范围:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
-                        Text(net.distanceLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.8))
+                        Text("定位范围:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
+                        Text(net.distanceLabel).font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -8195,10 +9438,10 @@ struct WiFiDetailView: View {
             
             // Signal Quality bar
             VStack(alignment: .leading, spacing: 4) {
-                Text("物理电磁信号衰减与抗干扰强度:").font(.system(size: 9.5)).foregroundColor(.white.opacity(0.4))
+                Text("物理电磁信号衰减与抗干扰强度:").font(.system(size: 9.5)).foregroundColor(.themeTextTertiary)
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.06)).frame(height: 6)
+                        Capsule().fill(Color.themeDivider).frame(height: 6)
                         let progress = min(1.0, max(0.0, Double(net.rssi + 100) / 75.0))
                         Capsule()
                             .fill(LinearGradient(colors: [.red, .yellow, .green], startPoint: .leading, endPoint: .trailing))
@@ -8208,18 +9451,41 @@ struct WiFiDetailView: View {
                 .frame(height: 6)
             }
             .padding(.top, 4)
+            
+            if let onStartTracking = onStartTracking {
+                Button(action: onStartTracking) {
+                    HStack {
+                        Image(systemName: "target")
+                        Text("🎯 启动物理追踪")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundColor(.themeText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(Color.cyan.opacity(0.2))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.cyan.opacity(0.5), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8)
+            }
         }
         .padding(16)
         .frame(width: 320)
         .background(
-            Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.95)
+            Color.themeBg.opacity(0.95)
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
     }
 }
 
 struct BluetoothDetailView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
     let dev: BluetoothDeviceInfo
+    var onStartTracking: (() -> Void)? = nil
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -8231,39 +9497,39 @@ struct BluetoothDetailView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(dev.name.isEmpty ? "未命名 BLE 终端" : dev.name)
                         .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                     Text("硬件 UUID: \(dev.peripheralId)")
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                 }
             }
             
-            Divider().background(Color.white.opacity(0.12))
+            Divider().background(Color.themeBorder)
             
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     HStack(spacing: 4) {
-                        Text("信号强度:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("信号强度:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text("\(dev.rssi) dBm").font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.green)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     
                     HStack(spacing: 4) {
-                        Text("定位范围:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
-                        Text(dev.distanceLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.8))
+                        Text("定位范围:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
+                        Text(dev.distanceLabel).font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 
                 HStack {
                     HStack(spacing: 4) {
-                        Text("相对测距:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("相对测距:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         Text(String(format: "%.2f 米", dev.distanceMeters)).font(.system(size: 11, weight: .bold, design: .monospaced)).foregroundColor(.yellow)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     
                     HStack(spacing: 4) {
-                        Text("最后响应:").font(.system(size: 11)).foregroundColor(.white.opacity(0.5))
+                        Text("最后响应:").font(.system(size: 11)).foregroundColor(.themeTextSecondary)
                         let timeStr = DateFormatter.localizedString(from: dev.lastSeen, dateStyle: .none, timeStyle: .medium)
                         Text(timeStr).font(.system(size: 11, design: .monospaced)).foregroundColor(.purple)
                     }
@@ -8273,10 +9539,10 @@ struct BluetoothDetailView: View {
             
             // RSSI visual bar
             VStack(alignment: .leading, spacing: 4) {
-                Text("低功耗蓝牙广播功率衰变 (RSSI) 测温:").font(.system(size: 9.5)).foregroundColor(.white.opacity(0.4))
+                Text("低功耗蓝牙广播功率衰变 (RSSI) 测温:").font(.system(size: 9.5)).foregroundColor(.themeTextTertiary)
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.06)).frame(height: 6)
+                        Capsule().fill(Color.themeDivider).frame(height: 6)
                         let progress = min(1.0, max(0.0, Double(dev.rssi + 100) / 75.0))
                         Capsule()
                             .fill(LinearGradient(colors: [.purple, .indigo, .cyan], startPoint: .leading, endPoint: .trailing))
@@ -8286,13 +9552,34 @@ struct BluetoothDetailView: View {
                 .frame(height: 6)
             }
             .padding(.top, 4)
+            
+            if let onStartTracking = onStartTracking {
+                Button(action: onStartTracking) {
+                    HStack {
+                        Image(systemName: "target")
+                        Text("🎯 启动物理追踪")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundColor(.themeText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(Color.purple.opacity(0.2))
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.purple.opacity(0.5), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8)
+            }
         }
         .padding(16)
         .frame(width: 320)
         .background(
-            Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.95)
+            Color.themeBg.opacity(0.95)
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
     }
 }
 
@@ -8357,7 +9644,39 @@ struct WiFiRadarChartNodeView: View {
                     .scaleEffect(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 1.6 : 0.8))
                     .opacity(hoveredWiFiId == net.id ? 1.0 : (isAnimating ? 0.0 : 1.0))
             }
+            
+            if hoveredWiFiId == net.id {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "wifi")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(nodeColor)
+                        Text(net.ssid.isEmpty ? "隐藏热点" : net.ssid)
+                            .font(.system(size: 9, weight: .bold))
+                            .lineLimit(1)
+                            .foregroundColor(.white)
+                    }
+                    Text("\(String(format: "%.1fm", net.distanceMeters)) (\(net.distanceLabel)) | \(net.rssi) dBm")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(red: 0.08, green: 0.1, blue: 0.13).opacity(0.92))
+                        .shadow(color: Color.black.opacity(0.35), radius: 3, x: 0, y: 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                )
+                .frame(maxWidth: 150)
+                .fixedSize(horizontal: false, vertical: true)
+                .offset(y: y >= 0 ? -30 : 30)
+            }
         }
+        .zIndex(hoveredWiFiId == net.id ? 100 : 1)
         .offset(x: x, y: y)
         .contentShape(Circle())
         .onHover { isHovered in
@@ -8444,7 +9763,7 @@ struct WiFiDistanceRadarChartNodeView: View {
                 VStack(spacing: 1) {
                     Text(net.ssid.prefix(5) + (net.ssid.count > 5 ? ".." : ""))
                         .font(.system(size: 6, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                     Text(String(format: "%.1fm", safeDistance))
                         .font(.system(size: 6, weight: .bold, design: .monospaced))
                         .foregroundColor(nodeColor)
@@ -8455,7 +9774,39 @@ struct WiFiDistanceRadarChartNodeView: View {
                         .overlay(RoundedRectangle(cornerRadius: 3).stroke(nodeColor.opacity(0.4), lineWidth: 0.5))
                 }
                 .offset(y: y >= 0 ? 14 : -14)
+                
+                if hoveredWiFiId == net.id {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "wifi")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(nodeColor)
+                            Text(net.ssid.isEmpty ? "隐藏热点" : net.ssid)
+                                .font(.system(size: 9, weight: .bold))
+                                .lineLimit(1)
+                                .foregroundColor(.white)
+                        }
+                        Text("\(String(format: "%.1fm", net.distanceMeters)) (\(net.distanceLabel)) | \(net.rssi) dBm")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color(red: 0.08, green: 0.1, blue: 0.13).opacity(0.92))
+                            .shadow(color: Color.black.opacity(0.35), radius: 3, x: 0, y: 1)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                    )
+                    .frame(maxWidth: 150)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .offset(y: y >= 0 ? -30 : 30)
+                }
             }
+            .zIndex(hoveredWiFiId == net.id ? 100 : 1)
             .offset(x: x, y: y)
         }
         .contentShape(Circle())
@@ -8495,8 +9846,8 @@ struct BluetoothRadarChartNodeView: View {
         let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
         let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
         
-        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
-        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let finalRelX = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedX
+        let finalRelY = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedY
         let currentAngle = atan2(finalRelY, finalRelX)
         
         let radius = CGFloat(safeDistance) * zoomScale
@@ -8544,7 +9895,7 @@ struct BluetoothRadarChartNodeView: View {
                         .frame(width: 7, height: 7)
                     Image(systemName: "applelogo")
                         .font(.system(size: 4, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                 }
                 .shadow(color: nodeColor, radius: 4)
             } else {
@@ -8561,7 +9912,39 @@ struct BluetoothRadarChartNodeView: View {
                     .scaleEffect(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 1.6 : 0.8))
                     .opacity(hoveredBTId == dev.id ? 1.0 : (isAnimating ? 0.0 : 1.0))
             }
+            
+            if hoveredBTId == dev.id {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(nodeColor)
+                        Text(dev.name.isEmpty ? "未命名设备" : dev.name)
+                            .font(.system(size: 9, weight: .bold))
+                            .lineLimit(1)
+                            .foregroundColor(.white)
+                    }
+                    Text("\(String(format: "%.1fm", dev.distanceMeters)) (\(dev.distanceLabel)) | \(dev.rssi) dBm")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(red: 0.08, green: 0.1, blue: 0.13).opacity(0.92))
+                        .shadow(color: Color.black.opacity(0.35), radius: 3, x: 0, y: 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                )
+                .frame(maxWidth: 150)
+                .fixedSize(horizontal: false, vertical: true)
+                .offset(y: y >= 0 ? -30 : 30)
+            }
         }
+        .zIndex(hoveredBTId == dev.id ? 100 : 1)
         .offset(x: x, y: y)
         .contentShape(Circle())
         .onHover { isHovered in
@@ -8599,8 +9982,8 @@ struct BluetoothDistanceRadarChartNodeView: View {
         let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
         let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
         
-        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
-        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let finalRelX = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedX
+        let finalRelY = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedY
         let currentAngle = atan2(finalRelY, finalRelX)
         
         let maxMeters = 15.0
@@ -8648,7 +10031,7 @@ struct BluetoothDistanceRadarChartNodeView: View {
                             .frame(width: 8, height: 8)
                         Image(systemName: "applelogo")
                             .font(.system(size: 5, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                     }
                     .shadow(color: nodeColor, radius: 4)
                 } else {
@@ -8668,7 +10051,7 @@ struct BluetoothDistanceRadarChartNodeView: View {
                 VStack(spacing: 1) {
                     Text(dev.name.prefix(6) + (dev.name.count > 6 ? ".." : ""))
                         .font(.system(size: 6, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                     Text(String(format: "%.1fm", safeDistance))
                         .font(.system(size: 6, weight: .bold, design: .monospaced))
                         .foregroundColor(nodeColor)
@@ -8679,7 +10062,39 @@ struct BluetoothDistanceRadarChartNodeView: View {
                         .overlay(RoundedRectangle(cornerRadius: 3).stroke(nodeColor.opacity(0.4), lineWidth: 0.5))
                 }
                 .offset(y: y >= 0 ? 14 : -14)
+                
+                if hoveredBTId == dev.id {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(nodeColor)
+                            Text(dev.name.isEmpty ? "未命名设备" : dev.name)
+                                .font(.system(size: 9, weight: .bold))
+                                .lineLimit(1)
+                                .foregroundColor(.white)
+                        }
+                        Text("\(String(format: "%.1fm", dev.distanceMeters)) (\(dev.distanceLabel)) | \(dev.rssi) dBm")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color(red: 0.08, green: 0.1, blue: 0.13).opacity(0.92))
+                            .shadow(color: Color.black.opacity(0.35), radius: 3, x: 0, y: 1)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                    )
+                    .frame(maxWidth: 150)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .offset(y: y >= 0 ? -30 : 30)
+                }
             }
+            .zIndex(hoveredBTId == dev.id ? 100 : 1)
             .offset(x: x, y: y)
         }
         .contentShape(Circle())
@@ -8718,8 +10133,8 @@ struct WiFiImmersiveRadarNodeView: View {
         let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
         let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
         
-        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
-        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let finalRelX = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedX
+        let finalRelY = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedY
         let currentAngle = atan2(finalRelY, finalRelX)
         
         let maxMeters = 20.0 / zoomScale
@@ -8748,7 +10163,7 @@ struct WiFiImmersiveRadarNodeView: View {
             VStack(spacing: 2) {
                 Text(net.ssid.isEmpty ? "隐藏信号" : net.ssid)
                     .font(.system(size: 7.5, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(nodeColor.opacity(hoveredWiFiId == net.id ? 0.45 : 0.2))
@@ -8764,7 +10179,42 @@ struct WiFiImmersiveRadarNodeView: View {
                     .cornerRadius(3)
             }
             .offset(y: y >= 0 ? 20 : -20)
+            
+            if hoveredWiFiId == net.id {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "wifi")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(nodeColor)
+                        Text(net.ssid.isEmpty ? "隐藏热点" : net.ssid)
+                            .font(.system(size: 9, weight: .bold))
+                            .lineLimit(1)
+                            .foregroundColor(.white)
+                    }
+                    Text("\(String(format: "%.1fm", net.distanceMeters)) (\(net.distanceLabel)) | \(net.rssi) dBm")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.85))
+                    Text("信道/带宽: \(net.channel) / \(net.band)")
+                        .font(.system(size: 8))
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(red: 0.08, green: 0.1, blue: 0.13).opacity(0.92))
+                        .shadow(color: Color.black.opacity(0.35), radius: 3, x: 0, y: 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                )
+                .frame(maxWidth: 160)
+                .fixedSize(horizontal: false, vertical: true)
+                .offset(y: y >= 0 ? -38 : 38)
+            }
         }
+        .zIndex(hoveredWiFiId == net.id ? 100 : 1)
         .offset(x: x, y: y)
         .opacity(isOffScreen ? 0.0 : 1.0)
         .animation(.easeInOut(duration: 0.25), value: isOffScreen)
@@ -8804,8 +10254,8 @@ struct BluetoothImmersiveRadarNodeView: View {
         let currentDistance = sqrt(rotatedX*rotatedX + rotatedY*rotatedY)
         let safeDistance = (currentDistance.isNaN || currentDistance.isInfinite) ? 0.1 : currentDistance
         
-        let finalRelX = relX == 0 && relY == 0 ? 0.01 : relX
-        let finalRelY = relX == 0 && relY == 0 ? 0.01 : relY
+        let finalRelX = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedX
+        let finalRelY = rotatedX == 0 && rotatedY == 0 ? 0.01 : rotatedY
         let currentAngle = atan2(finalRelY, finalRelX)
         
         let maxMeters = 20.0 / zoomScale
@@ -8834,7 +10284,7 @@ struct BluetoothImmersiveRadarNodeView: View {
             VStack(spacing: 2) {
                 Text(dev.name.isEmpty ? "未命名 BLE 终端" : dev.name)
                     .font(.system(size: 7.5, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(nodeColor.opacity(hoveredBTId == dev.id ? 0.45 : 0.2))
@@ -8850,7 +10300,44 @@ struct BluetoothImmersiveRadarNodeView: View {
                     .cornerRadius(3)
             }
             .offset(y: y >= 0 ? 20 : -20)
+            
+            if hoveredBTId == dev.id {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(nodeColor)
+                        Text(dev.name.isEmpty ? "未命名设备" : dev.name)
+                            .font(.system(size: 9, weight: .bold))
+                            .lineLimit(1)
+                            .foregroundColor(.white)
+                    }
+                    Text("\(String(format: "%.1fm", dev.distanceMeters)) (\(dev.distanceLabel)) | \(dev.rssi) dBm")
+                        .font(.system(size: 8, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.85))
+                    if !dev.peripheralId.isEmpty {
+                        Text("ID: \(dev.peripheralId.prefix(8))...\(dev.peripheralId.suffix(4))")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(red: 0.08, green: 0.1, blue: 0.13).opacity(0.92))
+                        .shadow(color: Color.black.opacity(0.35), radius: 3, x: 0, y: 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                )
+                .frame(maxWidth: 160)
+                .fixedSize(horizontal: false, vertical: true)
+                .offset(y: y >= 0 ? -38 : 38)
+            }
         }
+        .zIndex(hoveredBTId == dev.id ? 100 : 1)
         .offset(x: x, y: y)
         .opacity(isOffScreen ? 0.0 : 1.0)
         .animation(.easeInOut(duration: 0.25), value: isOffScreen)
@@ -8870,6 +10357,8 @@ struct WiFiRadarChartView: View {
     var zoomScale: CGFloat = 1.0
     var userPosition: CGPoint = .zero
     var radarHeading: Double = 0.0
+    var onStartTrackingWiFi: ((WiFiNetworkInfo) -> Void)? = nil
+    
     @State private var scanAngle: Double = 0.0
     @State private var isAnimating = false
     @State private var selectedWiFi: WiFiNetworkInfo? = nil
@@ -8930,12 +10419,10 @@ struct WiFiRadarChartView: View {
                         AngularGradient(colors: [.purple.opacity(0.35), .clear], center: .center, angle: .degrees(0))
                     )
                     .frame(width: 140 * zoomScale, height: 140 * zoomScale)
-                    .rotationEffect(.degrees(scanAngle))
-                
-                ForEach(0..<networks.count, id: \.self) { idx in
+                ForEach(Array(networks.enumerated()), id: \.element.id) { idx, net in
                     WiFiRadarChartNodeView(
                         idx: idx,
-                        net: networks[idx],
+                        net: net,
                         totalCount: networks.count,
                         zoomScale: zoomScale,
                         userPosition: userPosition,
@@ -8947,9 +10434,11 @@ struct WiFiRadarChartView: View {
                 }
             }
             .frame(width: 140 * zoomScale, height: 140 * zoomScale)
-            .clipped()
             .popover(item: $selectedWiFi) { selectedNet in
-                WiFiDetailView(net: selectedNet)
+                WiFiDetailView(net: selectedNet) {
+                    self.selectedWiFi = nil
+                    self.onStartTrackingWiFi?(selectedNet)
+                }
             }
             .onAppear {
                 isAnimating = true
@@ -8960,11 +10449,11 @@ struct WiFiRadarChartView: View {
             
             Text("空间物理分布雷达")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.themeTextTertiary)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
 }
@@ -8974,6 +10463,8 @@ struct WiFiDistanceRadarChartView: View {
     var zoomScale: CGFloat = 1.0
     var userPosition: CGPoint = .zero
     var radarHeading: Double = 0.0
+    var onStartTrackingWiFi: ((WiFiNetworkInfo) -> Void)? = nil
+    
     @State private var pulseScale: CGFloat = 1.0
     @State private var scanAngle: Double = 0.0
     @State private var selectedWiFi: WiFiNetworkInfo? = nil
@@ -9036,10 +10527,10 @@ struct WiFiDistanceRadarChartView: View {
                 }
                 
                 if !networks.isEmpty {
-                    ForEach(0..<networks.count, id: \.self) { idx in
+                    ForEach(Array(networks.enumerated()), id: \.element.id) { idx, net in
                         WiFiDistanceRadarChartNodeView(
                             idx: idx,
-                            net: networks[idx],
+                            net: net,
                             totalCount: networks.count,
                             zoomScale: zoomScale,
                             userPosition: userPosition,
@@ -9052,9 +10543,11 @@ struct WiFiDistanceRadarChartView: View {
                 }
             }
             .frame(width: 160 * zoomScale, height: 160 * zoomScale)
-            .clipped()
             .popover(item: $selectedWiFi) { selectedNet in
-                WiFiDetailView(net: selectedNet)
+                WiFiDetailView(net: selectedNet) {
+                    self.selectedWiFi = nil
+                    self.onStartTrackingWiFi?(selectedNet)
+                }
             }
             .onAppear {
                 withAnimation(.linear(duration: 5.0).repeatForever(autoreverses: false)) {
@@ -9067,120 +10560,198 @@ struct WiFiDistanceRadarChartView: View {
             
             Text("信号源极坐标测距靶图")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.themeTextTertiary)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
 }
 
 struct WiFiNetworkRowView: View {
     let net: WiFiNetworkInfo
+    let isExpanded: Bool
+    let onTap: () -> Void
+    let onStartTracking: () -> Void
+    
     @State private var isHovered = false
     
     var body: some View {
-        HStack(spacing: 12) {
-            // Signal Strength 3-bar indicator + icon
-            VStack(spacing: 3) {
-                // Dynamic WiFi icon
-                if #available(macOS 13.0, *) {
-                    Image(systemName: "wifi", variableValue: Double(max(0, min(100, net.rssi + 100))) / 100.0)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
-                } else {
-                    Image(systemName: "wifi")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(net.ssid.contains("隐藏") ? .orange : .cyan)
-                }
-                
-                // 3-bar live signal strength indicator
-                HStack(spacing: 1.5) {
-                    ForEach(0..<3) { bar in
-                        let active = getActiveBars(rssi: net.rssi, bar: bar)
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(active ? (net.ssid.contains("隐藏") ? Color.orange : Color.cyan) : Color.white.opacity(0.12))
-                            .frame(width: 3.5, height: CGFloat(4 + bar * 3))
+        VStack(spacing: 0) {
+            // Main clickable row
+            Button(action: onTap) {
+                HStack(spacing: 10) {
+                    // Signal strength representation
+                    VStack(spacing: 3) {
+                        Image(systemName: "wifi")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(rssiColor(net.rssi))
+                        
+                        // 3-bar mini-indicator
+                        HStack(spacing: 1) {
+                            ForEach(0..<3) { bar in
+                                let active = getActiveBars(rssi: net.rssi, bar: bar)
+                                let barHeight = CGFloat(4) + CGFloat(bar) * CGFloat(2.5)
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(active ? rssiColor(net.rssi) : Color.themeBorder)
+                                    .frame(width: 3, height: barHeight)
+                            }
+                        }
                     }
-                }
-            }
-            .frame(width: 24)
-            
-            // Middle: Name, BSSID (monospaced), frequency band details
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    if net.ssid.contains("隐藏") {
-                        Image(systemName: "eye.slash.fill")
-                            .font(.system(size: 9))
-                            .foregroundColor(.orange)
-                        Text(net.ssid)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.orange)
-                    } else {
-                        Text(net.ssid.isEmpty ? "隐藏的无线热点" : net.ssid)
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white)
+                    .frame(width: 22)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        if net.ssid.isEmpty {
+                            Text("隐藏的无线热点")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.orange)
+                        } else {
+                            Text(net.ssid)
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.themeText)
+                                .lineLimit(1)
+                        }
+                        
+                        Text(net.bssid)
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(.themeTextTertiary)
                     }
                     
                     Spacer()
                     
-                    // Band tag
-                    Text(net.phyMode)
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(.cyan)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1.5)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(String(format: "%.1fm", net.distanceMeters))
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                            .foregroundColor(distanceColor(net.distanceMeters))
+                        
+                        Text("\(net.rssi) dBm")
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(.themeTextSecondary)
+                    }
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+            }
+            .buttonStyle(PlainButtonStyle())
+            
+            // Inline details if expanded
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider().background(Color.themeBorder).padding(.vertical, 2)
+                    
+                    HStack(spacing: 12) {
+                        detailItem(label: "信道", value: "\(net.channel)")
+                        detailItem(label: "频段", value: net.band)
+                        detailItem(label: "制式", value: net.phyMode)
+                    }
+                    
+                    HStack(spacing: 4) {
+                        Text("MAC 地址:")
+                            .font(.system(size: 8.5))
+                            .foregroundColor(.themeTextTertiary)
+                        Text(net.bssid)
+                            .font(.system(size: 8.5, design: .monospaced))
+                            .foregroundColor(.themeTextSecondary)
+                        Spacer()
+                        Button(action: {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(net.bssid, forType: .string)
+                        }) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 8))
+                                .foregroundColor(.cyan)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .help("复制 MAC 地址")
+                    }
+                    
+                    // Progress bar for signal quality
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text("信号品质")
+                                .font(.system(size: 8))
+                                .foregroundColor(.themeTextTertiary)
+                            Spacer()
+                            Text("\(signalPercent(net.rssi))%")
+                                .font(.system(size: 8, design: .monospaced))
+                                .foregroundColor(rssiColor(net.rssi))
+                        }
+                        
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(Color.themeDivider)
+                                    .frame(height: 3)
+                                
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [rssiColor(net.rssi).opacity(0.6), rssiColor(net.rssi)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .frame(width: geo.size.width * CGFloat(Double(signalPercent(net.rssi)) / 100.0), height: 3)
+                            }
+                        }
+                        .frame(height: 3)
+                    }
+                    .padding(.top, 2)
+                    
+                    // Tracking Button
+                    Button(action: onStartTracking) {
+                        HStack {
+                            Image(systemName: "location.radar.fill")
+                                .font(.system(size: 9.5))
+                            Text("空间声纳追踪定位")
+                                .font(.system(size: 9.5, weight: .bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                         .background(Color.cyan.opacity(0.12))
-                        .cornerRadius(3.5)
+                        .foregroundColor(.cyan)
+                        .cornerRadius(5)
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.cyan.opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .padding(.top, 4)
                 }
-                
-                HStack(spacing: 8) {
-                    Text(net.bssid)
-                        .font(.system(size: 8.5, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
-                    
-                    Spacer()
-                    
-                    Text("\(net.band) • 信道 \(net.channel) • \(net.rssi)dBm")
-                        .font(.system(size: 8.5))
-                        .foregroundColor(.white.opacity(0.5))
-                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
             }
-            
-            // Right: Distance badge pill
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(String(format: "%.1fm", net.distanceMeters))
-                    .font(.system(size: 11, weight: .black, design: .monospaced))
-                    .foregroundColor(distanceColor(net.distanceMeters))
-                
-                // Color-coded pill badge
-                Text(net.distanceLabel)
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(distanceColor(net.distanceMeters).opacity(0.85))
-                    .cornerRadius(6)
-            }
-            .frame(width: 60, alignment: .trailing)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
         .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(isHovered ? 0.06 : 0.025))
-                .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isHovered || isExpanded ? Color.themeHover : Color.themeHover.opacity(0.3))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(isHovered ? (net.ssid.contains("隐藏") ? Color.orange.opacity(0.25) : Color.cyan.opacity(0.25)) : Color.white.opacity(0.04), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isExpanded ? Color.cyan.opacity(0.4) : Color.themeBorder, lineWidth: 1)
         )
-        .scaleEffect(isHovered ? 1.02 : 1.0)
-        .animation(.spring(response: 0.25, dampingFraction: 0.75), value: isHovered)
         .onHover { hover in
             isHovered = hover
         }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 2)
+    }
+    
+    private func detailItem(label: String, value: String) -> some View {
+        HStack(spacing: 2) {
+            Text("\(label):")
+                .font(.system(size: 8.5))
+                .foregroundColor(.themeTextTertiary)
+            Text(value)
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundColor(.themeText)
+        }
+    }
+    
+    private func signalPercent(_ rssi: Int) -> Int {
+        let minRssi = -100
+        let maxRssi = -30
+        let percent = Double(rssi - minRssi) / Double(maxRssi - minRssi) * 100.0
+        return Int(min(100.0, max(0.0, percent)))
     }
     
     private func getActiveBars(rssi: Int, bar: Int) -> Bool {
@@ -9195,6 +10766,13 @@ struct WiFiNetworkRowView: View {
             activeCount = 0
         }
         return bar < activeCount
+    }
+    
+    private func rssiColor(_ rssi: Int) -> Color {
+        if rssi > -60 { return .green }
+        if rssi > -75 { return .yellow }
+        if rssi > -90 { return .orange }
+        return .red
     }
     
     private func distanceColor(_ dist: Double) -> Color {
@@ -9230,12 +10808,12 @@ struct PrivacyShieldIndicatorView: View {
                 Circle()
                     .fill(isActive ? 
                         LinearGradient(gradient: Gradient(colors: [Color.green.opacity(0.25), Color(red: 0.06, green: 0.60, blue: 0.35).opacity(0.05)]), startPoint: .topLeading, endPoint: .bottomTrailing) :
-                        LinearGradient(gradient: Gradient(colors: [Color.white.opacity(0.05), Color.white.opacity(0.01)]), startPoint: .topLeading, endPoint: .bottomTrailing)
+                        LinearGradient(gradient: Gradient(colors: [Color.themeDivider, Color.themeCardBg.opacity(0.2)]), startPoint: .topLeading, endPoint: .bottomTrailing)
                     )
                     .frame(width: 70, height: 70)
                     .overlay(
                         Circle()
-                            .stroke(isActive ? Color.green.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
+                            .stroke(isActive ? Color.green.opacity(0.4) : Color.themeBorder, lineWidth: 1)
                     )
                 
                 Image(systemName: isActive ? "shield.fill" : "shield.slash.fill")
@@ -9267,7 +10845,7 @@ struct PrivacyShieldIndicatorView: View {
             
             Text(isActive ? "实时监控设备隐私安全" : "建议开启监控以捕捉隐患")
                 .font(.system(size: 8))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.themeTextTertiary)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .frame(height: 20)
@@ -9280,7 +10858,9 @@ struct PrivacyShieldIndicatorView: View {
 // ── CoreBluetooth BLE Device Scan Models & Controllers ──
 
 struct BluetoothDeviceInfo: Identifiable {
-    let id = UUID()
+    var id: UUID {
+        return UUID(uuidString: peripheralId) ?? UUID()
+    }
     let name: String
     let rssi: Int
     let distanceMeters: Double
@@ -9294,6 +10874,7 @@ struct BluetoothDeviceInfo: Identifiable {
 class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
     @Published var isScanning: Bool = false
     @Published var scanResults: [BluetoothDeviceInfo] = []
+    var isTrackingMode: Bool = false
     
     private var centralManager: CBCentralManager?
     private let queue = DispatchQueue(label: "com.statusctrl.btscan", qos: .userInitiated)
@@ -9321,7 +10902,7 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
         // Timeout check to ensure scanner does not run infinitely
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
             guard let self = self else { return }
-            if self.isScanning {
+            if self.isScanning && !self.isTrackingMode {
                 self.stopScan()
             }
         }
@@ -9445,7 +11026,7 @@ class BluetoothScanner: NSObject, ObservableObject, CBCentralManagerDelegate {
         }
     }
     
-    private func generateMockScanResults() -> [BluetoothDeviceInfo] {
+    func generateMockScanResults() -> [BluetoothDeviceInfo] {
         return [
             BluetoothDeviceInfo(name: "HL's iPad Pro", rssi: -45, distanceMeters: 0.7, distanceLabel: "极近范围", lastSeen: Date(), peripheralId: "E430A23B-11B5-C2B1-AA5B-C9EBD129A0FC", isAppleFindMy: true, isAirTag: false),
             BluetoothDeviceInfo(name: "AirPods Pro (2nd Gen)", rssi: -52, distanceMeters: 1.1, distanceLabel: "极近范围", lastSeen: Date(), peripheralId: "B50495E6-124D-D9FA-8BC1-C12A439D9CC9", isAppleFindMy: true, isAirTag: false),
@@ -9465,6 +11046,8 @@ struct BluetoothRadarChartView: View {
     var zoomScale: CGFloat = 1.0
     var userPosition: CGPoint = .zero
     var radarHeading: Double = 0.0
+    var onStartTrackingBluetooth: ((BluetoothDeviceInfo) -> Void)? = nil
+    
     @State private var scanAngle: Double = 0.0
     @State private var isAnimating = false
     @State private var selectedBT: BluetoothDeviceInfo? = nil
@@ -9527,10 +11110,10 @@ struct BluetoothRadarChartView: View {
                     .frame(width: 140 * zoomScale, height: 140 * zoomScale)
                     .rotationEffect(.degrees(scanAngle))
                 
-                ForEach(0..<devices.count, id: \.self) { idx in
+                ForEach(Array(devices.enumerated()), id: \.element.id) { idx, dev in
                     BluetoothRadarChartNodeView(
                         idx: idx,
-                        dev: devices[idx],
+                        dev: dev,
                         totalCount: devices.count,
                         zoomScale: zoomScale,
                         userPosition: userPosition,
@@ -9543,7 +11126,10 @@ struct BluetoothRadarChartView: View {
             }
             .frame(width: 140 * zoomScale, height: 140 * zoomScale)
             .popover(item: $selectedBT) { selectedDev in
-                BluetoothDetailView(dev: selectedDev)
+                BluetoothDetailView(dev: selectedDev) {
+                    self.selectedBT = nil
+                    self.onStartTrackingBluetooth?(selectedDev)
+                }
             }
             .onAppear {
                 isAnimating = true
@@ -9554,11 +11140,11 @@ struct BluetoothRadarChartView: View {
             
             Text("空间物理分布雷达")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.themeTextTertiary)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
 }
@@ -9568,6 +11154,8 @@ struct BluetoothDistanceRadarChartView: View {
     var zoomScale: CGFloat = 1.0
     var userPosition: CGPoint = .zero
     var radarHeading: Double = 0.0
+    var onStartTrackingBluetooth: ((BluetoothDeviceInfo) -> Void)? = nil
+    
     @State private var pulseScale: CGFloat = 1.0
     @State private var scanAngle: Double = 0.0
     @State private var selectedBT: BluetoothDeviceInfo? = nil
@@ -9630,10 +11218,10 @@ struct BluetoothDistanceRadarChartView: View {
                 }
                 
                 if !devices.isEmpty {
-                    ForEach(0..<devices.count, id: \.self) { idx in
+                    ForEach(Array(devices.enumerated()), id: \.element.id) { idx, dev in
                         BluetoothDistanceRadarChartNodeView(
                             idx: idx,
-                            dev: devices[idx],
+                            dev: dev,
                             totalCount: devices.count,
                             zoomScale: zoomScale,
                             userPosition: userPosition,
@@ -9647,7 +11235,10 @@ struct BluetoothDistanceRadarChartView: View {
             }
             .frame(width: 160 * zoomScale, height: 160 * zoomScale)
             .popover(item: $selectedBT) { selectedDev in
-                BluetoothDetailView(dev: selectedDev)
+                BluetoothDetailView(dev: selectedDev) {
+                    self.selectedBT = nil
+                    self.onStartTrackingBluetooth?(selectedDev)
+                }
             }
             .onAppear {
                 withAnimation(.linear(duration: 5.0).repeatForever(autoreverses: false)) {
@@ -9660,11 +11251,11 @@ struct BluetoothDistanceRadarChartView: View {
             
             Text("信号源极坐标测距靶图")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.themeTextTertiary)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.01))
+        .background(Color.themeCardBg.opacity(0.2))
         .cornerRadius(12)
     }
 }
@@ -9696,7 +11287,7 @@ struct BluetoothNetworkRowView: View {
                         ForEach(0..<3) { bar in
                             let active = getActiveBars(rssi: dev.rssi, bar: bar)
                             RoundedRectangle(cornerRadius: 1)
-                                .fill(active ? Color.purple : Color.white.opacity(0.12))
+                                .fill(active ? Color.purple : Color.themeBorder)
                                 .frame(width: 3.5, height: CGFloat(4 + bar * 3))
                         }
                     }
@@ -9707,12 +11298,12 @@ struct BluetoothNetworkRowView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(dev.name.isEmpty ? "未知外设" : dev.name)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                         .lineLimit(1)
                     
                     Text("信号强度: \(dev.rssi) dBm")
                         .font(.system(size: 8.5, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.45))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 
                 Spacer()
@@ -9725,7 +11316,7 @@ struct BluetoothNetworkRowView: View {
                     
                     Text(dev.distanceLabel)
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(distanceColor(dev.distanceMeters).opacity(0.85))
@@ -9735,7 +11326,7 @@ struct BluetoothNetworkRowView: View {
                 
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .padding(.leading, 2)
             }
@@ -9746,12 +11337,12 @@ struct BluetoothNetworkRowView: View {
             
             if isExpanded {
                 VStack(alignment: .leading, spacing: 8) {
-                    Divider().background(Color.white.opacity(0.08))
+                    Divider().background(Color.themeBorder)
                     
                     VStack(alignment: .leading, spacing: 4) {
                         Text("设备硬件广播标识 (UUID):")
                             .font(.system(size: 8.5))
-                            .foregroundColor(.white.opacity(0.3))
+                            .foregroundColor(.themeTextTertiary)
                         Text(dev.peripheralId)
                             .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                             .foregroundColor(.purple.opacity(0.8))
@@ -9762,7 +11353,7 @@ struct BluetoothNetworkRowView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("物理信号强度指示 (RSSI)")
                                 .font(.system(size: 8.5))
-                                .foregroundColor(.white.opacity(0.3))
+                                .foregroundColor(.themeTextTertiary)
                             
                             HStack(spacing: 2) {
                                 ForEach(0..<8) { tick in
@@ -9770,7 +11361,7 @@ struct BluetoothNetworkRowView: View {
                                     let factor = rssiOffset / 7.5
                                     let activeLimit = Int(max(1.0, min(8.0, factor)))
                                     let active = tick < activeLimit
-                                    let fillColor = active ? Color.purple : Color.white.opacity(0.08)
+                                    let fillColor = active ? Color.purple : Color.themeBorder
                                     let tickHeight = 10.0 + (Double(tick) * 1.5)
                                     RoundedRectangle(cornerRadius: 1.0)
                                         .fill(fillColor)
@@ -9784,12 +11375,12 @@ struct BluetoothNetworkRowView: View {
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("最后扫描时间")
                                 .font(.system(size: 8.5))
-                                .foregroundColor(.white.opacity(0.3))
+                                .foregroundColor(.themeTextTertiary)
                             
                             let timeStr = DateFormatter.localizedString(from: dev.lastSeen, dateStyle: .none, timeStyle: .medium)
                             Text(timeStr)
                                 .font(.system(size: 9, design: .monospaced))
-                                .foregroundColor(.white.opacity(0.6))
+                                .foregroundColor(.themeTextSecondary)
                         }
                     }
                 }
@@ -9801,12 +11392,12 @@ struct BluetoothNetworkRowView: View {
         .padding(.horizontal, 12)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(isHovered ? 0.06 : 0.025))
+                .fill(isHovered ? Color.themeHover : Color.themeHover.opacity(0.3))
                 .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isHovered ? Color.purple.opacity(0.25) : Color.white.opacity(0.04), lineWidth: 1)
+                .stroke(isHovered ? Color.purple.opacity(0.25) : Color.themeCardBg, lineWidth: 1)
         )
         .scaleEffect(isHovered ? 1.02 : 1.0)
         .animation(.spring(response: 0.25, dampingFraction: 0.75), value: isHovered)
@@ -10081,14 +11672,12 @@ class SignalSourceEstimator {
     
     private var trueWiFiLocations: [String: CGPoint] = [:]
     private var trueBTLocations: [String: CGPoint] = [:]
+    private var estimatedAzimuths: [String: Double] = [:]
     
     private init() {}
     
     func getTrueWiFiLocation(forKey key: String, index: Int, total: Int, distance: Double) -> CGPoint {
-        if let pos = trueWiFiLocations[key] {
-            return pos
-        }
-        let angle = Double(index) * (360.0 / Double(total)) + 25.0
+        let angle = estimatedAzimuths[key] ?? getStableAngle(forKey: key, offset: 25.0)
         let rad = angle * .pi / 180.0
         let pos = CGPoint(x: CGFloat(cos(rad)) * CGFloat(distance), y: CGFloat(sin(rad)) * CGFloat(distance))
         trueWiFiLocations[key] = pos
@@ -10096,25 +11685,42 @@ class SignalSourceEstimator {
     }
     
     func getTrueBTLocation(forKey key: String, index: Int, total: Int, distance: Double) -> CGPoint {
-        if let pos = trueBTLocations[key] {
-            return pos
-        }
-        let angle = Double(index) * (360.0 / Double(total)) + 200.0
+        let angle = estimatedAzimuths[key] ?? getStableAngle(forKey: key, offset: 200.0)
         let rad = angle * .pi / 180.0
         let pos = CGPoint(x: CGFloat(cos(rad)) * CGFloat(distance), y: CGFloat(sin(rad)) * CGFloat(distance))
         trueBTLocations[key] = pos
         return pos
     }
     
+    func updateEstimatedAzimuth(forKey key: String, azimuth: Double) {
+        estimatedAzimuths[key] = azimuth
+        trueWiFiLocations.removeValue(forKey: key)
+        trueBTLocations.removeValue(forKey: key)
+    }
+    
+    func getEstimatedAzimuth(forKey key: String) -> Double? {
+        return estimatedAzimuths[key]
+    }
+    
+    private func getStableAngle(forKey key: String, offset: Double) -> Double {
+        var hash: UInt64 = 5381
+        for byte in key.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt64(byte)
+        }
+        return (Double(hash % 360) + offset).truncatingRemainder(dividingBy: 360)
+    }
+    
     func clearHistory() {
         trueWiFiLocations.removeAll()
         trueBTLocations.removeAll()
+        estimatedAzimuths.removeAll()
     }
 }
 
 // ── Window 1 View: WiFi Spatial Standalone Panel (800x600) ──
 
 struct WiFiRadarStandaloneView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
     @ObservedObject var wifiScanner: WiFiScanner
     @State private var zoomScale: CGFloat = 1.0
     @State private var lastMagnification: CGFloat = 1.0
@@ -10131,11 +11737,11 @@ struct WiFiRadarStandaloneView: View {
                             .foregroundColor(.cyan)
                         Text("WiFi 空间物理定位扫频系统")
                             .font(.system(size: 15, weight: .black))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                     }
                     Text("IOKit / CoreWLAN 驱动级信道阻抗与极坐标物理靶向图")
                         .font(.system(size: 9.5))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 
                 Spacer()
@@ -10149,7 +11755,7 @@ struct WiFiRadarStandaloneView: View {
                         Text(wifiScanner.isScanning ? "正在扫描..." : "触发空间重扫")
                     }
                     .font(.system(size: 10.5, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .padding(.vertical, 6)
                     .padding(.horizontal, 14)
                     .background(Color.cyan.opacity(0.2))
@@ -10163,14 +11769,14 @@ struct WiFiRadarStandaloneView: View {
             .padding(.top, 24)
             .padding(.bottom, 16)
             
-            Divider().background(Color.white.opacity(0.08))
+            Divider().background(Color.themeBorder)
             
             HStack(spacing: 0) {
                 // Left side: Detailed Table
                 VStack(alignment: .leading, spacing: 12) {
                     Text("已扫描到的无线热点 AP 列表 (\(wifiScanner.scanResults.count))")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
                     
@@ -10195,19 +11801,19 @@ struct WiFiRadarStandaloneView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(net.ssid.isEmpty ? "隐藏信号 AP" : net.ssid)
                                             .font(.system(size: 11.5, weight: .bold))
-                                            .foregroundColor(.white)
+                                            .foregroundColor(.themeText)
                                             .lineLimit(1)
                                         
                                         HStack(spacing: 8) {
                                             Text(net.bssid)
                                                 .font(.system(size: 8.5, design: .monospaced))
-                                                .foregroundColor(.white.opacity(0.3))
+                                                .foregroundColor(.themeTextTertiary)
                                             Text("信道: \(net.channel)")
                                                 .font(.system(size: 8.5))
                                                 .foregroundColor(.cyan.opacity(0.8))
                                             Text(net.band)
                                                 .font(.system(size: 8.5))
-                                                .foregroundColor(.white.opacity(0.3))
+                                                .foregroundColor(.themeTextTertiary)
                                         }
                                     }
                                     
@@ -10219,7 +11825,7 @@ struct WiFiRadarStandaloneView: View {
                                             .foregroundColor(.green)
                                         Text(net.phyMode)
                                             .font(.system(size: 7.5))
-                                            .foregroundColor(.white.opacity(0.3))
+                                            .foregroundColor(.themeTextTertiary)
                                     }
                                     
                                     VStack(alignment: .trailing, spacing: 2) {
@@ -10228,15 +11834,16 @@ struct WiFiRadarStandaloneView: View {
                                             .foregroundColor(net.distanceMeters < 1.5 ? .green : (net.distanceMeters < 4.0 ? .cyan : (net.distanceMeters < 8.0 ? .yellow : .orange)))
                                         Text(net.distanceLabel)
                                             .font(.system(size: 7.5))
-                                            .foregroundColor(.white.opacity(0.3))
+                                            .foregroundColor(.themeTextTertiary)
                                     }
                                     .frame(width: 50, alignment: .trailing)
                                 }
                                 .padding(.vertical, 8)
                                 .padding(.horizontal, 12)
-                                .background(Color.white.opacity(0.02))
-                                .cornerRadius(8)
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.04), lineWidth: 1))
+                                .background(Color.themeCardBg)
+.cornerRadius(8)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.themeCardBg, lineWidth: 1))
                             }
                         }
                         .padding(.horizontal, 16)
@@ -10246,14 +11853,14 @@ struct WiFiRadarStandaloneView: View {
                 
                 // Vertical divider
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.themeBorder)
                     .frame(width: 1)
                 
                 // Right side: Radar Views
                 VStack(spacing: 0) {
                     Text("无线电物理场相对坐标测绘")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.top, 14)
                         .padding(.bottom, 10)
                     
@@ -10290,7 +11897,7 @@ struct WiFiRadarStandaloneView: View {
                     VStack(spacing: 2) {
                         Text("物理步测模拟 [W A S D / 方向键]")
                             .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white.opacity(0.35))
+                            .foregroundColor(.themeTextTertiary)
                         Text(String(format: "物理坐标: X: %.1fm, Y: %.1fm", userPosition.x, userPosition.y))
                             .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                             .foregroundColor(.cyan)
@@ -10306,17 +11913,17 @@ struct WiFiRadarStandaloneView: View {
                         }) {
                             Image(systemName: "minus.magnifyingglass")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                                 .frame(width: 26, height: 26)
-                                .background(Color.white.opacity(0.1))
+                                .background(Color.themeBorder)
                                 .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                .overlay(Circle().stroke(Color.themeBorder, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                         
                         Text(String(format: "%d%%", Int(zoomScale * 100)))
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.9))
+                            .foregroundColor(.themeText)
                             .frame(width: 38)
                         
                         Button(action: {
@@ -10326,11 +11933,11 @@ struct WiFiRadarStandaloneView: View {
                         }) {
                             Image(systemName: "plus.magnifyingglass")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                                 .frame(width: 26, height: 26)
-                                .background(Color.white.opacity(0.1))
+                                .background(Color.themeBorder)
                                 .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                .overlay(Circle().stroke(Color.themeBorder, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                         
@@ -10342,9 +11949,9 @@ struct WiFiRadarStandaloneView: View {
                         }) {
                             Image(systemName: "arrow.counterclockwise")
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.themeTextSecondary)
                                 .frame(width: 22, height: 22)
-                                .background(Color.white.opacity(0.06))
+                                .background(Color.themeDivider)
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
@@ -10353,7 +11960,7 @@ struct WiFiRadarStandaloneView: View {
                     .padding(.vertical, 6)
                     .background(Color.black.opacity(0.45))
                     .cornerRadius(18)
-                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.themeBorder, lineWidth: 1))
                     .shadow(color: Color.black.opacity(0.35), radius: 5, x: 0, y: 2)
                     .padding(.bottom, 20)
                 }
@@ -10364,12 +11971,12 @@ struct WiFiRadarStandaloneView: View {
         .frame(width: 800, height: 600)
         .background(
             ZStack {
-                Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 350)
-                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 350)
+                Color.themeBg
+                RadialGradient(colors: [Color.themeRadialPurple, .clear], center: .topLeading, startRadius: 0, endRadius: 350)
+                RadialGradient(colors: [Color.themeRadialGreen, .clear], center: .bottomTrailing, startRadius: 0, endRadius: 350)
             }
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
         .onAppear {
             // keyMonitor registration removed
         }
@@ -10382,6 +11989,7 @@ struct WiFiRadarStandaloneView: View {
 // ── Window 3 View: Bluetooth Spatial Standalone Panel (800x600) ──
 
 struct BluetoothRadarStandaloneView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
     @ObservedObject var bluetoothScanner: BluetoothScanner
     @State private var zoomScale: CGFloat = 1.0
     @State private var lastMagnification: CGFloat = 1.0
@@ -10399,11 +12007,11 @@ struct BluetoothRadarStandaloneView: View {
                             .foregroundColor(.purple)
                         Text("蓝牙 BLE 空间物理定位扫频系统")
                             .font(.system(size: 15, weight: .black))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                     }
                     Text("IOKit / CoreBluetooth 驱动级低功耗无线电寻址与极坐标定位靶向图")
                         .font(.system(size: 9.5))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 
                 Spacer()
@@ -10417,7 +12025,7 @@ struct BluetoothRadarStandaloneView: View {
                         Text(bluetoothScanner.isScanning ? "正在扫描..." : "触发空间重扫")
                     }
                     .font(.system(size: 10.5, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.themeText)
                     .padding(.vertical, 6)
                     .padding(.horizontal, 14)
                     .background(Color.purple.opacity(0.2))
@@ -10431,14 +12039,14 @@ struct BluetoothRadarStandaloneView: View {
             .padding(.top, 24)
             .padding(.bottom, 16)
             
-            Divider().background(Color.white.opacity(0.08))
+            Divider().background(Color.themeBorder)
             
             HStack(spacing: 0) {
                 // Left side: Detailed Table
                 VStack(alignment: .leading, spacing: 12) {
                     Text("已扫描到的低功耗蓝牙外设列表 (\(bluetoothScanner.scanResults.count))")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
                     
@@ -10465,14 +12073,14 @@ struct BluetoothRadarStandaloneView: View {
                 
                 // Vertical divider
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.themeBorder)
                     .frame(width: 1)
                 
                 // Right side: Radar Views
                 VStack(spacing: 0) {
                     Text("无线电物理场相对坐标测绘")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                         .padding(.top, 14)
                         .padding(.bottom, 10)
                     
@@ -10509,7 +12117,7 @@ struct BluetoothRadarStandaloneView: View {
                     VStack(spacing: 2) {
                         Text("物理步测模拟 [W A S D / 方向键]")
                             .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white.opacity(0.35))
+                            .foregroundColor(.themeTextTertiary)
                         Text(String(format: "物理坐标: X: %.1fm, Y: %.1fm", userPosition.x, userPosition.y))
                             .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                             .foregroundColor(.purple)
@@ -10525,17 +12133,17 @@ struct BluetoothRadarStandaloneView: View {
                         }) {
                             Image(systemName: "minus.magnifyingglass")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                                 .frame(width: 26, height: 26)
-                                .background(Color.white.opacity(0.1))
+                                .background(Color.themeBorder)
                                 .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                .overlay(Circle().stroke(Color.themeBorder, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                         
                         Text(String(format: "%d%%", Int(zoomScale * 100)))
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.9))
+                            .foregroundColor(.themeText)
                             .frame(width: 38)
                         
                         Button(action: {
@@ -10545,11 +12153,11 @@ struct BluetoothRadarStandaloneView: View {
                         }) {
                             Image(systemName: "plus.magnifyingglass")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                                 .frame(width: 26, height: 26)
-                                .background(Color.white.opacity(0.1))
+                                .background(Color.themeBorder)
                                 .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                .overlay(Circle().stroke(Color.themeBorder, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                         
@@ -10561,9 +12169,9 @@ struct BluetoothRadarStandaloneView: View {
                         }) {
                             Image(systemName: "arrow.counterclockwise")
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.white.opacity(0.7))
+                                .foregroundColor(.themeTextSecondary)
                                 .frame(width: 22, height: 22)
-                                .background(Color.white.opacity(0.06))
+                                .background(Color.themeDivider)
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
@@ -10572,7 +12180,7 @@ struct BluetoothRadarStandaloneView: View {
                     .padding(.vertical, 6)
                     .background(Color.black.opacity(0.45))
                     .cornerRadius(18)
-                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.12), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.themeBorder, lineWidth: 1))
                     .shadow(color: Color.black.opacity(0.35), radius: 5, x: 0, y: 2)
                     .padding(.bottom, 20)
                 }
@@ -10583,9 +12191,9 @@ struct BluetoothRadarStandaloneView: View {
         .frame(width: 800, height: 600)
         .background(
             ZStack {
-                Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 350)
-                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 350)
+                Color.themeBg
+                RadialGradient(colors: [Color.themeRadialPurple, .clear], center: .topLeading, startRadius: 0, endRadius: 350)
+                RadialGradient(colors: [Color.themeRadialGreen, .clear], center: .bottomTrailing, startRadius: 0, endRadius: 350)
             }
         )
         .preferredColorScheme(.dark)
@@ -10601,6 +12209,7 @@ struct BluetoothRadarStandaloneView: View {
 // ── Window 2 View: Immersive Large Multi-Radar Visualizer (900x750) ──
 
 struct LargeRadarImmersiveView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
     @ObservedObject var wifiScanner: WiFiScanner
     @ObservedObject var bluetoothScanner: BluetoothScanner
     @State private var scanAngle: Double = 0.0
@@ -10627,11 +12236,11 @@ struct LargeRadarImmersiveView: View {
                             .foregroundColor(.purple)
                         Text("极客高维无线电全景雷达监控")
                             .font(.system(size: 18, weight: .black))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                     }
                     Text("实时融合同步测绘: WiFi 无线局域网络 AP 点 (青/橙色) 与周边低功耗蓝牙 (BLE) 智能终端设备 (紫色)")
                         .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 
                 Spacer()
@@ -10639,28 +12248,30 @@ struct LargeRadarImmersiveView: View {
                 HStack(spacing: 12) {
                     HStack(spacing: 6) {
                         Circle().fill(Color.cyan).frame(width: 6, height: 6)
-                        Text("WiFi AP (\(wifiScanner.scanResults.count))").font(.system(size: 9.5, weight: .bold)).foregroundColor(.white.opacity(0.6))
+                        Text("WiFi AP (\(wifiScanner.scanResults.count))").font(.system(size: 9.5, weight: .bold)).foregroundColor(.themeTextSecondary)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(6)
+                    .background(Color.themeCardBg)
+.cornerRadius(6)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     
                     HStack(spacing: 6) {
                         Circle().fill(Color.purple).frame(width: 6, height: 6)
-                        Text("蓝牙 BLE (\(bluetoothScanner.scanResults.count))").font(.system(size: 9.5, weight: .bold)).foregroundColor(.white.opacity(0.6))
+                        Text("蓝牙 BLE (\(bluetoothScanner.scanResults.count))").font(.system(size: 9.5, weight: .bold)).foregroundColor(.themeTextSecondary)
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.03))
-                    .cornerRadius(6)
+                    .background(Color.themeCardBg)
+.cornerRadius(6)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 }
             }
             .padding(.horizontal, 30)
             .padding(.top, 24)
             .padding(.bottom, 16)
             
-            Divider().background(Color.white.opacity(0.08))
+            Divider().background(Color.themeBorder)
             
             // Core Interactive Large Radar Canvas
             ZStack {
@@ -10734,15 +12345,15 @@ struct LargeRadarImmersiveView: View {
                         
                         Image(systemName: "antenna.radiowaves.left.and.right")
                             .font(.system(size: 11))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                     }
                     
                     // 5. Render WiFi Nodes
                     if !wifiScanner.scanResults.isEmpty {
-                        ForEach(0..<wifiScanner.scanResults.count, id: \.self) { idx in
+                        ForEach(Array(wifiScanner.scanResults.enumerated()), id: \.element.id) { idx, net in
                             WiFiImmersiveRadarNodeView(
                                 idx: idx,
-                                net: wifiScanner.scanResults[idx],
+                                net: net,
                                 totalCount: wifiScanner.scanResults.count,
                                 zoomScale: zoomScale,
                                 userPosition: userPosition,
@@ -10756,10 +12367,10 @@ struct LargeRadarImmersiveView: View {
                     
                     // 6. Render Bluetooth BLE Nodes
                     if !bluetoothScanner.scanResults.isEmpty {
-                        ForEach(0..<bluetoothScanner.scanResults.count, id: \.self) { idx in
+                        ForEach(Array(bluetoothScanner.scanResults.enumerated()), id: \.element.id) { idx, dev in
                             BluetoothImmersiveRadarNodeView(
                                 idx: idx,
-                                dev: bluetoothScanner.scanResults[idx],
+                                dev: dev,
                                 totalCount: bluetoothScanner.scanResults.count,
                                 zoomScale: zoomScale,
                                 userPosition: userPosition,
@@ -10780,14 +12391,14 @@ struct LargeRadarImmersiveView: View {
                             .foregroundColor(.purple)
                         Text("空间定位雷达步测指南:")
                             .font(.system(size: 9.5, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                     }
                     Text("• 按 [↑ ↓ ← →] 或 [W A S D] 模拟您的物理位置移动")
                         .font(.system(size: 8.5))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                     Text("• 随着移动，信号源的相对方位和测距将智能重算")
                         .font(.system(size: 8.5))
-                        .foregroundColor(.white.opacity(0.6))
+                        .foregroundColor(.themeTextSecondary)
                     Text(String(format: "• 当前用户物理坐标: X: %.1fm, Y: %.1fm", userPosition.x, userPosition.y))
                         .font(.system(size: 8.5, design: .monospaced))
                         .foregroundColor(.cyan)
@@ -10805,17 +12416,17 @@ struct LargeRadarImmersiveView: View {
                     }) {
                         Image(systemName: "minus.magnifyingglass")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                             .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.1))
+                            .background(Color.themeBorder)
                             .clipShape(Circle())
-                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            .overlay(Circle().stroke(Color.themeBorder, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                     
                     Text(String(format: "%d%%", Int(zoomScale * 100)))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.9))
+                        .foregroundColor(.themeText)
                         .frame(width: 42)
                     
                     Button(action: {
@@ -10825,11 +12436,11 @@ struct LargeRadarImmersiveView: View {
                     }) {
                         Image(systemName: "plus.magnifyingglass")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.themeText)
                             .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.1))
+                            .background(Color.themeBorder)
                             .clipShape(Circle())
-                            .overlay(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
+                            .overlay(Circle().stroke(Color.themeBorder, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                     
@@ -10841,9 +12452,9 @@ struct LargeRadarImmersiveView: View {
                     }) {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.7))
+                            .foregroundColor(.themeTextSecondary)
                             .frame(width: 24, height: 24)
-                            .background(Color.white.opacity(0.06))
+                            .background(Color.themeDivider)
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -10874,7 +12485,7 @@ struct LargeRadarImmersiveView: View {
                 BluetoothDetailView(dev: selectedDev)
             }
             
-            Divider().background(Color.white.opacity(0.08))
+            Divider().background(Color.themeBorder)
             
             // Footer Info Bar
             HStack {
@@ -10883,14 +12494,14 @@ struct LargeRadarImmersiveView: View {
                         .foregroundColor(.cyan)
                     Text("无线电极空间距离公式: distance = 10^((measuredPower - RSSI) / (10 * N))")
                         .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.themeTextTertiary)
                 }
                 
                 Spacer()
                 
                 Text("实时扫频刷新频率: 1.0Hz")
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             .padding(.horizontal, 30)
             .padding(.vertical, 12)
@@ -10898,9 +12509,9 @@ struct LargeRadarImmersiveView: View {
         .frame(width: 900, height: 750)
         .background(
             ZStack {
-                Color(red: 0.08, green: 0.09, blue: 0.12)
-                RadialGradient(colors: [Color(red: 0.62, green: 0.32, blue: 0.88).opacity(0.12), .clear], center: .topLeading, startRadius: 0, endRadius: 400)
-                RadialGradient(colors: [Color(red: 0.22, green: 0.80, blue: 0.45).opacity(0.08), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 400)
+                Color.themeBg
+                RadialGradient(colors: [Color.themeRadialPurple, .clear], center: .topLeading, startRadius: 0, endRadius: 400)
+                RadialGradient(colors: [Color.themeRadialGreen, .clear], center: .bottomTrailing, startRadius: 0, endRadius: 400)
             }
         )
         .preferredColorScheme(.dark)
@@ -10932,6 +12543,7 @@ struct LargeRadarImmersiveView: View {
 
 // ── Mini Dashboard View for Menu Bar Popup ──
 struct MiniDashboardView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0
     private let smc = SMCController.shared
     private let cpuMonitor = CPUMonitor()
     @StateObject private var processMonitor = NetworkProcessMonitor()
@@ -10964,14 +12576,14 @@ struct MiniDashboardView: View {
                         .foregroundColor(.cyan)
                     Text("STATUS CTRL")
                         .font(.system(size: 13, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
+                        .foregroundColor(.themeText)
                 }
                 Spacer()
                 
                 // Status dot or small model info
                 Text(powerStats.friendlyModelName.isEmpty ? "MacBook" : powerStats.friendlyModelName.prefix(12) + "...")
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.4))
+                    .foregroundColor(.themeTextTertiary)
             }
             .padding(.leading, 82)
             .padding(.trailing, 16)
@@ -10979,7 +12591,7 @@ struct MiniDashboardView: View {
             .padding(.bottom, 12)
             
             Divider()
-                .background(Color.white.opacity(0.08))
+                .background(Color.themeBorder)
                 .padding(.horizontal, 16)
             
             // Grid content
@@ -10988,7 +12600,7 @@ struct MiniDashboardView: View {
                 VStack(spacing: 8) {
                     ZStack {
                         Circle()
-                            .stroke(Color.white.opacity(0.05), lineWidth: 4.5)
+                            .stroke(Color.themeDivider, lineWidth: 4.5)
                             .frame(width: 80, height: 80)
                         
                         Circle()
@@ -11004,7 +12616,7 @@ struct MiniDashboardView: View {
                         VStack(spacing: 1) {
                             Text(String(format: "%.0f%%", cpuUsage))
                                 .font(.system(size: 16, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
+                                .foregroundColor(.themeText)
                             Text(String(format: "%.1f°C", cpuTemp))
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundColor(.cyan)
@@ -11014,7 +12626,7 @@ struct MiniDashboardView: View {
                     
                     Text("CPU & 温度")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.themeTextSecondary)
                 }
                 .frame(width: 100)
                 
@@ -11026,7 +12638,7 @@ struct MiniDashboardView: View {
                             Label {
                                 Text(String(format: "内存 (RAM): %.1f%%", ramUsage))
                                     .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.8))
+                                    .foregroundColor(.themeTextSecondary)
                             } icon: {
                                 Image(systemName: "memorychip")
                                     .font(.system(size: 10))
@@ -11055,7 +12667,7 @@ struct MiniDashboardView: View {
                                     }
                                 }
                                 .padding(4)
-                                .background(Color.white.opacity(0.06))
+                                .background(Color.themeDivider)
                                 .cornerRadius(5)
                             }
                             .buttonStyle(.plain)
@@ -11066,7 +12678,7 @@ struct MiniDashboardView: View {
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Capsule()
-                                    .fill(Color.white.opacity(0.08))
+                                    .fill(Color.themeBorder)
                                     .frame(height: 5)
                                 
                                 Capsule()
@@ -11086,7 +12698,7 @@ struct MiniDashboardView: View {
                         
                         Text("电池: \(powerStats.stateOfCharge)%")
                             .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.8))
+                            .foregroundColor(.themeTextSecondary)
                         
                         if powerStats.isConnected {
                             Image(systemName: "powerplug.fill")
@@ -11094,7 +12706,7 @@ struct MiniDashboardView: View {
                                 .foregroundColor(.green)
                             Text("(\(powerStats.adapterName.prefix(12)))")
                                 .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.themeTextTertiary)
                         }
                     }
                     
@@ -11128,9 +12740,9 @@ struct MiniDashboardView: View {
         }
         .frame(width: 320, height: 220)
         .background(
-            Color(red: 0.08, green: 0.09, blue: 0.12).opacity(0.85)
+            Color.themeBg.opacity(0.85)
         )
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
         .onAppear {
             TelemetryManager.shared.isUIActive = true
             updateStats()
@@ -11217,6 +12829,451 @@ struct MiniDashboardView: View {
                 }
             }
         }
+    }
+}
+
+// ── WiFi & Bluetooth Signal Source Tracking Overlay Views ──
+
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .hudWindow
+    var blendingMode: NSVisualEffectView.BlendingMode = .withinWindow
+    
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
+struct SignalTrackingCabinView: View {
+    let targetId: String
+    let targetType: String
+    let targetName: String
+    let currentRssi: Int
+    let rssiHistory: [Int]
+    let radarHeading: Double
+    @Binding var isAudioEnabled: Bool
+    let onClose: () -> Void
+    
+    @State private var peakRssi: Int = -100
+    @State private var peakHeading: Double = 0.0
+    
+    var body: some View {
+        ZStack {
+            // Semi-transparent dark background with blur
+            VisualEffectView(material: .hudWindow, blendingMode: .withinWindow)
+                .edgesIgnoringSafeArea(.all)
+            
+            Color.black.opacity(0.4)
+                .edgesIgnoringSafeArea(.all)
+            
+            VStack(spacing: 20) {
+                // Top control bar
+                HStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: targetType == "WiFi" ? "wifi.circle.fill" : "sensor.tag.radiowaves.forward.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(targetType == "WiFi" ? .cyan : .purple)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(targetName)
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.themeText)
+                            Text("\(targetType == "WiFi" ? "BSSID/MAC" : "UUID"): \(targetId)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.themeTextSecondary)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        withAnimation {
+                            onClose()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark.circle.fill")
+                            Text("退出查找 (ESC)")
+                                .font(.system(size: 12, weight: .bold))
+                        }
+                        .foregroundColor(.themeText)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.3))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.red.opacity(0.6), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.escape, modifiers: [])
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
+                
+                Divider()
+                    .background(Color.themeBorder)
+                
+                HStack(spacing: 30) {
+                    // Left Column: Polar/Arc Meter
+                    VStack(spacing: 16) {
+                        Text("信号强弱物理仪表盘")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.themeTextSecondary)
+                        
+                        ZStack {
+                            // Circular Gauge Back
+                            Circle()
+                                .trim(from: 0.5, to: 1.0)
+                                .stroke(Color.themeBorder, style: StrokeStyle(lineWidth: 16, lineCap: .round))
+                                .frame(width: 200, height: 200)
+                                .rotationEffect(.degrees(180))
+                            
+                            // Colored Value Arc
+                            let progress = min(1.0, max(0.0, Double(currentRssi + 100) / 70.0))
+                            Circle()
+                                .trim(from: 0.5, to: 0.5 + CGFloat(progress) * 0.5)
+                                .stroke(
+                                    LinearGradient(colors: [.blue, .yellow, .orange, .red], startPoint: .leading, endPoint: .trailing),
+                                    style: StrokeStyle(lineWidth: 16, lineCap: .round)
+                                )
+                                .frame(width: 200, height: 200)
+                                .rotationEffect(.degrees(180))
+                            
+                            // Pointer / Needle
+                            GeometryReader { geo in
+                                let angle = -90.0 + progress * 180.0
+                                Capsule()
+                                    .fill(Color.white)
+                                    .frame(width: 4, height: 85)
+                                    .offset(y: -42)
+                                    .rotationEffect(.degrees(angle), anchor: .center)
+                                    .position(x: geo.size.width / 2.0, y: geo.size.height / 2.0)
+                                    .shadow(color: .black.opacity(0.5), radius: 3)
+                                
+                                Circle()
+                                    .fill(Color.white)
+                                    .frame(width: 14, height: 14)
+                                    .position(x: geo.size.width / 2.0, y: geo.size.height / 2.0)
+                                    .shadow(color: .black.opacity(0.5), radius: 2)
+                            }
+                            .frame(width: 200, height: 200)
+                            
+                            // Digital reading in center
+                            VStack(spacing: 4) {
+                                Text("\(currentRssi)")
+                                    .font(.system(size: 38, weight: .black, design: .monospaced))
+                                    .foregroundColor(.themeText)
+                                Text("dBm")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.themeTextSecondary)
+                            }
+                            .offset(y: 35)
+                        }
+                        .frame(width: 220, height: 150)
+                        
+                        // Distance band indicator
+                        let distanceLabel = getDistanceLabel(rssi: currentRssi)
+                        let distanceColor = getDistanceColor(rssi: currentRssi)
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(distanceColor)
+                                .frame(width: 8, height: 8)
+                            Text(distanceLabel)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(distanceColor)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(distanceColor.opacity(0.15))
+                        .cornerRadius(12)
+                    }
+                    .frame(maxWidth: .infinity)
+                    
+                    // Right Column:时序信号流动图
+                    VStack(spacing: 16) {
+                        Text("30秒物理信号衰减时序流动图")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.themeTextSecondary)
+                        
+                        ZStack {
+                            // Grid background
+                            Path { path in
+                                for i in 1..<4 {
+                                    let y = CGFloat(i) * 35.0
+                                    path.move(to: CGPoint(x: 0, y: y))
+                                    path.addLine(to: CGPoint(x: 340, y: y))
+                                }
+                                for i in 1..<6 {
+                                    let x = CGFloat(i) * (340.0 / 6.0)
+                                    path.move(to: CGPoint(x: x, y: 0))
+                                    path.addLine(to: CGPoint(x: x, y: 140))
+                                }
+                            }
+                            .stroke(Color.themeCardBg, lineWidth: 1)
+                            
+                            if rssiHistory.count > 1 {
+                                // Filled gradient under the curve
+                                generateFilledPath()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            (targetType == "WiFi" ? Color.cyan : Color.purple).opacity(0.25),
+                                            .clear
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                
+                                // Wave curve itself
+                                generateLinePath()
+                                .stroke(
+                                    LinearGradient(
+                                        colors: targetType == "WiFi" ? [.cyan, .blue] : [.purple, .indigo],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    ),
+                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
+                                )
+                            } else {
+                                Text("等待信号数据源注入...")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.themeTextTertiary)
+                            }
+                        }
+                        .frame(width: 340, height: 140)
+                        .background(Color.black.opacity(0.25))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.themeDivider, lineWidth: 1)
+                        )
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 24)
+                
+                Divider()
+                    .background(Color.themeBorder)
+                
+                // Bottom control: Geiger switch + guide
+                VStack(spacing: 14) {
+                    HStack(spacing: 16) {
+                        Toggle(isOn: $isAudioEnabled) {
+                            HStack(spacing: 6) {
+                                Image(systemName: isAudioEnabled ? "speaker.wave.3.fill" : "speaker.slash.fill")
+                                    .foregroundColor(isAudioEnabled ? .green : .themeTextTertiary)
+                                Text("开启盖革声音定位提示器")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundColor(.themeText)
+                            }
+                        }
+                        .toggleStyle(SwitchToggleStyle(tint: .green))
+                        
+                        Spacer()
+                        
+                        Text("盖革响频：\(getAudioRateText(rssi: currentRssi))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.themeTextSecondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.themeCardBg)
+.cornerRadius(10)
+.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.themeDivider, lineWidth: 1)
+                    )
+                    
+                    // Guidelines text
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "lightbulb.fill")
+                                .foregroundColor(.yellow)
+                                .font(.system(size: 12))
+                            Text("物理定位寻宝实操指南")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.themeText)
+                        }
+                        Text("1. 缓慢转动或偏转电脑方向。当“时序图”波峰出现或盖革声音响频变极快时，屏幕所对方向即为发射源方位。")
+                            .font(.system(size: 11))
+                            .foregroundColor(.themeTextSecondary)
+                        Text("2. 配合下方的标定，系统会自动捕获并记录该信号源的方向，更新它在雷达和热力图中的真实角度。")
+                            .font(.system(size: 11))
+                            .foregroundColor(.themeTextSecondary)
+                        if peakRssi > -100 {
+                            Text(String(format: "3. 🧭 系统已自动标定发射方位：%.0f° (最强电磁波方向，已对齐到雷达与热力网格)", peakHeading))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.cyan)
+                        } else {
+                            Text("3. 🧭 正在搜寻并自动计算电磁波最强方位...")
+                                .font(.system(size: 11))
+                                .foregroundColor(.themeTextSecondary)
+                        }
+                    }
+                    .padding(14)
+                    .background(Color.themeText.opacity(0.015))
+                    .cornerRadius(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+            }
+            .frame(width: 650, height: 500)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(red: 0.1, green: 0.11, blue: 0.15).opacity(0.92))
+                    .shadow(color: .black.opacity(0.5), radius: 24, x: 0, y: 12)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.themeBorder, lineWidth: 1)
+            )
+            .onChange(of: currentRssi) { newRssi in
+                if newRssi > peakRssi {
+                    peakRssi = newRssi
+                    peakHeading = radarHeading
+                    SignalSourceEstimator.shared.updateEstimatedAzimuth(forKey: targetId, azimuth: radarHeading)
+                }
+            }
+        }
+    }
+    
+    // Helpers
+    private func generateFilledPath() -> Path {
+        var path = Path()
+        guard rssiHistory.count > 1 else { return path }
+        
+        path.move(to: CGPoint(x: 0, y: 140))
+        let spacing: Double = 340.0 / 29.0
+        for idx in 0..<rssiHistory.count {
+            let xDouble: Double = Double(idx) * spacing
+            let x: CGFloat = CGFloat(xDouble)
+            let rawVal: Double = Double(rssiHistory[idx] + 100) / 70.0
+            var prog: Double = rawVal
+            if prog < 0.0 { prog = 0.0 }
+            if prog > 1.0 { prog = 1.0 }
+            let tempY: Double = 140.0 - prog * 130.0
+            let y: CGFloat = CGFloat(tempY)
+            path.addLine(to: CGPoint(x: x, y: y))
+        }
+        let countVal: Double = Double(rssiHistory.count)
+        let lastXDouble: Double = (countVal - 1.0) * spacing
+        let lastX: CGFloat = CGFloat(lastXDouble)
+        path.addLine(to: CGPoint(x: lastX, y: 140))
+        path.closeSubpath()
+        return path
+    }
+    
+    private func generateLinePath() -> Path {
+        var path = Path()
+        guard rssiHistory.count > 1 else { return path }
+        
+        let rawVal0: Double = Double(rssiHistory[0] + 100) / 70.0
+        var startProg: Double = rawVal0
+        if startProg < 0.0 { startProg = 0.0 }
+        if startProg > 1.0 { startProg = 1.0 }
+        let startTempY: Double = 140.0 - startProg * 130.0
+        let startY: CGFloat = CGFloat(startTempY)
+        path.move(to: CGPoint(x: 0, y: startY))
+        
+        let spacing: Double = 340.0 / 29.0
+        for idx in 1..<rssiHistory.count {
+            let xDouble: Double = Double(idx) * spacing
+            let x: CGFloat = CGFloat(xDouble)
+            let rawVal: Double = Double(rssiHistory[idx] + 100) / 70.0
+            var p: Double = rawVal
+            if p < 0.0 { p = 0.0 }
+            if p > 1.0 { p = 1.0 }
+            let tempY: Double = 140.0 - p * 130.0
+            let y: CGFloat = CGFloat(tempY)
+            path.addLine(to: CGPoint(x: x, y: y))
+        }
+        return path
+    }
+
+    private func getDistanceLabel(rssi: Int) -> String {
+        if rssi >= -45 {
+            return "红色 (极近，<2米)"
+        } else if rssi >= -60 {
+            return "橙色 (较近，2-5米)"
+        } else if rssi >= -75 {
+            return "黄色 (一般，5-10米)"
+        } else if rssi >= -90 {
+            return "蓝色 (较远，10-20米)"
+        } else {
+            return "灰色 (极远，>20米)"
+        }
+    }
+    
+    private func getDistanceColor(rssi: Int) -> Color {
+        if rssi >= -45 {
+            return .red
+        } else if rssi >= -60 {
+            return .orange
+        } else if rssi >= -75 {
+            return .yellow
+        } else if rssi >= -90 {
+            return .blue
+        } else {
+            return .gray
+        }
+    }
+    
+    private func getAudioRateText(rssi: Int) -> String {
+        if !isAudioEnabled { return "已静音" }
+        let interval = max(0.08, min(1.5, Double(-40 - rssi) * 0.03))
+        if interval <= 0.1 {
+            return "极速响动 (Geiger Noise)"
+        } else {
+            return String(format: "每 %.2f 秒单次滴答", interval)
+        }
+    }
+}
+
+struct TransmitterNodeIconView: View {
+    let name: String
+    let rssi: Int
+    let icon: String
+    let color: Color
+    let isSelected: Bool
+    
+    var body: some View {
+        VStack(spacing: 2) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.85))
+                    .frame(width: 24, height: 24)
+                    .overlay(
+                        Circle()
+                            .stroke(isSelected ? Color.white : color.opacity(0.4), lineWidth: isSelected ? 2.0 : 1.0)
+                    )
+                    .shadow(color: color.opacity(0.6), radius: 4)
+                
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundColor(.themeText)
+            }
+            
+            Text(name.prefix(8))
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(.themeText)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.black.opacity(0.6).cornerRadius(3))
+        }
+        .frame(width: 50, height: 50)
     }
 }
 

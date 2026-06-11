@@ -101,6 +101,9 @@ class SMCController {
     }
     
     func doOpen() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isOpen else { return }
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
         if service != 0 {
             let result = IOServiceOpen(service, mach_task_self_, 0, &connection)
@@ -117,6 +120,8 @@ class SMCController {
     }
     
     func doClose() {
+        lock.lock()
+        defer { lock.unlock() }
         if isOpen && connection != 0 {
             IOServiceClose(connection)
             connection = 0

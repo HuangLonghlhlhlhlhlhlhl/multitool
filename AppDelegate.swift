@@ -41,6 +41,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Listen for preference changes to update the menu bar layout instantly
         NotificationCenter.default.addObserver(self, selector: #selector(handleDefaultsChange), name: UserDefaults.didChangeNotification, object: nil)
         
+        if #available(macOS 10.14, *) {
+            NSApp.addObserver(self, forKeyPath: "effectiveAppearance", options: [.new], context: nil)
+        }
+        ThemeManager.applyTheme()
+        
         // 1. Defer dashboard window initialization to click or manual open
         
         // 2. 状态栏按钮
@@ -245,12 +250,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.isOpaque = false
             window.backgroundColor = .clear
             
-            // Intercept standard zoom button to open the full dashboard window screen-centered!
-            if let zoomButton = window.standardWindowButton(.zoomButton) {
-                zoomButton.target = self
-                zoomButton.action = #selector(miniZoomButtonClicked)
-            }
-            
             self.miniStatusWindow = window
         }
         
@@ -270,6 +269,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        
+        // Intercept standard zoom button to open the full dashboard window screen-centered!
+        if let zoomButton = window.standardWindowButton(.zoomButton) {
+            zoomButton.target = self
+            zoomButton.action = #selector(miniZoomButtonClicked)
+        }
     }
     
     func hideMiniStatusWindow() {
@@ -479,6 +484,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self] in
             TelemetryManager.shared.updateInterval()
             self?.updateTelemetryText()
+            ThemeManager.applyTheme()
+        }
+    }
+    
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == "effectiveAppearance" {
+            ThemeManager.applyTheme()
+        } else {
+            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
         }
     }
     
@@ -564,6 +578,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
     
+    private func padLeft(_ str: String, toLength length: Int) -> String {
+        let paddingCount = length - str.count
+        if paddingCount > 0 {
+            return String(repeating: " ", count: paddingCount) + str
+        }
+        return String(str.prefix(length))
+    }
+    
+    private func padRight(_ str: String, toLength length: Int) -> String {
+        let paddingCount = length - str.count
+        if paddingCount > 0 {
+            return str + String(repeating: " ", count: paddingCount)
+        }
+        return String(str.prefix(length))
+    }
+    
     private func padSpeedRight(_ speedStr: String, toLength length: Int = 5) -> String {
         let paddingCount = length - speedStr.count
         if paddingCount > 0 {
@@ -599,10 +629,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let showNet = UserDefaults.standard.object(forKey: "showStatusBarNetSpeed") as? Bool ?? true
         let showGPU = UserDefaults.standard.object(forKey: "showStatusBarGPUUsage") as? Bool ?? true
         
-        let displayCpu = min(cpuUsage, 99.0)
-        let displayRam = min(ramUsage, 99.0)
-        let displaySsd = min(ssdUsage, 99.0)
-        let displayGpu = min(gpuUsage, 99.0)
+        let displayCpu = min(cpuUsage, 100.0)
+        let displayRam = min(ramUsage, 100.0)
+        let displaySsd = min(ssdUsage, 100.0)
+        let displayGpu = min(gpuUsage, 100.0)
         
         // Build all active columns mapped by keys
         var allActiveColumns: [(key: String, col: (top: String, bottom: String))] = []
@@ -612,44 +642,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             switch key {
             case "CPU":
                 if showCPU || showCPUTemp {
-                    let topStr = showCPU ? String(format: "C:%2.0f%%", displayCpu) : "     "
-                    let bottomStr = showCPUTemp ? String(format: " %2.0f°C", cpuTemp) : "      "
+                    let valTop = showCPU ? String(format: "C:%2.0f%%", displayCpu) : ""
+                    let topStr = padRight(valTop, toLength: 7)
+                    let valBottom = showCPUTemp ? String(format: "  %2.0f°C", cpuTemp) : ""
+                    let bottomStr = padRight(valBottom, toLength: 7)
                     allActiveColumns.append((key, (topStr, bottomStr)))
                 }
             case "RAM":
                 if showRAM {
-                    let topStr = String(format: "M:%2.0f%%", displayRam)
-                    let bottomStr = String(format: " %2.0f°C", ramTemp)
+                    let valTop = String(format: "M:%2.0f%%", displayRam)
+                    let topStr = padRight(valTop, toLength: 7)
+                    let valBottom = String(format: "  %2.0f°C", ramTemp)
+                    let bottomStr = padRight(valBottom, toLength: 7)
                     allActiveColumns.append((key, (topStr, bottomStr)))
                 }
             case "SSD":
                 if showSSD {
-                    let topStr = String(format: "S:%2.0f%%", displaySsd)
-                    let bottomStr = String(format: " %2.0f°C", ssdTemp)
+                    let valTop = String(format: "S:%2.0f%%", displaySsd)
+                    let topStr = padRight(valTop, toLength: 7)
+                    let valBottom = String(format: "  %2.0f°C", ssdTemp)
+                    let bottomStr = padRight(valBottom, toLength: 7)
                     allActiveColumns.append((key, (topStr, bottomStr)))
                 }
             case "GPU":
                 if showGPU {
-                    let topStr = String(format: "G:%2.0f%%", displayGpu)
-                    let bottomStr = String(format: " %2.0f°C", gpuTemp)
+                    let valTop = String(format: "G:%3.0f%%", displayGpu)
+                    let topStr = padRight(valTop, toLength: 8)
+                    let valBottom = String(format: "  %2.0f°C", gpuTemp)
+                    let bottomStr = padRight(valBottom, toLength: 8)
                     allActiveColumns.append((key, (topStr, bottomStr)))
                 }
             case "Fan":
                 if showFan && fanCount > 0 {
                     let speed = fanSpeed.first ?? 0.0
-                    let topStr = String(format: "F:%4.0f", speed)
-                    let bottomStr = "   RPM"
+                    let valTop = String(format: "F:%4.0f", speed)
+                    let topStr = padRight(valTop, toLength: 8)
+                    let valBottom = "   RPM"
+                    let bottomStr = padRight(valBottom, toLength: 8)
                     allActiveColumns.append((key, (topStr, bottomStr)))
                 }
             case "Net":
                 if showNet {
-                    let upSpeedCompact = formatSpeedCompact(upSpeed)
-                    let upSpeedRaw = "⇡" + upSpeedCompact
-                    let topStr = padSpeedRight(upSpeedRaw, toLength: 5)
+                    let upSpeedCompact = "↑" + formatSpeedCompact(upSpeed)
+                    let topStr = padLeft(upSpeedCompact, toLength: 6)
                     
-                    let downSpeedCompact = formatSpeedCompact(downSpeed)
-                    let downSpeedRaw = "⇣" + downSpeedCompact
-                    let bottomStr = padSpeedRight(downSpeedRaw, toLength: 5)
+                    let downSpeedCompact = "↓" + formatSpeedCompact(downSpeed)
+                    let bottomStr = padLeft(downSpeedCompact, toLength: 6)
                     
                     allActiveColumns.append((key, (topStr, bottomStr)))
                 }
@@ -693,11 +731,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        let line1 = columns.map { $0.top }.joined(separator: " ")
-        let line2 = columns.map { $0.bottom }.joined(separator: " ")
+        var line1 = columns.map { $0.top }.joined(separator: "")
+        var line2 = columns.map { $0.bottom }.joined(separator: "")
+        
+        // Trim trailing whitespaces
+        line1 = line1.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        line2 = line2.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        
+        // Trim common leading whitespaces
+        let spaceCount1 = line1.prefix(while: { $0 == " " }).count
+        let spaceCount2 = line2.prefix(while: { $0 == " " }).count
+        let commonSpaces = min(spaceCount1, spaceCount2)
+        if commonSpaces > 0 {
+            line1 = String(line1.dropFirst(commonSpaces))
+            line2 = String(line2.dropFirst(commonSpaces))
+        }
+        
         let combinedString = "\(line1)\n\(line2)"
         
-        let font = NSFont.monospacedSystemFont(ofSize: 10.0, weight: .regular)
+        let font = NSFont(name: "SF Mono", size: 10.0) ?? NSFont(name: "Menlo", size: 10.0) ?? NSFont.monospacedSystemFont(ofSize: 10.0, weight: .regular)
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = -3.2
         paragraphStyle.alignment = .left
@@ -835,6 +887,7 @@ struct StatusBarMockupView: View {
 }
 
 struct SettingsView: View {
+    @AppStorage("themeMode") private var themeMode: Int = 0 // 0: 跟随系统, 1: 浅色, 2: 深色
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("refreshInterval") private var refreshInterval: Double = 1.5
     @AppStorage("showCPUTemp") private var showCPUTemp: Bool = true
@@ -915,6 +968,26 @@ struct SettingsView: View {
                     VStack(spacing: 12) {
                         SettingsSection(title: "基础设置") {
                             SettingsToggleRow(label: "开机时自动启动", icon: "play.circle", isOn: $launchAtLogin)
+                        }
+                        
+                        SettingsSection(title: "外观设置") {
+                            HStack {
+                                Image(systemName: "paintpalette")
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 20)
+                                Text("主题模式")
+                                    .font(.system(size: 12))
+                                Spacer()
+                                Picker("", selection: $themeMode) {
+                                    Text("跟随系统").tag(0)
+                                    Text("浅色").tag(1)
+                                    Text("深色").tag(2)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 200)
+                            }
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 16)
                         }
                         
                         SettingsSection(title: "智能维护 (系统健康)") {
@@ -1200,13 +1273,15 @@ struct SettingsView: View {
         }
         .frame(width: 440, height: 470)
         .background(Color(NSColor.windowBackgroundColor))
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
     }
 }
 
 // MARK: - About View
 
 struct AboutView: View {
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.4"
+    @AppStorage("themeMode") private var themeMode: Int = 0
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.5"
     
     var body: some View {
         VStack(spacing: 20) {
@@ -1278,6 +1353,7 @@ struct AboutView: View {
         .padding(32)
         .frame(width: 360, height: 300)
         .background(Color(NSColor.windowBackgroundColor))
+        .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
     }
 }
 
@@ -1394,10 +1470,16 @@ class NetworkMonitor {
 func formatSpeedCompact(_ bytesPerSecond: Double) -> String {
     if bytesPerSecond < 1024 {
         return String(format: "%.0fB", bytesPerSecond)
-    } else if bytesPerSecond < 1024 * 1024 {
+    } else if bytesPerSecond < 1024 * 100 {
         return String(format: "%.1fK", bytesPerSecond / 1024.0)
-    } else {
+    } else if bytesPerSecond < 1024 * 1024 {
+        return String(format: "%.0fK", bytesPerSecond / 1024.0)
+    } else if bytesPerSecond < 1024 * 1024 * 100 {
         return String(format: "%.1fM", bytesPerSecond / (1024.0 * 1024.0))
+    } else if bytesPerSecond < 1024 * 1024 * 1024 {
+        return String(format: "%.0fM", bytesPerSecond / (1024.0 * 1024.0))
+    } else {
+        return String(format: "%.1fG", bytesPerSecond / (1024.0 * 1024.0 * 1024.0))
     }
 }
 

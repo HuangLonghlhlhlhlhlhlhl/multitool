@@ -245,6 +245,7 @@ public class MemoryPurger {
     
     // Cache dictionary for computing process CPU usage differentials
     private static var lastProcessCPUTimes: [Int32: (date: Date, cpuTimeNs: UInt64)] = [:]
+    private static var pidNameCache: [String: String] = [:] // Key: "\(pid)_\(bsdName)"
     
     /// Retrieve the currently active user application processes and their aggregated memory usage (RSS) & CPU usage.
     public static func getActiveProcessMemoryList() -> [ProcessInfoItem] {
@@ -285,7 +286,8 @@ public class MemoryPurger {
         let now = Date()
         var newProcessCPUTimes: [Int32: (date: Date, cpuTimeNs: UInt64)] = [:]
         
-        for i in 0..<Int(count) {
+        let limit = min(Int(count), pids.count)
+        for i in 0..<limit {
             let pid = pids[i]
             guard pid > 0 else { continue }
             
@@ -294,20 +296,32 @@ public class MemoryPurger {
             let bytesRead = proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &info, size)
             guard bytesRead == size else { continue }
             
+            // 1. Get BSD Name for fast filter (no syscall overhead)
             let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: 16) {
                     String(cString: $0)
                 }
             }
             
-            let name = getProcessName(pid: pid, bsdName: bsdName)
-            if blacklist.contains(name) {
+            if blacklist.contains(bsdName) {
                 continue
             }
             
-            // Skip lowercase processes ending with 'd' (system daemons)
-            if name.count > 1 && name.last == "d" && name.allSatisfy({ !$0.isUppercase }) {
+            if bsdName.count > 1 && bsdName.last == "d" && bsdName.allSatisfy({ !$0.isUppercase }) {
                 continue
+            }
+            
+            // 2. Fetch name using cache to bypass proc_pidpath calls
+            let cacheKey = "\(pid)_\(bsdName)"
+            var name: String
+            if let cached = pidNameCache[cacheKey] {
+                name = cached
+            } else {
+                name = getProcessName(pid: pid, bsdName: bsdName)
+                if blacklist.contains(name) || (name.count > 1 && name.last == "d" && name.allSatisfy({ !$0.isUppercase })) {
+                    continue
+                }
+                pidNameCache[cacheKey] = name
             }
             
             let rssKB = Double(info.ptinfo.pti_resident_size) / 1024.0
@@ -357,6 +371,16 @@ public class MemoryPurger {
         
         // Save current PIDs' CPU times for next tick
         lastProcessCPUTimes = newProcessCPUTimes
+        
+        // Clean up dead processes from the PID cache to prevent memory growth
+        let activePidsSet = Set(pids.prefix(Int(count)))
+        pidNameCache = pidNameCache.filter { key, _ in
+            if let firstPart = key.split(separator: "_").first,
+               let pid = Int32(firstPart) {
+                return activePidsSet.contains(pid)
+            }
+            return false
+        }
         
         var result: [ProcessInfoItem] = []
         for (name, rssKB) in processMemoryMap {
@@ -517,73 +541,138 @@ public class MemoryPurger {
         }
         
         let candidateGroups = sizeMap.filter { $0.value.count >= 2 }
-        let totalCandidates = candidateGroups.values.reduce(0, { $0 + $1.count })
+        let candidateFilesList = candidateGroups.values.flatMap { $0 }
+        let totalCandidates = candidateFilesList.count
         
         if totalCandidates == 0 {
             progressHandler(1.0, "扫描完成，未发现重复文件。")
             return []
         }
         
-        progressHandler(0.4, "大小相同的文件共计 \(totalCandidates) 个，正在进行首部 10KB 校验...")
+        progressHandler(0.4, "大小相同的文件共计 \(totalCandidates) 个，正在并发特征校验...")
         
+        let groupLock = NSLock()
         var partialHashMap: [String: [URL]] = [:]
-        var index = 0
-        for (size, files) in candidateGroups {
-            for file in files {
-                index += 1
-                let progress = 0.4 + (Double(index) / Double(totalCandidates)) * 0.3
-                if index % 20 == 0 {
-                    progressHandler(progress, "正在提取特征哈希 (\(index)/\(totalCandidates))...")
-                }
-                
-                if let partialHash = getFileMD5(url: file, partial: true) {
-                    let key = "\(size)_\(partialHash)"
-                    partialHashMap[key, default: []].append(file)
+        
+        var completedCount = 0
+        let counterLock = NSLock()
+        
+        DispatchQueue.concurrentPerform(iterations: totalCandidates) { idx in
+            let file = candidateFilesList[idx]
+            guard let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map({ Int64($0) }) else { return }
+            
+            if let partialHash = getFileMD5(url: file, partial: true) {
+                let key = "\(size)_\(partialHash)"
+                groupLock.lock()
+                partialHashMap[key, default: []].append(file)
+                groupLock.unlock()
+            }
+            
+            counterLock.lock()
+            completedCount += 1
+            let currentCompleted = completedCount
+            counterLock.unlock()
+            
+            if currentCompleted % 20 == 0 || currentCompleted == totalCandidates {
+                let pct = 0.4 + (Double(currentCompleted) / Double(totalCandidates)) * 0.3
+                DispatchQueue.main.async {
+                    progressHandler(pct, "正在提取特征哈希 (\(currentCompleted)/\(totalCandidates))...")
                 }
             }
         }
         
         let secondCandidates = partialHashMap.filter { $0.value.count >= 2 }
-        let totalSecond = secondCandidates.values.reduce(0, { $0 + $1.count })
+        let secondCandidatesList = Array(secondCandidates.values)
+        let totalSecondGroups = secondCandidatesList.count
+        let totalSecondFilesCount = secondCandidatesList.reduce(0, { $0 + $1.count })
         
-        if totalSecond == 0 {
+        if totalSecondGroups == 0 {
             progressHandler(1.0, "扫描完成，未发现重复文件。")
             return []
         }
         
-        progressHandler(0.7, "发现疑似重复组，正在进行全文件哈希精细校验...")
+        progressHandler(0.7, "发现疑似重复组，正在并发全文件哈希精细校验...")
         
         var finalGroups: [DuplicateFileGroup] = []
-        var finalIndex = 0
+        let secondLock = NSLock()
         
-        for (key, files) in secondCandidates {
-            let parts = key.components(separatedBy: "_")
-            guard let size = Int64(parts[0]) else { continue }
+        var finalCompletedCount = 0
+        let finalCounterLock = NSLock()
+        
+        DispatchQueue.concurrentPerform(iterations: totalSecondGroups) { groupIdx in
+            let files = secondCandidatesList[groupIdx]
+            guard let size = (try? files[0].resourceValues(forKeys: [.fileSizeKey]).fileSize).map({ Int64($0) }) else { return }
             
             var fullHashMap: [String: [URL]] = [:]
-            
             for file in files {
-                finalIndex += 1
-                let progress = 0.7 + (Double(finalIndex) / Double(totalSecond)) * 0.25
-                if finalIndex % 10 == 0 {
-                    progressHandler(progress, "深度核对中 (\(finalIndex)/\(totalSecond))...")
-                }
-                
                 if let fullHash = getFileMD5(url: file, partial: false) {
                     fullHashMap[fullHash, default: []].append(file)
+                }
+                
+                finalCounterLock.lock()
+                finalCompletedCount += 1
+                let currentFinalCompleted = finalCompletedCount
+                finalCounterLock.unlock()
+                
+                if currentFinalCompleted % 10 == 0 || currentFinalCompleted == totalSecondFilesCount {
+                    let pct = 0.7 + (Double(currentFinalCompleted) / Double(totalSecondFilesCount)) * 0.25
+                    DispatchQueue.main.async {
+                        progressHandler(pct, "深度核对中 (\(currentFinalCompleted)/\(totalSecondFilesCount))...")
+                    }
                 }
             }
             
             for (hash, matchedFiles) in fullHashMap {
                 if matchedFiles.count >= 2 {
                     let sizeStr = formatBytesCompact(size)
+                    secondLock.lock()
                     finalGroups.append(DuplicateFileGroup(size: size, sizeString: sizeStr, hash: hash, files: matchedFiles))
+                    secondLock.unlock()
                 }
             }
         }
         
         progressHandler(1.0, "重复文件扫描完成！共发现 \(finalGroups.count) 组重复文件。")
         return finalGroups
+    }
+    
+    public enum DuplicateSelectionRule: Int {
+        case oldest = 0
+        case newest = 1
+        case shortestPath = 2
+    }
+    
+    public static func autoSelectDuplicates(groups: [DuplicateFileGroup], rule: DuplicateSelectionRule) -> Set<URL> {
+        var selected = Set<URL>()
+        for group in groups {
+            guard group.files.count >= 2 else { continue }
+            var sortedFiles = group.files
+            
+            switch rule {
+            case .oldest:
+                sortedFiles.sort { urlA, urlB in
+                    let dateA = (try? urlA.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                    let dateB = (try? urlB.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                    return dateA < dateB
+                }
+            case .newest:
+                sortedFiles.sort { urlA, urlB in
+                    let dateA = (try? urlA.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                    let dateB = (try? urlB.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+                    return dateA > dateB
+                }
+            case .shortestPath:
+                sortedFiles.sort { urlA, urlB in
+                    return urlA.path.count < urlB.path.count
+                }
+            }
+            
+            // Select all duplicates except the first one to delete
+            for i in 1..<sortedFiles.count {
+                selected.insert(sortedFiles[i])
+            }
+        }
+        return selected
     }
     
     public static func scanAppLeftoversAndCaches(progressHandler: @escaping (Double, String) -> Void) -> [TrashItem] {
@@ -598,58 +687,145 @@ public class MemoryPurger {
         }
         
         // 1. Xcode DerivedData
-        progressHandler(0.1, "正在扫描 Xcode DerivedData 缓存...")
+        progressHandler(0.05, "正在扫描 Xcode DerivedData 缓存...")
         let derivedDataPath = NSHomeDirectory() + "/Library/Developer/Xcode/DerivedData"
-        let derivedDataURL = URL(fileURLWithPath: derivedDataPath)
         if fileManager.fileExists(atPath: derivedDataPath) {
-            let size = getDirectorySize(url: derivedDataURL)
+            let size = getDirectorySize(url: URL(fileURLWithPath: derivedDataPath))
             if size > 0 {
-                items.append(TrashItem(
-                    name: "Xcode DerivedData 编译缓存",
-                    path: derivedDataPath,
-                    sizeBytes: size,
-                    sizeString: formatBytes(size),
-                    typeLabel: "Xcode缓存"
-                ))
+                items.append(TrashItem(name: "Xcode DerivedData 编译缓存", path: derivedDataPath, sizeBytes: size, sizeString: formatBytes(size), typeLabel: "Xcode缓存"))
             }
         }
         
-        // 2. System Logs
-        progressHandler(0.3, "正在扫描系统日志缓存...")
-        let logsPath = NSHomeDirectory() + "/Library/Logs"
-        let logsURL = URL(fileURLWithPath: logsPath)
-        if fileManager.fileExists(atPath: logsPath) {
-            let size = getDirectorySize(url: logsURL)
+        // 2. Xcode Archives
+        progressHandler(0.10, "正在扫描 Xcode Archives 历史归档...")
+        let archivesPath = NSHomeDirectory() + "/Library/Developer/Xcode/Archives"
+        if fileManager.fileExists(atPath: archivesPath) {
+            let size = getDirectorySize(url: URL(fileURLWithPath: archivesPath))
             if size > 0 {
-                items.append(TrashItem(
-                    name: "用户系统日志文件",
-                    path: logsPath,
-                    sizeBytes: size,
-                    sizeString: formatBytes(size),
-                    typeLabel: "系统日志"
-                ))
+                items.append(TrashItem(name: "Xcode Archives 历史归档", path: archivesPath, sizeBytes: size, sizeString: formatBytes(size), typeLabel: "Xcode缓存"))
             }
         }
         
-        // 3. User Caches
-        progressHandler(0.5, "正在扫描应用缓存目录...")
+        // 3. Xcode iOS DeviceSupport
+        progressHandler(0.15, "正在扫描 iOS DeviceSupport 调试符号...")
+        let deviceSupportPath = NSHomeDirectory() + "/Library/Developer/Xcode/iOS DeviceSupport"
+        if fileManager.fileExists(atPath: deviceSupportPath) {
+            let size = getDirectorySize(url: URL(fileURLWithPath: deviceSupportPath))
+            if size > 0 {
+                items.append(TrashItem(name: "Xcode iOS DeviceSupport 调试符号", path: deviceSupportPath, sizeBytes: size, sizeString: formatBytes(size), typeLabel: "Xcode缓存"))
+            }
+        }
+        
+        // 4. CocoaPods Cache
+        progressHandler(0.20, "正在扫描 CocoaPods 依赖包缓存...")
+        let podsCachePath = NSHomeDirectory() + "/Library/Caches/CocoaPods"
+        var podsCacheSize: Int64 = 0
+        if fileManager.fileExists(atPath: podsCachePath) {
+            podsCacheSize = getDirectorySize(url: URL(fileURLWithPath: podsCachePath))
+            if podsCacheSize > 0 {
+                items.append(TrashItem(name: "CocoaPods 依赖包缓存", path: podsCachePath, sizeBytes: podsCacheSize, sizeString: formatBytes(podsCacheSize), typeLabel: "Xcode缓存"))
+            }
+        }
+        
+        // 5. SPM Cache
+        progressHandler(0.25, "正在扫描 Swift Package Manager 缓存...")
+        let spmCachePath = NSHomeDirectory() + "/Library/Caches/org.swift.swiftpm"
+        var spmCacheSize: Int64 = 0
+        if fileManager.fileExists(atPath: spmCachePath) {
+            spmCacheSize = getDirectorySize(url: URL(fileURLWithPath: spmCachePath))
+            if spmCacheSize > 0 {
+                items.append(TrashItem(name: "Swift Package Manager 缓存", path: spmCachePath, sizeBytes: spmCacheSize, sizeString: formatBytes(spmCacheSize), typeLabel: "Xcode缓存"))
+            }
+        }
+        
+        // 6. Homebrew Cache
+        progressHandler(0.30, "正在扫描 Homebrew 缓存...")
+        let brewCachePath = NSHomeDirectory() + "/Library/Caches/Homebrew"
+        var brewCacheSize: Int64 = 0
+        if fileManager.fileExists(atPath: brewCachePath) {
+            brewCacheSize = getDirectorySize(url: URL(fileURLWithPath: brewCachePath))
+            if brewCacheSize > 0 {
+                items.append(TrashItem(name: "Homebrew 缓存", path: brewCachePath, sizeBytes: brewCacheSize, sizeString: formatBytes(brewCacheSize), typeLabel: "包管理器缓存"))
+            }
+        }
+        
+        // 7. npm Cache
+        progressHandler(0.35, "正在扫描 npm 全局缓存...")
+        let npmCachePath = NSHomeDirectory() + "/.npm"
+        if fileManager.fileExists(atPath: npmCachePath) {
+            let size = getDirectorySize(url: URL(fileURLWithPath: npmCachePath))
+            if size > 0 {
+                items.append(TrashItem(name: "npm 全局缓存", path: npmCachePath, sizeBytes: size, sizeString: formatBytes(size), typeLabel: "包管理器缓存"))
+            }
+        }
+        
+        // 8. pnpm Cache
+        progressHandler(0.40, "正在扫描 pnpm 缓存...")
+        let pnpmCachePath = NSHomeDirectory() + "/Library/Caches/pnpm"
+        var pnpmCacheSize: Int64 = 0
+        if fileManager.fileExists(atPath: pnpmCachePath) {
+            pnpmCacheSize = getDirectorySize(url: URL(fileURLWithPath: pnpmCachePath))
+            if pnpmCacheSize > 0 {
+                items.append(TrashItem(name: "pnpm 缓存", path: pnpmCachePath, sizeBytes: pnpmCacheSize, sizeString: formatBytes(pnpmCacheSize), typeLabel: "包管理器缓存"))
+            }
+        }
+        
+        // 9. Gradle Cache
+        progressHandler(0.45, "正在扫描 Gradle 构建缓存...")
+        let gradleCachePath = NSHomeDirectory() + "/.gradle/caches"
+        if fileManager.fileExists(atPath: gradleCachePath) {
+            let size = getDirectorySize(url: URL(fileURLWithPath: gradleCachePath))
+            if size > 0 {
+                items.append(TrashItem(name: "Gradle 构建缓存", path: gradleCachePath, sizeBytes: size, sizeString: formatBytes(size), typeLabel: "包管理器缓存"))
+            }
+        }
+        
+        // 10. Google Chrome Cache
+        progressHandler(0.50, "正在扫描 Chrome 浏览器缓存...")
+        let chromeCachePath = NSHomeDirectory() + "/Library/Caches/Google/Chrome"
+        var chromeCacheSize: Int64 = 0
+        if fileManager.fileExists(atPath: chromeCachePath) {
+            chromeCacheSize = getDirectorySize(url: URL(fileURLWithPath: chromeCachePath))
+            if chromeCacheSize > 0 {
+                items.append(TrashItem(name: "Google Chrome 浏览器缓存", path: chromeCachePath, sizeBytes: chromeCacheSize, sizeString: formatBytes(chromeCacheSize), typeLabel: "应用缓存"))
+            }
+        }
+        
+        // 11. Safari Cache
+        progressHandler(0.55, "正在扫描 Safari 浏览器缓存...")
+        let safariCachePath = NSHomeDirectory() + "/Library/Caches/com.apple.Safari"
+        var safariCacheSize: Int64 = 0
+        if fileManager.fileExists(atPath: safariCachePath) {
+            safariCacheSize = getDirectorySize(url: URL(fileURLWithPath: safariCachePath))
+            if safariCacheSize > 0 {
+                items.append(TrashItem(name: "Safari 浏览器缓存", path: safariCachePath, sizeBytes: safariCacheSize, sizeString: formatBytes(safariCacheSize), typeLabel: "应用缓存"))
+            }
+        }
+        
+        // 12. User Global Caches
+        progressHandler(0.60, "正在扫描应用全局缓存...")
         let cachesPath = NSHomeDirectory() + "/Library/Caches"
-        let cachesURL = URL(fileURLWithPath: cachesPath)
         if fileManager.fileExists(atPath: cachesPath) {
-            let size = getDirectorySize(url: cachesURL)
-            if size > 0 {
-                items.append(TrashItem(
-                    name: "应用全局缓存数据 (Caches)",
-                    path: cachesPath,
-                    sizeBytes: size,
-                    sizeString: formatBytes(size),
-                    typeLabel: "应用缓存"
-                ))
+            let rawCachesSize = getDirectorySize(url: URL(fileURLWithPath: cachesPath))
+            let accountedCachesSize = podsCacheSize + spmCacheSize + brewCacheSize + pnpmCacheSize + chromeCacheSize + safariCacheSize
+            let remainingCachesSize = max(0, rawCachesSize - accountedCachesSize)
+            if remainingCachesSize > 1024 * 1024 {
+                items.append(TrashItem(name: "其他应用全局缓存", path: cachesPath, sizeBytes: remainingCachesSize, sizeString: formatBytes(remainingCachesSize), typeLabel: "应用缓存"))
             }
         }
         
-        // 4. App Leftovers (Application Support)
-        progressHandler(0.7, "正在深度扫描卸载残留文件...")
+        // 13. System Logs & Diagnostics
+        progressHandler(0.65, "正在扫描系统日志与诊断报告...")
+        let logsPath = NSHomeDirectory() + "/Library/Logs"
+        if fileManager.fileExists(atPath: logsPath) {
+            let size = getDirectorySize(url: URL(fileURLWithPath: logsPath))
+            if size > 0 {
+                items.append(TrashItem(name: "系统日志与诊断报告", path: logsPath, sizeBytes: size, sizeString: formatBytes(size), typeLabel: "系统日志"))
+            }
+        }
+        
+        // 14. App Leftovers (Application Support)
+        progressHandler(0.70, "正在深度扫描卸载残留文件...")
         let (installedNames, installedBundles) = getInstalledAppsInfo()
         let appSupportPath = NSHomeDirectory() + "/Library/Application Support"
         let appSupportURL = URL(fileURLWithPath: appSupportPath)
@@ -657,7 +833,7 @@ public class MemoryPurger {
         if let subdirs = try? fileManager.contentsOfDirectory(at: appSupportURL, includingPropertiesForKeys: [], options: [.skipsHiddenFiles]) {
             let totalSub = subdirs.count
             for (idx, subdir) in subdirs.enumerated() {
-                let pct = 0.7 + (Double(idx) / Double(totalSub)) * 0.25
+                let pct = 0.70 + (Double(idx) / Double(totalSub)) * 0.25
                 if idx % 5 == 0 {
                     progressHandler(pct, "分析卸载残留: \(subdir.lastPathComponent)...")
                 }
@@ -730,4 +906,127 @@ public class MemoryPurger {
         }
         return (names, bundles)
     }
+    
+    public struct LargeFileItem: Identifiable, Hashable {
+        public var id: String { path }
+        public let name: String
+        public let path: String
+        public let sizeBytes: Int64
+        public let sizeString: String
+        public let typeLabel: String // "视频", "音频", "压缩包", "程序/镜像", "文档", "图片/设计", "其他"
+        
+        public init(name: String, path: String, sizeBytes: Int64, sizeString: String, typeLabel: String) {
+            self.name = name
+            self.path = path
+            self.sizeBytes = sizeBytes
+            self.sizeString = sizeString
+            self.typeLabel = typeLabel
+        }
+    }
+    
+    private static func getLargeFileTypeLabel(ext: String) -> String {
+        let lower = ext.lowercased()
+        switch lower {
+        case "mp4", "mkv", "mov", "avi", "flv", "wmv", "m4v", "webm":
+            return "视频"
+        case "mp3", "wav", "m4a", "flac", "aac", "ogg":
+            return "音频"
+        case "zip", "tar", "gz", "7z", "rar", "bz2", "xz":
+            return "压缩包"
+        case "dmg", "pkg", "iso", "app", "ipa":
+            return "程序/镜像"
+        case "pdf", "docx", "xlsx", "pptx", "pages", "numbers", "key", "txt", "md", "csv", "doc", "xls", "ppt":
+            return "文档"
+        case "psd", "ai", "sketch", "fig", "png", "jpg", "jpeg", "gif", "webp", "tiff", "heic":
+            return "图片/设计"
+        default:
+            return "其他"
+        }
+    }
+    
+    public static func scanLargeFiles(in folder: URL, minSizeBytes: Int64, progressHandler: @escaping (Double, String) -> Void) -> [LargeFileItem] {
+        var items: [LargeFileItem] = []
+        let fileManager = FileManager.default
+        
+        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey, .isPackageKey, .isRegularFileKey]
+        
+        guard let enumerator = fileManager.enumerator(at: folder,
+                                                     includingPropertiesForKeys: keys,
+                                                     options: [.skipsPackageDescendants, .skipsHiddenFiles],
+                                                     errorHandler: { (url, error) -> Bool in
+            print("[MemoryPurger] Error enumerating \(url): \(error)")
+            return true
+        }) else {
+            return []
+        }
+        
+        var count = 0
+        let formatBytes: (Int64) -> String = { bytes in
+            let formatter = ByteCountFormatter()
+            formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+            formatter.countStyle = .file
+            return formatter.string(fromByteCount: bytes)
+        }
+        
+        let libraryPath = NSHomeDirectory() + "/Library"
+        
+        while let fileURL = enumerator.nextObject() as? URL {
+            // Check if we should skip Library to avoid scanning massive system/caches/app support directories
+            if fileURL.path.hasPrefix(libraryPath) {
+                enumerator.skipDescendants()
+                continue
+            }
+            
+            // Skip common dependency and version control folders to prevent CPU/IO spikes
+            let lastComponent = fileURL.lastPathComponent
+            if lastComponent == "node_modules" || lastComponent == ".git" || lastComponent == "Pods" {
+                enumerator.skipDescendants()
+                continue
+            }
+            
+            count += 1
+            if count % 1000 == 0 {
+                let displayPath = fileURL.path.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+                progressHandler(0.5, "已扫描 \(count) 个文件...\n当前: \(displayPath)")
+            }
+            
+            do {
+                let resourceValues = try fileURL.resourceValues(forKeys: Set(keys))
+                
+                // If it is a directory and not a package, we continue
+                if let isDirectory = resourceValues.isDirectory, isDirectory {
+                    if let isPackage = resourceValues.isPackage, isPackage {
+                        // Package, get size
+                        let size = getDirectorySize(url: fileURL)
+                        if size >= minSizeBytes {
+                            let sizeStr = formatBytes(size)
+                            let label = getLargeFileTypeLabel(ext: fileURL.pathExtension)
+                            items.append(LargeFileItem(name: fileURL.lastPathComponent, path: fileURL.path, sizeBytes: size, sizeString: sizeStr, typeLabel: label))
+                        }
+                        enumerator.skipDescendants()
+                    }
+                    continue
+                }
+                
+                // Regular file
+                if let isRegularFile = resourceValues.isRegularFile, isRegularFile {
+                    if let fileSize = resourceValues.fileSize {
+                        let sizeBytes = Int64(fileSize)
+                        if sizeBytes >= minSizeBytes {
+                            let sizeStr = formatBytes(sizeBytes)
+                            let label = getLargeFileTypeLabel(ext: fileURL.pathExtension)
+                            items.append(LargeFileItem(name: fileURL.lastPathComponent, path: fileURL.path, sizeBytes: sizeBytes, sizeString: sizeStr, typeLabel: label))
+                        }
+                    }
+                }
+            } catch {
+                // Ignore errors
+            }
+        }
+        
+        items.sort { $0.sizeBytes > $1.sizeBytes }
+        progressHandler(1.0, "扫描完成！共找到 \(items.count) 个大文件。")
+        return items
+    }
 }
+
