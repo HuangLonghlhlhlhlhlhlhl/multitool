@@ -11,7 +11,7 @@ class UpdateManager: NSObject, ObservableObject {
     }
     
     @Published var currentVersion: String = {
-        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.5"
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.6"
     }()
     
     @Published var latestVersion: String? = nil

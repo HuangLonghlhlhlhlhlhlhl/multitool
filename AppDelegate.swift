@@ -183,6 +183,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.minSize = NSSize(width: 680, height: 530)
             window.isOpaque = false
             window.backgroundColor = .clear
+            window.delegate = self
             
             self.dashboardWindow = window
         }
@@ -205,81 +206,104 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        TelemetryManager.shared.isUIActive = true
     }
     
     func hideDashboardWindow() {
         if let window = dashboardWindow, window.isVisible {
             window.orderOut(nil)
+            TelemetryManager.shared.isUIActive = false
         }
     }
     
     func showMiniStatusWindow() {
-        if miniStatusWindow == nil {
-            let hostingController = NSHostingController(rootView: MiniDashboardView())
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 320, height: 260),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                backing: .buffered,
-                defer: false
-            )
-            window.isReleasedWhenClosed = false
-            window.title = "STATUS CTRL MINI"
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.isMovableByWindowBackground = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             
-            let visualEffect = NSVisualEffectView()
-            visualEffect.blendingMode = .behindWindow
-            visualEffect.state = .active
-            visualEffect.material = .hudWindow
-            window.contentView = visualEffect
-            
-            let hostingView = NSHostingView(rootView: hostingController.rootView)
-            hostingView.translatesAutoresizingMaskIntoConstraints = false
-            visualEffect.addSubview(hostingView)
-            
-            NSLayoutConstraint.activate([
-                hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
-                hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
-                hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
-                hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor)
-            ])
-            
-            window.minSize = NSSize(width: 320, height: 260)
-            window.maxSize = NSSize(width: 320, height: 260)
-            window.isOpaque = false
-            window.backgroundColor = .clear
-            
-            self.miniStatusWindow = window
-        }
-        
-        guard let window = self.miniStatusWindow else { return }
-        
-        if !window.isVisible {
-            if let button = self.statusBarItem?.button, let buttonWindow = button.window {
-                let buttonScreenRect = buttonWindow.convertToScreen(button.frame)
-                let windowSize = window.frame.size
-                let x = buttonScreenRect.midX - (windowSize.width / 2)
-                let y = buttonScreenRect.minY - windowSize.height - 8
-                window.setFrameOrigin(NSPoint(x: x, y: y))
-            } else {
-                window.center()
+            if self.miniStatusWindow == nil {
+                let hostingController = NSHostingController(rootView: MiniDashboardView())
+                
+                let window = NSWindow(
+                    contentRect: NSRect(x: 0, y: 0, width: 320, height: 280),
+                    styleMask: [.titled, .closable, .fullSizeContentView],
+                    backing: .buffered,
+                    defer: false
+                )
+                window.isReleasedWhenClosed = false
+                window.title = "STATUS CTRL MINI"
+                window.titlebarAppearsTransparent = true
+                window.titleVisibility = .hidden
+                window.isMovableByWindowBackground = true
+                window.level = .popUpMenu
+                
+                let visualEffect = NSVisualEffectView()
+                visualEffect.blendingMode = .behindWindow
+                visualEffect.state = .active
+                visualEffect.material = .hudWindow
+                window.contentView = visualEffect
+                
+                let hostingView = NSHostingView(rootView: hostingController.rootView)
+                hostingView.translatesAutoresizingMaskIntoConstraints = false
+                visualEffect.addSubview(hostingView)
+                
+                NSLayoutConstraint.activate([
+                    hostingView.topAnchor.constraint(equalTo: visualEffect.topAnchor),
+                    hostingView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
+                    hostingView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
+                    hostingView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor)
+                ])
+                
+                window.minSize = NSSize(width: 320, height: 220)
+                window.maxSize = NSSize(width: 320, height: 300)
+                window.isOpaque = false
+                window.backgroundColor = .clear
+                window.delegate = self
+                
+                self.miniStatusWindow = window
             }
-        }
-        
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        
-        // Intercept standard zoom button to open the full dashboard window screen-centered!
-        if let zoomButton = window.standardWindowButton(.zoomButton) {
-            zoomButton.target = self
-            zoomButton.action = #selector(miniZoomButtonClicked)
+            
+            guard let window = self.miniStatusWindow else { return }
+            
+            if !window.isVisible {
+                if let button = self.statusBarItem?.button, let buttonWindow = button.window {
+                    let buttonScreenRect = buttonWindow.convertToScreen(button.frame)
+                    let windowSize = window.frame.size
+                    let x = buttonScreenRect.midX - (windowSize.width / 2)
+                    let y = buttonScreenRect.minY - windowSize.height - 8
+                    window.setFrameOrigin(NSPoint(x: x, y: y))
+                } else {
+                    window.center()
+                }
+            }
+            
+            window.alphaValue = 0
+            window.makeKeyAndOrderFront(nil)
+            TelemetryManager.shared.isMiniWindowActive = true
+            
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.15
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 1
+            }
+            
+            if let zoomButton = window.standardWindowButton(.zoomButton) {
+                zoomButton.target = self
+                zoomButton.action = #selector(self.miniZoomButtonClicked)
+            }
         }
     }
     
     func hideMiniStatusWindow() {
         if let window = miniStatusWindow, window.isVisible {
-            window.orderOut(nil)
+            TelemetryManager.shared.isMiniWindowActive = false
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                window.animator().alphaValue = 0
+            } completionHandler: {
+                window.orderOut(nil)
+                window.alphaValue = 1
+            }
         }
     }
     
@@ -455,29 +479,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @objc private func screenWillSleep() {
         print("[Telemetry] Screen going to sleep. Throttling telemetry manager.")
-        TelemetryManager.shared.isScreenAsleep = true
+        DispatchQueue.main.async {
+            TelemetryManager.shared.isScreenAsleep = true
+        }
     }
     
     @objc private func screenDidWake() {
         print("[Telemetry] Screen woke up. Resuming telemetry manager.")
-        TelemetryManager.shared.isScreenAsleep = false
+        DispatchQueue.main.async {
+            TelemetryManager.shared.isScreenAsleep = false
+        }
     }
     
     @objc private func sessionDidResignActive() {
         print("[Telemetry] Screen locked. Throttling telemetry manager.")
-        TelemetryManager.shared.isSessionLocked = true
+        DispatchQueue.main.async {
+            TelemetryManager.shared.isSessionLocked = true
+        }
     }
     
     @objc private func sessionDidBecomeActive() {
         print("[Telemetry] Screen unlocked. Resuming telemetry manager.")
-        TelemetryManager.shared.isSessionLocked = false
+        DispatchQueue.main.async {
+            TelemetryManager.shared.isSessionLocked = false
+        }
     }
     
     @objc private func powerStatusChanged(_ notification: Notification) {
         print("[PowerStatus] Distributed power status changed notification received, updating telemetry instantly.")
-        TelemetryManager.shared.updateInterval()
-        // Post local notification to let DashboardView know it should refresh immediately
-        NotificationCenter.default.post(name: NSNotification.Name("com.statusctrl.powerstatuschanged"), object: nil)
+        DispatchQueue.main.async {
+            TelemetryManager.shared.updateInterval()
+            // Post local notification to let DashboardView know it should refresh immediately
+            NotificationCenter.default.post(name: NSNotification.Name("com.statusctrl.powerstatuschanged"), object: nil)
+        }
     }
     
     @objc private func handleDefaultsChange() {
@@ -542,8 +576,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     try? purgeProcess.run()
                     
                     let optimizeProcess = Process()
-                    optimizeProcess.executableURL = URL(fileURLWithPath: "/Library/PrivilegedHelperTools/com.hl.smchelper")
-                    optimizeProcess.arguments = ["optimize"]
+                    optimizeProcess.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+                    optimizeProcess.arguments = ["-n", "/Library/PrivilegedHelperTools/com.hl.smchelper", "optimize"]
                     try? optimizeProcess.run()
                 }
             }
@@ -780,6 +814,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     // Removed old getRAMUsage and getSSDUsage as they are consolidated in TelemetryManager
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillStartLiveResize(_ notification: Notification) {
+        TelemetryManager.shared.isWindowResizing = true
+    }
+    
+    func windowDidEndLiveResize(_ notification: Notification) {
+        TelemetryManager.shared.isWindowResizing = false
+        TelemetryManager.shared.updateInterval()
+    }
+    
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            if window == dashboardWindow {
+                print("[Window] Dashboard window will close. Setting isUIActive to false.")
+                TelemetryManager.shared.isUIActive = false
+            } else if window == miniStatusWindow {
+                print("[Window] Mini status window will close. Setting isMiniWindowActive to false.")
+                TelemetryManager.shared.isMiniWindowActive = false
+            }
+        }
+    }
 }
 
 // MARK: - Settings View
@@ -1281,7 +1338,7 @@ struct SettingsView: View {
 
 struct AboutView: View {
     @AppStorage("themeMode") private var themeMode: Int = 0
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.5"
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.6"
     
     var body: some View {
         VStack(spacing: 20) {

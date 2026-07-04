@@ -8,7 +8,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![Architecture](https://img.shields.io/badge/Architecture-Apple%20Silicon%20%7C%20Intel-green)
-![Version](https://img.shields.io/badge/Version-1.9.5-orange)
+![Version](https://img.shields.io/badge/Version-1.9.6-orange)
 ![Size](https://img.shields.io/badge/Size-~9.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 
 ## 📦 Installation
 
-1. **Download** `STATUS CTRL-v1.9.5.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
+1. **Download** `STATUS CTRL-v1.9.6.dmg` from the [Latest Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest).
 2. Open the DMG, drag **`STATUS CTRL.app`** to the **`Applications`** folder on the right.
 3. Launch "STATUS CTRL" from your Launchpad or Applications folder.
 4. **First-time launch**: If macOS warns about an "unidentified developer", go to  
@@ -49,6 +49,7 @@ Real-time Temp/Battery Telemetry · Independent Dual Fan Speed Control · Power 
 | 📊 Est. Runtime Budgeting | Deductive remaining runtime based on current discharge rate and custom power limit. |
 | 🧹 Deep RAM Clean | Multi-column Memory Page with a dynamic water-level ring, live scanning of top 7 active user processes, and deep memory purge feedback. |
 | 🧹 Deep Storage Clean | **[NEW]** Deeply scans and cleans Xcode DerivedData, system log caches, general application caches, and leftover application data (bundle match validation). |
+| 🚀 App & Model Manager | **[NEW]** Cleans leftover files of uninstalled apps, prunes terminal AI agent skill directories (Claude Code/Antigravity), and manages local LLMs (Ollama/LM Studio) with size indicators and batch deletion. |
 | 👯 Duplicate File Finder | **[NEW]** Progressive 3-step MD5 search engine to instantly identify and safely remove duplicate files. |
 | 📈 Live Throughput Chart | **[NEW]** Live dual line glowing line chart plotting real-time SSD MB/s read/write speed on System Health Tab. |
 | 🔌 AC/Idle Self-Maintenance| **[NEW]** Automates memory purge and APFS preboot index rebuilding when connected to AC power and user is idle for >= 5 minutes. |

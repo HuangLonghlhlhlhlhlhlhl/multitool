@@ -23,6 +23,7 @@ struct DashboardView: View {
         return themeMode == 2
     }
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var telemetry = TelemetryManager.shared
     
     // Core Managers
     private let smc = SMCController.shared
@@ -97,7 +98,7 @@ struct DashboardView: View {
     
     // Modern UI Tabs and Advanced States
     @Namespace private var tabNamespace
-    @State private var selectedTab: Int = 0 // 0: 清理释放, 1: 系统功能, 2: 系统健康, 3: 网络蓝牙, 4: 隐私守护
+    @State private var selectedTab: Int = 0 // 0: 清理释放, 1: 系统功能, 2: 系统健康, 3: 网络蓝牙, 4: 隐私守护, 5: 程序模型
     @State private var wirelessMode: Int = 0 // 0: Wi-Fi, 1: 蓝牙
     
     @AppStorage("CpuFreqLimit") private var storedCpuFreqLimit: Double = 100.0
@@ -331,7 +332,7 @@ struct DashboardView: View {
             "right_side": "右侧",
             "port_num": "号物理雷电/USB4端口",
             "no_adapter": "🔌 外部适配器未接通 (电池独立工作中)",
-            "app_ver": "Antigravity 状态栏小助手 v1.9.5",
+            "app_ver": "Antigravity 状态栏小助手 v1.9.6",
             
             // Settings Strings
             "settings": "系统设置",
@@ -462,7 +463,7 @@ struct DashboardView: View {
             "right_side": "Right Side",
             "port_num": " USB4/Thunderbolt Port",
             "no_adapter": "🔌 AC Power Disconnected (Running on Battery)",
-            "app_ver": "Antigravity Status Bar Helper v1.9.5",
+            "app_ver": "Antigravity Status Bar Helper v1.9.6",
             
             // Settings Strings
             "settings": "Settings",
@@ -752,7 +753,7 @@ struct DashboardView: View {
 
                         // Segmented Tab Switched at the top (with namespaces and nice segmented buttons) (v1.9.6)
                         HStack(spacing: 0) {
-                            ForEach(0..<5) { idx in
+                            ForEach(0..<6) { idx in
                                 Button(action: {
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                                         selectedTab = idx
@@ -769,9 +770,9 @@ struct DashboardView: View {
                                 }) {
                                     VStack(spacing: 6) {
                                         HStack(spacing: 6) {
-                                            Image(systemName: idx == 0 ? "trash.fill" : (idx == 1 ? "gauge.with.needle.fill" : (idx == 2 ? "heart.text.square.fill" : (idx == 3 ? "network" : "lock.shield.fill"))))
+                                            Image(systemName: idx == 0 ? "trash.fill" : (idx == 1 ? "gauge.with.needle.fill" : (idx == 2 ? "heart.text.square.fill" : (idx == 3 ? "network" : (idx == 4 ? "lock.shield.fill" : "shippingbox.fill")))))
                                                 .font(.system(size: 11))
-                                            Text(idx == 0 ? "清理释放" : (idx == 1 ? "系统功能" : (idx == 2 ? "系统健康" : (idx == 3 ? "网络蓝牙" : "隐私守护"))))
+                                            Text(idx == 0 ? "清理释放" : (idx == 1 ? "系统功能" : (idx == 2 ? "系统健康" : (idx == 3 ? "网络蓝牙" : (idx == 4 ? "隐私守护" : "程序模型")))))
                                                 .font(.system(size: 12, weight: .semibold))
                                         }
                                         .foregroundColor(selectedTab == idx ? .white : .themeTextTertiary)
@@ -801,21 +802,31 @@ struct DashboardView: View {
                         Divider()
                             .background(Color.themeDivider)
 
-                        if selectedTab == 0 {
-                            memoryCleanPageView
-                                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity)))
-                        } else if selectedTab == 1 {
-                            originalDashboardView
-                                .transition(.opacity)
-                        } else if selectedTab == 2 {
-                            systemHealthPageView
-                                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
-                        } else if selectedTab == 3 {
-                            networkStatusPageView
-                                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
-                        } else {
-                            privacyGuardPageView
-                                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                        GeometryReader { geo in
+                            let useSingleColumn = geo.size.width < 760
+                            
+                            VStack(spacing: 0) {
+                                if selectedTab == 0 {
+                                    memoryCleanPageView(useSingleColumn: useSingleColumn)
+                                        .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity)))
+                                } else if selectedTab == 1 {
+                                    originalDashboardView(useSingleColumn: useSingleColumn)
+                                        .transition(.opacity)
+                                } else if selectedTab == 2 {
+                                    systemHealthPageView(useSingleColumn: useSingleColumn)
+                                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                                } else if selectedTab == 3 {
+                                    networkStatusPageView(useSingleColumn: useSingleColumn)
+                                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                                } else if selectedTab == 4 {
+                                    privacyGuardPageView(useSingleColumn: useSingleColumn)
+                                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                                } else {
+                                    AppModelManagerView(useSingleColumn: useSingleColumn)
+                                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                                }
+                            }
+                            .frame(width: geo.size.width, height: geo.size.height)
                         }
                     }
                     .blur(radius: showSettings ? 12 : 0)
@@ -895,139 +906,50 @@ struct DashboardView: View {
         }
     }
 
-    private var originalDashboardView: some View {
+    private func originalDashboardView(useSingleColumn: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: true) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(spacing: 12) {
-                    systemTelemetrySection
-                    if fanCount > 0 {
-                        fanSection
-                    } else {
-                        fanlessSection
+            Group {
+                if useSingleColumn {
+                    VStack(spacing: 12) {
+                        systemTelemetrySection
+                        if fanCount > 0 {
+                            fanSection
+                        } else {
+                            fanlessSection
+                        }
+                        batteryCareSection
+                        powerSection
+                        powerSavingSection
+                        keyboardSection
                     }
-                    batteryCareSection
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(spacing: 12) {
+                            systemTelemetrySection
+                            if fanCount > 0 {
+                                fanSection
+                            } else {
+                                fanlessSection
+                            }
+                            batteryCareSection
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        VStack(spacing: 12) {
+                            powerSection
+                            powerSavingSection
+                            keyboardSection
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
                 }
-                .frame(maxWidth: .infinity)
-                
-                VStack(spacing: 12) {
-                    powerSection
-                    powerSavingSection
-                    keyboardSection
-                }
-                .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
     }
     
-    // ── 磁盘健康度与寿命诊断 (v1.8.0 重磅) ──
-    struct SSDHealthData {
-        var smartctlInstalled: Bool = false
-        var modelName: String = "APPLE SSD"
-        var capacity: String = "512 GB"
-        var smartStatus: String = "Verified"
-        var healthPercent: Int = 100
-        var bytesWrittenTB: Double = 0.0
-        var bytesReadTB: Double = 0.0
-        var powerOnHours: Int = 0
-        var unsafeShutdowns: Int = 0
-        var mediaErrors: Int = 0
-    }
-    
-    private func fetchSSDHealthDataInBackground() -> SSDHealthData {
-        var data = SSDHealthData()
-        
-        // 1. 检查 smartctl 安装路径
-        let paths = ["/opt/homebrew/bin/smartctl", "/usr/local/bin/smartctl", "/usr/bin/smartctl"]
-        var installed = false
-        for path in paths {
-            if FileManager.default.fileExists(atPath: path) {
-                installed = true
-                break
-            }
-        }
-        data.smartctlInstalled = installed
-        
-        // 2. 获取 diskutil 兜底基础数据
-        let diskutilTask = Process()
-        diskutilTask.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-        diskutilTask.arguments = ["info", "-plist", "disk0"]
-        let diskutilPipe = Pipe()
-        diskutilTask.standardOutput = diskutilPipe
-        diskutilTask.standardError = diskutilPipe
-        
-        do {
-            try diskutilTask.run()
-            diskutilTask.waitUntilExit()
-            let rawData = diskutilPipe.fileHandleForReading.readDataToEndOfFile()
-            if let plist = try? PropertyListSerialization.propertyList(from: rawData, options: [], format: nil) as? [String: Any] {
-                data.modelName = plist["MediaName"] as? String ?? (plist["DeviceMediaType"] as? String ?? "APPLE SSD")
-                data.smartStatus = plist["SMARTStatus"] as? String ?? "Verified"
-                if let sizeBytes = plist["Size"] as? Int64 {
-                    let gb = Double(sizeBytes) / 1_000_000_000.0
-                    data.capacity = String(format: "%.0f GB", gb)
-                }
-            }
-        } catch {}
-        
-        // 3. 如果安装了 smartctl，拉取高精度特权 SMART 诊断；否则通过 Native IORegistry 读取 NVMe 信息
-        if installed {
-            let smartTask = Process()
-            smartTask.executableURL = URL(fileURLWithPath: smcHelperPath)
-            smartTask.arguments = ["smart"]
-            let smartPipe = Pipe()
-            smartTask.standardOutput = smartPipe
-            smartTask.standardError = smartPipe
-            
-            do {
-                try smartTask.run()
-                smartTask.waitUntilExit()
-                let rawData = smartPipe.fileHandleForReading.readDataToEndOfFile()
-                if let json = try? JSONSerialization.jsonObject(with: rawData, options: []) as? [String: Any] {
-                    if let device = json["device"] as? [String: Any], let model = device["model_name"] as? String {
-                        data.modelName = model
-                    }
-                    if let capacity = json["user_capacity"] as? [String: Any], let sizeBytes = capacity["bytes"] as? Int64 {
-                        let gb = Double(sizeBytes) / 1_000_000_000.0
-                        data.capacity = String(format: "%.0f GB", gb)
-                    }
-                    if let smartStatus = json["smart_status"] as? [String: Any], let passed = smartStatus["passed"] as? Bool {
-                        data.smartStatus = passed ? "Passed" : "Failed"
-                    }
-                    if let log = json["nvme_smart_health_information_log"] as? [String: Any] {
-                        if let percentNum = log["percentage_used"] as? NSNumber {
-                            data.healthPercent = 100 - percentNum.intValue
-                        }
-                        if let writtenNum = log["data_units_written"] as? NSNumber {
-                            data.bytesWrittenTB = (writtenNum.doubleValue * 512000.0) / 1_000_000_000_000.0
-                        }
-                        if let readNum = log["data_units_read"] as? NSNumber {
-                            data.bytesReadTB = (readNum.doubleValue * 512000.0) / 1_000_000_000_000.0
-                        }
-                        if let hoursNum = log["power_on_hours"] as? NSNumber {
-                            data.powerOnHours = hoursNum.intValue
-                        }
-                        if let unsafeNum = log["unsafe_shutdowns"] as? NSNumber {
-                            data.unsafeShutdowns = unsafeNum.intValue
-                        }
-                        if let errorsNum = log["media_errors"] as? NSNumber {
-                            data.mediaErrors = errorsNum.intValue
-                        }
-                    }
-                }
-            } catch {}
-        } else {
-            let stats = SSDMonitor.shared.getSSDStats()
-            data.modelName = stats.modelName
-            data.healthPercent = stats.healthPercent
-            data.bytesWrittenTB = Double(stats.bytesWritten) / 1_000_000_000_000.0
-            data.bytesReadTB = Double(stats.bytesRead) / 1_000_000_000_000.0
-            data.smartStatus = stats.healthPercent > 10 ? "Passed" : "Failing"
-        }
-        
-        return data
-    }
+
     
     private func setupSmartctlEnvironment() {
         guard !isSettingUpEnvironment else { return }
@@ -1079,7 +1001,7 @@ struct DashboardView: View {
         }
     }
     
-    private var systemHealthPageView: some View {
+    private func systemHealthPageView(useSingleColumn: Bool) -> some View {
         ScrollView(.vertical, showsIndicators: true) {
             VStack(spacing: 12) {
                 // Header overview Card
@@ -1104,258 +1026,33 @@ struct DashboardView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .background(Color.themeCardBg)
-.cornerRadius(14)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                .cornerRadius(14)
+                .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeCardBg, lineWidth: 1))
                 
-                HStack(alignment: .top, spacing: 12) {
-                    // Left Column: Circular gauge showing Life Percent
-                    VStack(spacing: 12) {
-                        VStack(spacing: 14) {
-                            Text("SSD 可用健康度")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.themeTextSecondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            Divider().background(Color.themeDivider)
-                            
-                            // Health Ring Gauge
-                            ZStack {
-                                Circle()
-                                    .stroke(Color.themeDivider, lineWidth: 10)
-                                    .frame(width: 120, height: 120)
-                                
-                                Circle()
-                                    .trim(from: 0.0, to: CGFloat(min(max(Double(ssdHealthPercent) / 100.0, 0.0), 1.0)))
-                                    .stroke(
-                                        LinearGradient(
-                                            colors: ssdHealthPercent >= 90 ? [.cyan, .green] : (ssdHealthPercent >= 70 ? [.orange, .yellow] : [.red, .pink]),
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        ),
-                                        style: StrokeStyle(lineWidth: 10, lineCap: .round)
-                                    )
-                                    .frame(width: 120, height: 120)
-                                    .rotationEffect(.degrees(-90))
-                                    .shadow(color: (ssdHealthPercent >= 90 ? Color.green : (ssdHealthPercent >= 70 ? Color.orange : Color.red)).opacity(0.3), radius: 6, x: 0, y: 0)
-                                
-                                VStack(spacing: 2) {
-                                    Text("\(ssdHealthPercent)%")
-                                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                                        .foregroundColor(.themeText)
-                                    Text(ssdHealthPercent >= 95 ? "优秀" : (ssdHealthPercent >= 85 ? "良好" : "警告"))
-                                        .font(.system(size: 9.5, weight: .semibold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2.5)
-                                        .background((ssdHealthPercent >= 95 ? Color.green : (ssdHealthPercent >= 85 ? Color.orange : Color.red)).opacity(0.12))
-                                        .foregroundColor(ssdHealthPercent >= 95 ? .green : (ssdHealthPercent >= 85 ? .orange : .red))
-                                        .cornerRadius(4)
-                                }
-                            }
-                            .padding(.vertical, 10)
-                            
-                            Text("健康状态：\(ssdSmartStatus == "Verified" || ssdSmartStatus.lowercased() == "passed" ? "✅ 良好 (正常)" : "⚠️ 预警 (建议备份)")")
-                                .font(.system(size: 10.5))
-                                .foregroundColor(.themeTextSecondary)
-                        }
-                        .padding(14)
-                        .background(Color.themeCardBg)
-.cornerRadius(14)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
-                        
-                        // SSD Hardware specifications card
+                Group {
+                    if useSingleColumn {
                         VStack(spacing: 12) {
-                            Text("磁盘硬件规格")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.themeTextSecondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            Divider().background(Color.themeDivider)
-                            
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("硬盘型号").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                    Spacer()
-                                    Text(ssdModelName).foregroundColor(.themeText).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                                }
-                                HStack {
-                                    Text("物理容量").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                    Spacer()
-                                    Text(ssdCapacity).foregroundColor(.themeText).font(.system(size: 11, design: .monospaced))
-                                }
-                                HStack {
-                                    Text("物理通道").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                    Spacer()
-                                    Text(isSilicon ? "Apple Fabric (PCIe)" : "NVM Express").foregroundColor(.themeTextSecondary).font(.system(size: 11))
-                                }
-                            }
+                            ssdHealthGaugeCard
+                            ssdHardwareSpecsCard
+                            ssdTBWStatsCard
+                            ssdSmartDetailStatsCard
                         }
-                        .padding(14)
-                        .background(Color.themeCardBg)
-.cornerRadius(14)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
-                    }
-                    .frame(maxWidth: .infinity)
-                    
-                    // Right Column: Data statistic cards (TBW progress & detail matrix)
-                    VStack(spacing: 12) {
-                        // TBW Stats card
-                        VStack(spacing: 12) {
-                            Text("累计读写统计 (TBW)")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.themeTextSecondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            Divider().background(Color.themeDivider)
-                            
-                            VStack(alignment: .leading, spacing: 10) {
-                                // Write Card
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text("累计写入 (TBW)").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                        Spacer()
-                                        Text(String(format: "%.3f TB", ssdBytesWrittenTB))
-                                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                            .foregroundColor(.cyan)
-                                    }
-                                    
-                                    // Progress bar mapping to a typical 512GB standard 300 TBW life line
-                                    GeometryReader { geo in
-                                        ZStack(alignment: .leading) {
-                                            Capsule()
-                                                .fill(Color.themeDivider)
-                                                .frame(height: 5)
-                                            Capsule()
-                                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
-                                                .frame(width: geo.size.width * CGFloat(min(ssdBytesWrittenTB / 300.0, 1.0)), height: 5)
-                                        }
-                                    }
-                                    .frame(height: 5)
-                                    .padding(.vertical, 2)
-                                    
-                                    Text("已消耗 512GB 标称寿命 (300 TBW) 的 \(String(format: "%.2f%%", (ssdBytesWrittenTB / 300.0) * 100.0))")
-                                        .font(.system(size: 9))
-                                        .foregroundColor(.themeTextTertiary)
-                                }
-                                
-                                Divider().background(Color.themeCardBg)
-                                
-                                // Read Card
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text("累计读取").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                        Spacer()
-                                        Text(String(format: "%.3f TB", ssdBytesReadTB))
-                                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                            .foregroundColor(.purple)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(14)
-                        .background(Color.themeCardBg)
-.cornerRadius(14)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
-                        
-                        // SMART Detail stats card / Brew Install card
-                        if smartctlInstalled {
+                    } else {
+                        HStack(alignment: .top, spacing: 12) {
                             VStack(spacing: 12) {
-                                Text("SMART 物理诊断指标")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundColor(.themeTextSecondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                Divider().background(Color.themeDivider)
-                                
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("累计通电时间").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                        Spacer()
-                                        Text("\(ssdPowerOnHours) 小时").foregroundColor(.themeText).font(.system(size: 11, design: .monospaced))
-                                    }
-                                    Divider().background(Color.themeCardBg)
-                                    HStack {
-                                        Text("异常断电次数").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                        Spacer()
-                                        Text("\(ssdUnsafeShutdowns) 次")
-                                            .foregroundColor(ssdUnsafeShutdowns > 25 ? .orange : .white)
-                                            .font(.system(size: 11, design: .monospaced))
-                                    }
-                                    Divider().background(Color.themeCardBg)
-                                    HStack {
-                                        Text("媒介完整性错误").foregroundColor(.themeTextTertiary).font(.system(size: 11))
-                                        Spacer()
-                                        Text("\(ssdMediaErrors)")
-                                            .foregroundColor(ssdMediaErrors > 0 ? .red : .green)
-                                            .font(.system(size: 11, weight: ssdMediaErrors > 0 ? .bold : .regular, design: .monospaced))
-                                    }
-                                }
+                                ssdHealthGaugeCard
+                                ssdHardwareSpecsCard
                             }
-                            .padding(14)
-                            .background(Color.themeCardBg)
-.cornerRadius(14)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
-                        } else {
-                            // Guide to setup environments with nice breathing layout
-                            VStack(spacing: 10) {
-                                Text("🛠️ 一键配置 SMART 看板")
-                                    .font(.system(size: 12.5, weight: .bold))
-                                    .foregroundColor(.cyan)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                Text("macOS 普通权限被沙箱限制。通过 Homebrew 一键部署轻量级 smartmontools 开源模块，即可无缝穿透物理层，解锁上表高精细的写入小时、异常断电及完整性错误指标！")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.themeTextSecondary)
-                                    .lineSpacing(2)
-                                
-                                if isSettingUpEnvironment {
-                                    HStack(spacing: 8) {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .scaleEffect(0.8)
-                                        Text("正在后台配置环境中 (通过 brew)...")
-                                            .font(.system(size: 10.5, weight: .semibold))
-                                            .foregroundColor(.cyan)
-                                    }
-                                    .padding(.vertical, 6)
-                                } else {
-                                    Button(action: {
-                                        setupSmartctlEnvironment()
-                                    }) {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "terminal.fill")
-                                                .font(.system(size: 11))
-                                            Text("一键自动部署 SMART 环境")
-                                                .font(.system(size: 11, weight: .semibold))
-                                        }
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 7)
-                                        .background(LinearGradient(colors: [.cyan.opacity(0.2), .purple.opacity(0.12)], startPoint: .leading, endPoint: .trailing))
-                                        .foregroundColor(.cyan)
-                                        .cornerRadius(8)
-                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cyan.opacity(0.4), lineWidth: 1))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(.top, 4)
-                                    
-                                    if let err = environmentError {
-                                        Text("提示: \(err)")
-                                            .font(.system(size: 9.5))
-                                            .foregroundColor(.orange)
-                                    }
-                                }
+                            .frame(maxWidth: .infinity)
+                            
+                            VStack(spacing: 12) {
+                                ssdTBWStatsCard
+                                ssdSmartDetailStatsCard
                             }
-                            .padding(14)
-                            .background(Color.cyan.opacity(0.02))
-                            .cornerRadius(14)
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.cyan.opacity(0.12), lineWidth: 1))
+                            .frame(maxWidth: .infinity)
                         }
                     }
-                    .frame(maxWidth: .infinity)
                 }
                 
                 DiskSpeedChartView(
@@ -1370,31 +1067,255 @@ struct DashboardView: View {
         }
     }
     
-    private func getRAMUsage() -> Double {
-        var stats = vm_statistics64()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        let kerr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+    @ViewBuilder
+    private var ssdHealthGaugeCard: some View {
+        VStack(spacing: 14) {
+            Text("SSD 可用健康度")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.themeTextSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Divider().background(Color.themeDivider)
+            
+            ZStack {
+                Circle()
+                    .stroke(Color.themeDivider, lineWidth: 10)
+                    .frame(width: 120, height: 120)
+                
+                Circle()
+                    .trim(from: 0.0, to: CGFloat(min(max(Double(ssdHealthPercent) / 100.0, 0.0), 1.0)))
+                    .stroke(
+                        LinearGradient(
+                            colors: ssdHealthPercent >= 90 ? [.cyan, .green] : (ssdHealthPercent >= 70 ? [.orange, .yellow] : [.red, .pink]),
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        style: StrokeStyle(lineWidth: 10, lineCap: .round)
+                    )
+                    .frame(width: 120, height: 120)
+                    .rotationEffect(.degrees(-90))
+                    .shadow(color: (ssdHealthPercent >= 90 ? Color.green : (ssdHealthPercent >= 70 ? Color.orange : Color.red)).opacity(0.3), radius: 6, x: 0, y: 0)
+                
+                VStack(spacing: 2) {
+                    Text("\(ssdHealthPercent)%")
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundColor(.themeText)
+                    Text(ssdHealthPercent >= 95 ? "优秀" : (ssdHealthPercent >= 85 ? "良好" : "警告"))
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background((ssdHealthPercent >= 95 ? Color.green : (ssdHealthPercent >= 85 ? Color.orange : Color.red)).opacity(0.12))
+                        .foregroundColor(ssdHealthPercent >= 95 ? .green : (ssdHealthPercent >= 85 ? .orange : .red))
+                        .cornerRadius(4)
+                }
+            }
+            .padding(.vertical, 10)
+            
+            Text("健康状态：\(ssdSmartStatus == "Verified" || ssdSmartStatus.lowercased() == "passed" ? "✅ 良好 (正常)" : "⚠️ 预警 (建议备份)")")
+                .font(.system(size: 10.5))
+                .foregroundColor(.themeTextSecondary)
+        }
+        .padding(14)
+        .background(Color.themeCardBg)
+        .cornerRadius(14)
+        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
+    }
+    
+    @ViewBuilder
+    private var ssdHardwareSpecsCard: some View {
+        VStack(spacing: 12) {
+            Text("磁盘硬件规格")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.themeTextSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Divider().background(Color.themeDivider)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("硬盘型号").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                    Spacer()
+                    Text(ssdModelName).foregroundColor(.themeText).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                }
+                HStack {
+                    Text("物理容量").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                    Spacer()
+                    Text(ssdCapacity).foregroundColor(.themeText).font(.system(size: 11, design: .monospaced))
+                }
+                HStack {
+                    Text("物理通道").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                    Spacer()
+                    Text(isSilicon ? "Apple Fabric (PCIe)" : "NVM Express").foregroundColor(.themeTextSecondary).font(.system(size: 11))
+                }
             }
         }
-        guard kerr == KERN_SUCCESS else { return 0.0 }
-        
-        var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
-        
-        let activePages = Double(stats.active_count)
-        let wirePages = Double(stats.wire_count)
-        let compressedPages = Double(stats.compressor_page_count)
-        let freePages = Double(stats.free_count)
-        let inactivePages = Double(stats.inactive_count)
-        
-        let usedPages = activePages + wirePages + compressedPages
-        let totalPages = usedPages + freePages + inactivePages
-        
-        guard totalPages > 0 else { return 0.0 }
-        return (usedPages / totalPages) * 100.0
+        .padding(14)
+        .background(Color.themeCardBg)
+        .cornerRadius(14)
+        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
     }
+    
+    @ViewBuilder
+    private var ssdTBWStatsCard: some View {
+        VStack(spacing: 12) {
+            Text("累计读写统计 (TBW)")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.themeTextSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            
+            Divider().background(Color.themeDivider)
+            
+            VStack(alignment: .leading, spacing: 10) {
+                // Write Card
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("累计写入 (TBW)").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                        Spacer()
+                        Text(String(format: "%.3f TB", ssdBytesWrittenTB))
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                            .foregroundColor(.cyan)
+                    }
+                    
+                    // Progress bar mapping to a typical 512GB standard 300 TBW life line
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.themeDivider)
+                                .frame(height: 5)
+                            Capsule()
+                                .fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing))
+                                .frame(width: geo.size.width * CGFloat(min(ssdBytesWrittenTB / 300.0, 1.0)), height: 5)
+                        }
+                    }
+                    .frame(height: 5)
+                    .padding(.vertical, 2)
+                    
+                    Text("已消耗 512GB 标称寿命 (300 TBW) 的 \(String(format: "%.2f%%", (ssdBytesWrittenTB / 300.0) * 100.0))")
+                        .font(.system(size: 9))
+                        .foregroundColor(.themeTextTertiary)
+                }
+                
+                Divider().background(Color.themeCardBg)
+                
+                // Read Card
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("累计读取").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                        Spacer()
+                        Text(String(format: "%.3f TB", ssdBytesReadTB))
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.purple)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.themeCardBg)
+        .cornerRadius(14)
+        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
+    }
+    
+    @ViewBuilder
+    private var ssdSmartDetailStatsCard: some View {
+        if smartctlInstalled {
+            VStack(spacing: 12) {
+                Text("SMART 物理诊断指标")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.themeTextSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                Divider().background(Color.themeDivider)
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("累计通电时间").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                        Spacer()
+                        Text("\(ssdPowerOnHours) 小时").foregroundColor(.themeText).font(.system(size: 11, design: .monospaced))
+                    }
+                    Divider().background(Color.themeCardBg)
+                    HStack {
+                        Text("异常断电次数").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                        Spacer()
+                        Text("\(ssdUnsafeShutdowns) 次")
+                            .foregroundColor(ssdUnsafeShutdowns > 25 ? .orange : .white)
+                            .font(.system(size: 11, design: .monospaced))
+                    }
+                    Divider().background(Color.themeCardBg)
+                    HStack {
+                        Text("媒介完整性错误").foregroundColor(.themeTextTertiary).font(.system(size: 11))
+                        Spacer()
+                        Text("\(ssdMediaErrors)")
+                            .foregroundColor(ssdMediaErrors > 0 ? .red : .green)
+                            .font(.system(size: 11, weight: ssdMediaErrors > 0 ? .bold : .regular, design: .monospaced))
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color.themeCardBg)
+            .cornerRadius(14)
+            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.themeDivider, lineWidth: 1))
+        } else {
+            // Guide to setup environments with nice breathing layout
+            VStack(spacing: 10) {
+                Text("🛠️ 一键配置 SMART 看板")
+                    .font(.system(size: 12.5, weight: .bold))
+                    .foregroundColor(.cyan)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                Text("macOS 普通权限被沙箱限制。通过 Homebrew 一键部署轻量级 smartmontools 开源模块，即可无缝穿透物理层，解锁上表高精细的写入小时、异常断电及完整性错误指标！")
+                    .font(.system(size: 10))
+                    .foregroundColor(.themeTextSecondary)
+                    .lineSpacing(2)
+                
+                if isSettingUpEnvironment {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.8)
+                        Text("正在后台配置环境中 (通过 brew)...")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundColor(.cyan)
+                    }
+                    .padding(.vertical, 6)
+                } else {
+                    Button(action: {
+                        setupSmartctlEnvironment()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "terminal.fill")
+                                .font(.system(size: 11))
+                            Text("一键自动部署 SMART 环境")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(LinearGradient(colors: [.cyan.opacity(0.2), .purple.opacity(0.12)], startPoint: .leading, endPoint: .trailing))
+                        .foregroundColor(.cyan)
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.cyan.opacity(0.4), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                    
+                    if let err = environmentError {
+                        Text("提示: \(err)")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(.orange)
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color.cyan.opacity(0.02))
+            .cornerRadius(14)
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.cyan.opacity(0.12), lineWidth: 1))
+        }
+    }
+    
+
     
     private func addPrivacyLog(_ text: String) {
         let formatter = DateFormatter()
@@ -1453,7 +1374,7 @@ struct DashboardView: View {
         }
     }
     
-    private var memoryCleanPageView: some View {
+    private func memoryCleanPageView(useSingleColumn: Bool) -> some View {
         VStack(spacing: 0) {
             // Capsule switcher for activeTab0 (Memory Purge vs Disk Clean) (v1.9.0)
             HStack(spacing: 4) {
@@ -1501,280 +1422,298 @@ struct DashboardView: View {
             }
             .padding(4)
             .background(Color.themeCardBg)
-.cornerRadius(20)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+            .cornerRadius(20)
+            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
             .overlay(Capsule().stroke(Color.themeDivider, lineWidth: 1))
             .padding(.top, 4)
             .padding(.bottom, 8)
             
             if activeTab0 == 0 {
-                HStack(spacing: 16) {
-                    // Left Column: Circular gauge and Clean trigger
-                    VStack(spacing: 16) {
-                        VStack(spacing: 12) {
-                            Text("内存状态")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.themeTextSecondary)
-                            
-                            // Circular Gauge
-                            ZStack {
-                                // Background track
-                                Circle()
-                                    .stroke(Color.themeDivider, lineWidth: 14)
-                                    .frame(width: 140, height: 140)
-                                
-                                // Active track (gradient)
-                                Circle()
-                                    .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
-                                    .stroke(
-                                        LinearGradient(
-                                            colors: [Color(red: 0.00, green: 0.95, blue: 1.00), Color(red: 0.62, green: 0.00, blue: 1.00)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        style: StrokeStyle(lineWidth: 14, lineCap: .round)
-                                    )
-                                    .frame(width: 140, height: 140)
-                                    .rotationEffect(.degrees(-90))
-                                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentRAMUsagePercent)
-                                
-                                // Shadow glow
-                                Circle()
-                                    .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
-                                    .stroke(Color.cyan.opacity(0.3), style: StrokeStyle(lineWidth: 14, lineCap: .round))
-                                    .frame(width: 140, height: 140)
-                                    .rotationEffect(.degrees(-90))
-                                    .blur(radius: 6)
-                                
-                                // Center text
-                                VStack(spacing: 2) {
-                                    Text(String(format: "%.0f%%", currentRAMUsagePercent))
-                                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                                        .foregroundColor(.themeText)
-                                    Text("已用空间")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.themeTextSecondary)
-                                }
-                            }
-                            .frame(width: 150, height: 150)
-                            .padding(.vertical, 8)
-                            
-                            // Diagnosis message
-                            Text(currentRAMUsagePercent > 75.0 ? "系统内存吃紧，请及时清理" : (currentRAMUsagePercent > 50.0 ? "运行状态良好，继续保持" : "内存非常充足，感觉棒极了"))
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(currentRAMUsagePercent > 75.0 ? Color(red: 1.0, green: 0.35, blue: 0.35) : (currentRAMUsagePercent > 50.0 ? Color.cyan : Color(red: 0.22, green: 0.80, blue: 0.45)))
-                                .multilineTextAlignment(.center)
-                                .frame(height: 24)
+                if useSingleColumn {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 16) {
+                            memoryGaugeSection
+                            processUsageSection
                         }
-                        .padding(16)
-                        .background(Color.themeCardBg)
-.cornerRadius(14)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 14)
-                                .stroke(Color.themeDivider, lineWidth: 1)
-                        )
-                        
-                        // Clean Button
-                        Button(action: {
-                            triggerMemoryPurge()
-                        }) {
-                            HStack(spacing: 8) {
-                                if isPurging {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                        .scaleEffect(0.8)
-                                        .brightness(2.0)
-                                    Text("深度释放中...")
-                                        .font(.system(size: 13, weight: .bold))
-                                } else {
-                                    Image(systemName: "sparkles")
-                                        .font(.system(size: 13))
-                                    Text(showPurgeSuccess ? String(format: "已整理 %.0f MB", lastPurgedAmount) : "一键释放物理内存")
-                                        .font(.system(size: 13, weight: .bold))
-                                }
-                            }
-                            .foregroundColor(.themeText)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 12)
+                    }
+                } else {
+                    HStack(spacing: 16) {
+                        memoryGaugeSection
+                            .frame(width: 200)
+                        processUsageSection
                             .frame(maxWidth: .infinity)
-                            .frame(height: 40)
-                            .background(
-                                LinearGradient(
-                                    colors: isPurging
-                                        ? [Color.gray.opacity(0.3), Color.gray.opacity(0.3)]
-                                        : (showPurgeSuccess ? [Color(red: 0.22, green: 0.80, blue: 0.45), Color(red: 0.15, green: 0.60, blue: 0.35)] : [Color(red: 0.18, green: 0.62, blue: 0.95), Color(red: 0.62, green: 0.32, blue: 0.88)]),
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .cornerRadius(10)
-                            .shadow(color: (isPurging ? Color.clear : (showPurgeSuccess ? Color.green.opacity(0.3) : Color.blue.opacity(0.3))), radius: 6, x: 0, y: 3)
-                        }
-                        .disabled(isPurging)
-                        .buttonStyle(.plain)
                     }
-                    .frame(width: 200)
-                    
-                    // Right Column: Process usage list
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Image(systemName: "app.badge.fill")
-                                .font(.system(size: 14))
-                                .foregroundColor(.cyan)
-                            Text("活跃应用内存占用排行")
-                                .font(.system(size: 13, weight: .bold))
-                            Spacer()
-                            Text("前 7 位活跃应用")
-                                .font(.system(size: 11))
-                                .foregroundColor(.themeTextTertiary)
-                        }
-                        .padding(.horizontal, 4)
-                        
-                        ScrollView(.vertical, showsIndicators: false) {
-                            VStack(spacing: 8) {
-                                if activeProcesses.isEmpty {
-                                    // Loading / Empty state
-                                    VStack(spacing: 12) {
-                                        Spacer()
-                                        ProgressView()
-                                            .controlSize(.regular)
-                                        Text("正在分析 system 活跃应用...")
-                                            .font(.system(size: 12))
-                                            .foregroundColor(.themeTextSecondary)
-                                        Spacer()
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 280)
-                                    .background(Color.themeCardBg)
-.cornerRadius(12)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                                } else {
-                                    // Display List
-                                    let enumerated = Array(activeProcesses.enumerated())
-                                    ForEach(enumerated, id: \.element.id) { index, proc in
-                                        let rank = index + 1
-                                        HStack(spacing: 12) {
-                                            // Rank Badge
-                                            ZStack {
-                                                Circle()
-                                                    .fill(rank == 1 
-                                                        ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
-                                                        : (rank == 2 
-                                                            ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
-                                                            : (rank == 3 
-                                                                ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
-                                                                : LinearGradient(colors: [Color.themeBorder, Color.themeDivider], startPoint: .top, endPoint: .bottom)
-                                                            )
-                                                        )
-                                                    )
-                                                    .frame(width: 24, height: 24)
-                                                    .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? .themeTextTertiary : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
-                                                
-                                                Text("\(rank)")
-                                                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                                                    .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .themeTextSecondary)
-                                            }
-                                            
-                                            // Mini icon mockup
-                                            ZStack {
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .fill(LinearGradient(colors: [Color.themeBorder, Color.themeCardBg], startPoint: .top, endPoint: .bottom))
-                                                    .frame(width: 28, height: 28)
-                                                
-                                                Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
-                                                    .font(.system(size: 12))
-                                                    .foregroundColor(.themeTextSecondary)
-                                            }
-                                            
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                Text(proc.name)
-                                                    .font(.system(size: 12, weight: .semibold))
-                                                    .foregroundColor(.themeText)
-                                                    .lineLimit(1)
-                                                
-                                                // RAM and CPU pill badges
-                                                HStack(spacing: 8) {
-                                                    // RAM usage
-                                                    HStack(spacing: 3) {
-                                                        Image(systemName: "memorychip")
-                                                            .font(.system(size: 9))
-                                                        Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
-                                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                                    }
-                                                    .foregroundColor(.cyan)
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 2)
-                                                    .background(Color.cyan.opacity(0.1))
-                                                    .cornerRadius(4)
-                                                    
-                                                    // CPU usage
-                                                    HStack(spacing: 3) {
-                                                        Image(systemName: "cpu")
-                                                            .font(.system(size: 9))
-                                                        Text(String(format: "%.1f%%", proc.cpuPercent))
-                                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                                    }
-                                                    .foregroundColor(.purple)
-                                                    .padding(.horizontal, 6)
-                                                    .padding(.vertical, 2)
-                                                    .background(Color.purple.opacity(0.1))
-                                                    .cornerRadius(4)
-                                                }
-                                            }
-                                            
-                                            Spacer()
-                                            
-                                            // Terminate Process Button
-                                            Button(action: {
-                                                MemoryPurger.terminateProcess(pids: proc.pids)
-                                                // Instantly refresh list
-                                                DispatchQueue.global(qos: .userInitiated).async {
-                                                    let updated = MemoryPurger.getActiveProcessMemoryList()
-                                                    DispatchQueue.main.async {
-                                                        withAnimation(.easeInOut(duration: 0.3)) {
-                                                            self.activeProcesses = updated
-                                                        }
-                                                    }
-                                                }
-                                            }) {
-                                                ZStack {
-                                                    Circle()
-                                                        .fill(Color.red.opacity(0.15))
-                                                        .frame(width: 22, height: 22)
-                                                    
-                                                    Image(systemName: "xmark")
-                                                        .font(.system(size: 9, weight: .bold))
-                                                        .foregroundColor(.red.opacity(0.9))
-                                                }
-                                            }
-                                            .buttonStyle(TerminateButtonStyle())
-                                            .focusable(false)
-                                            .help("停止运行程序")
-                                        }
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(Color.themeCardBg)
-.cornerRadius(10)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 10)
-                                                .stroke(Color.themeCardBg, lineWidth: 1)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        .frame(height: 310)
-                    }
-                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 12)
-                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .move(edge: .trailing).combined(with: .opacity)))
             } else {
                 diskCleanPageView
                     .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
             }
+        }
+    }
+    
+    @ViewBuilder
+    private var memoryGaugeSection: some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 12) {
+                Text("内存状态")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.themeTextSecondary)
+                
+                // Circular Gauge
+                ZStack {
+                    // Background track
+                    Circle()
+                        .stroke(Color.themeDivider, lineWidth: 14)
+                        .frame(width: 140, height: 140)
+                    
+                    // Active track (gradient)
+                    Circle()
+                        .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
+                        .stroke(
+                            LinearGradient(
+                                colors: [Color(red: 0.00, green: 0.95, blue: 1.00), Color(red: 0.62, green: 0.00, blue: 1.00)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            style: StrokeStyle(lineWidth: 14, lineCap: .round)
+                        )
+                        .frame(width: 140, height: 140)
+                        .rotationEffect(.degrees(-90))
+                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: currentRAMUsagePercent)
+                    
+                    // Shadow glow
+                    Circle()
+                        .trim(from: 0.0, to: CGFloat(min(currentRAMUsagePercent / 100.0, 1.0)))
+                        .stroke(Color.cyan.opacity(0.3), style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                        .frame(width: 140, height: 140)
+                        .rotationEffect(.degrees(-90))
+                        .blur(radius: 6)
+                    
+                    // Center text
+                    VStack(spacing: 2) {
+                        Text(String(format: "%.0f%%", currentRAMUsagePercent))
+                            .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .foregroundColor(.themeText)
+                        Text("已用空间")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeTextSecondary)
+                    }
+                }
+                .frame(width: 150, height: 150)
+                .padding(.vertical, 8)
+                
+                // Diagnosis message
+                Text(currentRAMUsagePercent > 75.0 ? "系统内存吃紧，请及时清理" : (currentRAMUsagePercent > 50.0 ? "运行状态良好，继续保持" : "内存非常充足，感觉棒极了"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(currentRAMUsagePercent > 75.0 ? Color(red: 1.0, green: 0.35, blue: 0.35) : (currentRAMUsagePercent > 50.0 ? Color.cyan : Color(red: 0.22, green: 0.80, blue: 0.45)))
+                    .multilineTextAlignment(.center)
+                    .frame(height: 24)
+            }
+            .padding(16)
+            .background(Color.themeCardBg)
+            .cornerRadius(14)
+            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.themeDivider, lineWidth: 1)
+            )
+            
+            // Clean Button
+            Button(action: {
+                triggerMemoryPurge()
+            }) {
+                HStack(spacing: 8) {
+                    if isPurging {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.8)
+                            .brightness(2.0)
+                        Text("深度释放中...")
+                            .font(.system(size: 13, weight: .bold))
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 13))
+                        Text(showPurgeSuccess ? String(format: "已整理 %.0f MB", lastPurgedAmount) : "一键释放物理内存")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                }
+                .foregroundColor(.themeText)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(
+                    LinearGradient(
+                        colors: isPurging
+                            ? [Color.gray.opacity(0.3), Color.gray.opacity(0.3)]
+                            : (showPurgeSuccess ? [Color(red: 0.22, green: 0.80, blue: 0.45), Color(red: 0.15, green: 0.60, blue: 0.35)] : [Color(red: 0.18, green: 0.62, blue: 0.95), Color(red: 0.62, green: 0.32, blue: 0.88)]),
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .cornerRadius(10)
+                .shadow(color: (isPurging ? Color.clear : (showPurgeSuccess ? Color.green.opacity(0.3) : Color.blue.opacity(0.3))), radius: 6, x: 0, y: 3)
+            }
+            .disabled(isPurging)
+            .buttonStyle(.plain)
+        }
+    }
+    
+    @ViewBuilder
+    private var processUsageSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "app.badge.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.cyan)
+                Text("活跃应用内存占用排行")
+                    .font(.system(size: 13, weight: .bold))
+                Spacer()
+                Text("前 7 位活跃应用")
+                    .font(.system(size: 11))
+                    .foregroundColor(.themeTextTertiary)
+            }
+            .padding(.horizontal, 4)
+            
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 8) {
+                    if activeProcesses.isEmpty {
+                        // Loading / Empty state
+                        VStack(spacing: 12) {
+                            Spacer()
+                            ProgressView()
+                                .controlSize(.regular)
+                            Text("正在分析 system 活跃应用...")
+                                .font(.system(size: 12))
+                                .foregroundColor(.themeTextSecondary)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 280)
+                        .background(Color.themeCardBg)
+                        .cornerRadius(12)
+                        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    } else {
+                        // Display List
+                        let enumerated = Array(activeProcesses.enumerated())
+                        ForEach(enumerated, id: \.element.id) { index, proc in
+                            let rank = index + 1
+                            HStack(spacing: 12) {
+                                // Rank Badge
+                                ZStack {
+                                    Circle()
+                                        .fill(rank == 1 
+                                            ? LinearGradient(colors: [Color(red: 1.0, green: 0.85, blue: 0.3), Color(red: 0.85, green: 0.65, blue: 0.1)], startPoint: .top, endPoint: .bottom)
+                                            : (rank == 2 
+                                                ? LinearGradient(colors: [Color(red: 0.9, green: 0.9, blue: 0.95), Color(red: 0.65, green: 0.65, blue: 0.7)], startPoint: .top, endPoint: .bottom)
+                                                : (rank == 3 
+                                                    ? LinearGradient(colors: [Color(red: 0.88, green: 0.6, blue: 0.45), Color(red: 0.65, green: 0.4, blue: 0.25)], startPoint: .top, endPoint: .bottom)
+                                                    : LinearGradient(colors: [Color.themeBorder, Color.themeDivider], startPoint: .top, endPoint: .bottom)
+                                                )
+                                            )
+                                        )
+                                        .frame(width: 24, height: 24)
+                                        .shadow(color: rank == 1 ? Color(red: 1.0, green: 0.85, blue: 0.3).opacity(0.3) : (rank == 2 ? .themeTextTertiary : (rank == 3 ? Color.orange.opacity(0.2) : Color.clear)), radius: 4)
+                                    
+                                    Text("\(rank)")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundColor(rank <= 3 ? Color(red: 0.05, green: 0.05, blue: 0.08) : .themeTextSecondary)
+                                }
+                                
+                                // Mini icon mockup
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(LinearGradient(colors: [Color.themeBorder, Color.themeCardBg], startPoint: .top, endPoint: .bottom))
+                                        .frame(width: 28, height: 28)
+                                    
+                                    Image(systemName: proc.name == "Google Chrome" ? "safari.fill" : (proc.name == "WeChat" ? "message.fill" : (proc.name == "VS Code" ? "chevron.left.forwardslash.chevron.right" : (proc.name == "Trae" ? "sparkles" : (proc.name == "WorkBuddy" ? "person.3.fill" : "app.dashed")))))
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.themeTextSecondary)
+                                }
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(proc.name)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(.themeText)
+                                        .lineLimit(1)
+                                    
+                                    // RAM and CPU pill badges
+                                    HStack(spacing: 8) {
+                                        // RAM usage
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "memorychip")
+                                                .font(.system(size: 9))
+                                            Text(String(format: "%.1f %@", proc.memoryMB, proc.unit))
+                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        }
+                                        .foregroundColor(.cyan)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.cyan.opacity(0.1))
+                                        .cornerRadius(4)
+                                        
+                                        // CPU usage
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "cpu")
+                                                .font(.system(size: 9))
+                                            Text(String(format: "%.1f%%", proc.cpuPercent))
+                                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        }
+                                        .foregroundColor(.purple)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.purple.opacity(0.1))
+                                        .cornerRadius(4)
+                                    }
+                                }
+                                
+                                Spacer()
+                                
+                                // Terminate Process Button
+                                Button(action: {
+                                    MemoryPurger.terminateProcess(pids: proc.pids)
+                                    // Instantly refresh list
+                                    DispatchQueue.global(qos: .userInitiated).async {
+                                        let updated = MemoryPurger.getActiveProcessMemoryList()
+                                        DispatchQueue.main.async {
+                                            withAnimation(.easeInOut(duration: 0.3)) {
+                                                self.activeProcesses = updated
+                                            }
+                                        }
+                                    }
+                                }) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color.red.opacity(0.15))
+                                            .frame(width: 22, height: 22)
+                                        
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.red.opacity(0.9))
+                                    }
+                                }
+                                .buttonStyle(TerminateButtonStyle())
+                                .focusable(false)
+                                .help("停止运行程序")
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.themeCardBg)
+                            .cornerRadius(10)
+                            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.themeCardBg, lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+            }
+            .frame(height: 310)
         }
     }
     
@@ -1794,8 +1733,7 @@ struct DashboardView: View {
     }
     
     // ── Dedicated Network Status Tab View (v1.9.6 layout with Picker & Radars) ──
-    // ── Dedicated Network Status Tab View (v1.9.6 layout with Picker & Radars) ──
-    private var networkStatusPageView: some View {
+    private func networkStatusPageView(useSingleColumn: Bool) -> some View {
         VStack(spacing: 12) {
             // High-End Wireless Sub-Tab Picker
             Picker("", selection: $selectedWirelessSubTab) {
@@ -1807,27 +1745,41 @@ struct DashboardView: View {
             .padding(.top, 4)
             
             if selectedWirelessSubTab == 0 {
-                // Tab 0: 📡 空间定位雷达 (Spatial Radar Dashboard)
-                HStack(alignment: .top, spacing: 16) {
-                    // Left Column (takes remaining space): Interactive Cockpit Radar
-                    spatialRadarCockpitView
-                    
-                    // Right Column (fixed width 300): Filterable Scanned Devices List
-                    spatialDevicesListView
+                if useSingleColumn {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 16) {
+                            spatialRadarCockpitView
+                            spatialDevicesListView(useSingleColumn: useSingleColumn)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        spatialRadarCockpitView
+                        spatialDevicesListView(useSingleColumn: useSingleColumn)
+                    }
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16)
             } else {
-                // Tab 1: ⚡️ 流量监控与测速 (Speed Test & Traffic Rankings)
-                HStack(alignment: .top, spacing: 16) {
-                    // Left: Network Speed Tester Widget
-                    speedTesterWidgetView
-                        .frame(maxWidth: .infinity)
-                    
-                    // Right: Top 10 Active connection process rankings
-                    activeProcessTrafficView
-                        .frame(maxWidth: .infinity)
+                if useSingleColumn {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(spacing: 16) {
+                            speedTesterWidgetView
+                                .frame(maxWidth: .infinity)
+                            activeProcessTrafficView
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                } else {
+                    HStack(alignment: .top, spacing: 16) {
+                        speedTesterWidgetView
+                            .frame(maxWidth: .infinity)
+                        activeProcessTrafficView
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(.horizontal, 16)
                 }
-                .padding(.horizontal, 16)
             }
             
             if trackingTargetId != nil {
@@ -1901,69 +1853,79 @@ struct DashboardView: View {
                         .fill(Color.black.opacity(0.35))
                         .frame(width: 240, height: 240)
                     
-                    // Concentric circles representing distance divisions
-                    ForEach([60, 120, 180, 240], id: \.self) { diameter in
+                    if !telemetry.isWindowResizing {
+                        // Concentric circles representing distance divisions
+                        ForEach([60, 120, 180, 240], id: \.self) { diameter in
+                            Circle()
+                                .stroke(Color.cyan.opacity(0.15), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [3, 4], dashPhase: 0))
+                                .frame(width: CGFloat(diameter), height: CGFloat(diameter))
+                        }
+                        
+                        // Distance labels placed directly on concentric range rings
+                        Group {
+                            Text("5m")
+                                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan.opacity(0.6))
+                                .offset(x: 0, y: -30)
+                            
+                            Text("10m")
+                                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan.opacity(0.6))
+                                .offset(x: 0, y: -60)
+                            
+                            Text("15m")
+                                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan.opacity(0.6))
+                                .offset(x: 0, y: -90)
+                            
+                            Text("20m")
+                                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                                .foregroundColor(.cyan.opacity(0.6))
+                                .offset(x: 0, y: -120)
+                        }
+                        
+                        // 360° degree dial boundary ticks (36 ticks, every 10 degrees)
+                        ForEach(0..<36, id: \.self) { tick in
+                            let angle = Double(tick * 10)
+                            let length: CGFloat = tick % 9 == 0 ? 8 : 4
+                            let color = tick % 9 == 0 ? Color.cyan.opacity(0.7) : Color.cyan.opacity(0.3)
+                            Rectangle()
+                                .fill(color)
+                                .frame(width: 1, height: length)
+                                .offset(y: -120 + (length / 2))
+                                .rotationEffect(.degrees(angle))
+                        }
+                        
+                        // Grid crosshairs
+                        Path { path in
+                            path.move(to: CGPoint(x: 120, y: 0))
+                            path.addLine(to: CGPoint(x: 120, y: 240))
+                            path.move(to: CGPoint(x: 0, y: 120))
+                            path.addLine(to: CGPoint(x: 240, y: 120))
+                        }
+                        .stroke(Color.cyan.opacity(0.08), lineWidth: 1)
+                        
+                        // Sweeping rotating radar laser
                         Circle()
-                            .stroke(Color.cyan.opacity(0.15), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round, miterLimit: 0, dash: [3, 4], dashPhase: 0))
-                            .frame(width: CGFloat(diameter), height: CGFloat(diameter))
-                    }
-                    
-                    // Distance labels placed directly on concentric range rings
-                    Group {
-                        Text("5m")
-                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.6))
-                            .offset(x: 0, y: -30)
-                        
-                        Text("10m")
-                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.6))
-                            .offset(x: 0, y: -60)
-                        
-                        Text("15m")
-                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.6))
-                            .offset(x: 0, y: -90)
-                        
-                        Text("20m")
-                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                            .foregroundColor(.cyan.opacity(0.6))
-                            .offset(x: 0, y: -120)
-                    }
-                    
-                    // 360° degree dial boundary ticks (36 ticks, every 10 degrees)
-                    ForEach(0..<36, id: \.self) { tick in
-                        let angle = Double(tick * 10)
-                        let length: CGFloat = tick % 9 == 0 ? 8 : 4
-                        let color = tick % 9 == 0 ? Color.cyan.opacity(0.7) : Color.cyan.opacity(0.3)
-                        Rectangle()
-                            .fill(color)
-                            .frame(width: 1, height: length)
-                            .offset(y: -120 + (length / 2))
-                            .rotationEffect(.degrees(angle))
-                    }
-                    
-                    // Grid crosshairs
-                    Path { path in
-                        path.move(to: CGPoint(x: 120, y: 0))
-                        path.addLine(to: CGPoint(x: 120, y: 240))
-                        path.move(to: CGPoint(x: 0, y: 120))
-                        path.addLine(to: CGPoint(x: 240, y: 120))
-                    }
-                    .stroke(Color.cyan.opacity(0.08), lineWidth: 1)
-                    
-                    // Sweeping rotating radar laser
-                    Circle()
-                        .fill(
-                            AngularGradient(
-                                gradient: Gradient(colors: [.cyan.opacity(0.35), .cyan.opacity(0.1), .purple.opacity(0.05), .clear]),
-                                center: .center,
-                                startAngle: .degrees(0),
-                                endAngle: .degrees(270)
+                            .fill(
+                                AngularGradient(
+                                    gradient: Gradient(colors: [.cyan.opacity(0.35), .cyan.opacity(0.1), .purple.opacity(0.05), .clear]),
+                                    center: .center,
+                                    startAngle: .degrees(0),
+                                    endAngle: .degrees(270)
+                                )
                             )
-                        )
-                        .frame(width: 240, height: 240)
-                        .rotationEffect(.degrees(scanAngle))
+                            .frame(width: 240, height: 240)
+                            .rotationEffect(.degrees(scanAngle))
+                    } else {
+                        // Simplified circle during resize
+                        Circle()
+                            .stroke(Color.cyan.opacity(0.15), lineWidth: 0.8)
+                            .frame(width: 240, height: 240)
+                        Text("缩放中...")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeTextTertiary)
+                    }
                     
                     // Compass Rose Ring (cardinal N, S, E, W markers rotated by -radarHeading)
                     Group {
@@ -1991,7 +1953,7 @@ struct DashboardView: View {
                     
                     Group {
                         if wirelessMode == 0 {
-                            // Plot Wi-Fi nodes (scaled up for radar diameter)
+                            // Plot Wi-Fi nodes
                             ForEach(Array(wifiScanner.scanResults.enumerated()), id: \.element.id) { idx, net in
                                 WiFiRadarChartNodeView(
                                     idx: idx,
@@ -2002,7 +1964,7 @@ struct DashboardView: View {
                                     radarHeading: radarHeading,
                                     hoveredWiFiId: $hoveredWiFiId,
                                     selectedWiFi: $selectedWiFi,
-                                    isAnimating: true
+                                    isAnimating: !telemetry.isWindowResizing
                                 )
                                 .scaleEffect(1.6)
                             }
@@ -2018,7 +1980,7 @@ struct DashboardView: View {
                                     radarHeading: radarHeading,
                                     hoveredBTId: $hoveredBTId,
                                     selectedBT: $selectedBT,
-                                    isAnimating: true
+                                    isAnimating: !telemetry.isWindowResizing
                                 )
                                 .scaleEffect(1.6)
                             }
@@ -2034,10 +1996,12 @@ struct DashboardView: View {
                             .frame(width: 12, height: 12)
                             .shadow(color: .cyan.opacity(0.8), radius: 4)
                         
-                        Circle()
-                            .stroke(Color.cyan.opacity(0.4), lineWidth: 1.5)
-                            .frame(width: 22 * pulseScale, height: 22 * pulseScale)
-                            .opacity(Double(2.0 - pulseScale))
+                        if !telemetry.isWindowResizing {
+                            Circle()
+                                .stroke(Color.cyan.opacity(0.4), lineWidth: 1.5)
+                                .frame(width: 22 * pulseScale, height: 22 * pulseScale)
+                                .opacity(Double(2.0 - pulseScale))
+                        }
                     }
                 }
                 .frame(width: 240, height: 240)
@@ -2126,8 +2090,8 @@ struct DashboardView: View {
                 }
                 .padding(10)
                 .background(Color.themeCardBg)
-.cornerRadius(10)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                .cornerRadius(10)
+                .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeCardBg, lineWidth: 1))
             } else {
                 VStack(spacing: 8) {
@@ -2250,8 +2214,8 @@ struct DashboardView: View {
                 }
                 .padding(10)
                 .background(Color.themeCardBg)
-.cornerRadius(10)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                .cornerRadius(10)
+                .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.themeCardBg, lineWidth: 1))
                 .onChange(of: wirelessMode) { _ in
                     selectedMappingTarget = "ALL_DEVICES"
@@ -2515,7 +2479,7 @@ struct DashboardView: View {
     }
     
     // ── Sub-view 2: Devices Scanned List Column ──
-    private var spatialDevicesListView: some View {
+    private func spatialDevicesListView(useSingleColumn: Bool) -> some View {
         VStack(spacing: 12) {
             // Wireless segment selector
             Picker("", selection: $wirelessMode) {
@@ -2750,8 +2714,8 @@ struct DashboardView: View {
                     }
                     .padding(12)
                     .background(Color.themeCardBg)
-.cornerRadius(12)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    .cornerRadius(12)
+                    .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.themeCardBg, lineWidth: 1))
                 }
             }
@@ -3277,267 +3241,534 @@ struct DashboardView: View {
         }
     }
     
-    private var privacyGuardPageView: some View {
-        HStack(alignment: .top, spacing: 14) {
-            // Column 1: Shield Indicator & Security Logs (width 140)
-            VStack(spacing: 12) {
-                PrivacyShieldIndicatorView(isActive: cameraPrivacy || micPrivacy || screenPrivacy || autoActionPrivacy)
-                
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(currentLanguage == "zh-Hans" ? "⚡ 安全审计日志" : "⚡ SECURITY AUDIT")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundColor(.themeTextTertiary)
-                        .padding(.bottom, 2)
-                    
-                    ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(alignment: .leading, spacing: 5) {
-                            if privacyLogs.isEmpty {
-                                Text(currentLanguage == "zh-Hans" ? "⚠️ 建议开启监控以捕获潜在隐患" : "⚠️ Monitor inactive. Enable switches.")
-                                    .font(.system(size: 8))
-                                    .foregroundColor(.orange.opacity(0.8))
-                            } else {
-                                ForEach(privacyLogs, id: \.self) { log in
-                                    Text(log)
-                                        .font(.system(size: 7.8, design: .monospaced))
-                                        .foregroundColor(.themeTextSecondary)
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
+    private func privacyGuardPageView(useSingleColumn: Bool) -> some View {
+        Group {
+            if useSingleColumn {
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 16) {
+                        // Column 1: Shield Indicator & Security Logs
+                        VStack(spacing: 12) {
+                            PrivacyShieldIndicatorView(isActive: cameraPrivacy || micPrivacy || screenPrivacy || autoActionPrivacy)
+                            
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(currentLanguage == "zh-Hans" ? "⚡ 安全审计日志" : "⚡ SECURITY AUDIT")
+                                    .font(.system(size: 8.5, weight: .bold))
+                                    .foregroundColor(.themeTextTertiary)
+                                    .padding(.bottom, 2)
+                                
+                                ScrollView(.vertical, showsIndicators: false) {
+                                    LazyVStack(alignment: .leading, spacing: 5) {
+                                        if privacyLogs.isEmpty {
+                                            Text(currentLanguage == "zh-Hans" ? "⚠️ 建议开启监控以捕获潜在隐患" : "⚠️ Monitor inactive. Enable switches.")
+                                                .font(.system(size: 8))
+                                                .foregroundColor(.orange.opacity(0.8))
+                                        } else {
+                                            ForEach(privacyLogs, id: \.self) { log in
+                                                Text(log)
+                                                    .font(.system(size: 7.8, design: .monospaced))
+                                                    .foregroundColor(.themeTextSecondary)
+                                                    .lineLimit(2)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                    }
+                                }
+                                .frame(height: 125)
+                            }
+                            .padding(8)
+                            .background(Color.black.opacity(0.2))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.themeCardBg, lineWidth: 1)
+                            )
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        // Column 2: LazyVGrid of 4 Bento Switches
+                        VStack(spacing: 8) {
+                            Text(currentLanguage == "zh-Hans" ? "实时设备设备隐私保护" : "DEVICE PRIVACY")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.themeTextSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                            
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                                PrivacySwitchCard(
+                                    title: currentLanguage == "zh-Hans" ? "摄像头保护" : "Camera",
+                                    subtitle: cameraPrivacy ? (currentLanguage == "zh-Hans" ? "实时防偷窥监控" : "Monitoring") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                    icon: "video.fill",
+                                    color: Color.green,
+                                    isEnabled: $cameraPrivacy
+                                )
+                                .onChange(of: cameraPrivacy) { val in
+                                    addPrivacyLog(val ? "摄像头防护已部署并拦截未授权请求" : "摄像头监控被用户暂停")
+                                }
+                                
+                                PrivacySwitchCard(
+                                    title: currentLanguage == "zh-Hans" ? "麦克风防窃听" : "Microphone",
+                                    subtitle: micPrivacy ? (currentLanguage == "zh-Hans" ? "声敏防护运行中" : "Monitoring") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                    icon: "mic.fill",
+                                    color: Color.cyan,
+                                    isEnabled: $micPrivacy
+                                )
+                                .onChange(of: micPrivacy) { val in
+                                    addPrivacyLog(val ? "麦克风反窃听通道开启，实时波形拦截中" : "麦克风防窃听被用户暂停")
+                                }
+                                
+                                PrivacySwitchCard(
+                                    title: currentLanguage == "zh-Hans" ? "屏幕隐私防窥" : "Screen Privacy",
+                                    subtitle: screenPrivacy ? (currentLanguage == "zh-Hans" ? "防截屏监控运行" : "Active") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                    icon: "macwindow",
+                                    color: Color.purple,
+                                    isEnabled: $screenPrivacy
+                                )
+                                .onChange(of: screenPrivacy) { val in
+                                    addPrivacyLog(val ? "已启用全局防截屏阻断滤镜，拦截外部推流" : "防截屏监控被用户暂停")
+                                    updateScreenSharingType()
+                                }
+                                
+                                PrivacySwitchCard(
+                                    title: currentLanguage == "zh-Hans" ? "自动操作卫士" : "Auto Guard",
+                                    subtitle: autoActionPrivacy ? (currentLanguage == "zh-Hans" ? "阻断器已部署" : "Blocked") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                    icon: "hand.raised.fill",
+                                    color: Color.pink,
+                                    isEnabled: $autoActionPrivacy
+                                )
+                                .onChange(of: autoActionPrivacy) { val in
+                                    addPrivacyLog(val ? "自动操作防护就绪，阻断键盘连击注入" : "自动操作防护被用户关闭")
                                 }
                             }
-                        }
-                    }
-                    .frame(height: 125)
-                }
-                .padding(8)
-                .background(Color.black.opacity(0.2))
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.themeCardBg, lineWidth: 1)
-                )
-            }
-            .frame(width: 140)
-            
-            // Column 2: LazyVGrid of 4 Bento Switches (width 260)
-            VStack(spacing: 8) {
-                Text(currentLanguage == "zh-Hans" ? "实时设备设备隐私保护" : "DEVICE PRIVACY")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.themeTextSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
-                
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                    PrivacySwitchCard(
-                        title: currentLanguage == "zh-Hans" ? "摄像头保护" : "Camera",
-                        subtitle: cameraPrivacy ? (currentLanguage == "zh-Hans" ? "实时防偷窥监控" : "Monitoring") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
-                        icon: "video.fill",
-                        color: Color.green,
-                        isEnabled: $cameraPrivacy
-                    )
-                    .onChange(of: cameraPrivacy) { val in
-                        addPrivacyLog(val ? "摄像头防护已部署并拦截未授权请求" : "摄像头监控被用户暂停")
-                    }
-                    
-                    PrivacySwitchCard(
-                        title: currentLanguage == "zh-Hans" ? "麦克风防窃听" : "Microphone",
-                        subtitle: micPrivacy ? (currentLanguage == "zh-Hans" ? "声敏防护运行中" : "Monitoring") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
-                        icon: "mic.fill",
-                        color: Color.cyan,
-                        isEnabled: $micPrivacy
-                    )
-                    .onChange(of: micPrivacy) { val in
-                        addPrivacyLog(val ? "麦克风反窃听通道开启，实时波形拦截中" : "麦克风防窃听被用户暂停")
-                    }
-                    
-                    PrivacySwitchCard(
-                        title: currentLanguage == "zh-Hans" ? "屏幕隐私防窥" : "Screen Privacy",
-                        subtitle: screenPrivacy ? (currentLanguage == "zh-Hans" ? "防截屏监控运行" : "Active") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
-                        icon: "macwindow",
-                        color: Color.purple,
-                        isEnabled: $screenPrivacy
-                    )
-                    .onChange(of: screenPrivacy) { val in
-                        addPrivacyLog(val ? "已启用全局防截屏阻断滤镜，拦截外部推流" : "防截屏监控被用户暂停")
-                        updateScreenSharingType()
-                    }
-                    
-                    PrivacySwitchCard(
-                        title: currentLanguage == "zh-Hans" ? "自动操作卫士" : "Auto Guard",
-                        subtitle: autoActionPrivacy ? (currentLanguage == "zh-Hans" ? "阻断器已部署" : "Blocked") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
-                        icon: "hand.raised.fill",
-                        color: Color.pink,
-                        isEnabled: $autoActionPrivacy
-                    )
-                    .onChange(of: autoActionPrivacy) { val in
-                        addPrivacyLog(val ? "自动操作防护就绪，阻断键盘连击注入" : "自动操作防护被用户关闭")
-                    }
-                }
-                
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
-                    Text(currentLanguage == "zh-Hans" ? "系统级底层隐私过滤已生效" : "System-level privacy filtering active")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.themeTextSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
-                .background(Color.themeCardBg)
-.cornerRadius(8)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-            }
-            .frame(width: 260)
-            
-            // Column 3: Physical scrambled keyboard view (width 220)
-            VStack(spacing: 8) {
-                HStack {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 13))
-                        .foregroundColor(.purple)
-                    Text(currentLanguage == "zh-Hans" ? "物理防窥乱码键盘" : "Secure Keyboard")
-                        .font(.system(size: 12, weight: .bold))
-                    Spacer()
-                    
-                    HStack(spacing: 8) {
-                        Button(action: {
-                            isSymbolMode.toggle()
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: isSymbolMode ? "abc" : "character.textbox")
-                                    .font(.system(size: 10))
-                                Text(isSymbolMode ? (currentLanguage == "zh-Hans" ? "字母" : "ABC") : (currentLanguage == "zh-Hans" ? "符号" : "SYM"))
-                                    .font(.system(size: 10))
-                            }
-                            .foregroundColor(.purple)
-                        }
-                        .buttonStyle(.plain)
-                        
-                        Button(action: {
-                            reshuffleKeyboard()
-                        }) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.triangle.2.circlepath")
-                                    .font(.system(size: 10))
-                                Text(currentLanguage == "zh-Hans" ? "重洗" : "Shuffle")
-                                    .font(.system(size: 10))
-                            }
-                            .foregroundColor(.cyan)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 4)
-                
-                // Password display area with clean controls
-                HStack(spacing: 8) {
-                    if isPasswordVisible {
-                        Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : securePasswordInput)
-                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
-                    } else {
-                        Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : String(repeating: "•", count: securePasswordInput.count))
-                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
-                    }
-                    
-                    Spacer()
-                    
-                    if !securePasswordInput.isEmpty {
-                        Text(passwordStrengthLabel)
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(passwordStrengthColor.opacity(0.2))
-                            .foregroundColor(passwordStrengthColor)
-                            .cornerRadius(4)
-                        
-                        Button(action: { securePasswordInput = "" }) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 11))
-                                .foregroundColor(.red.opacity(0.8))
-                        }
-                        .buttonStyle(.plain)
-                        
-                        Button(action: { isPasswordVisible.toggle() }) {
-                            Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
-                                .font(.system(size: 11))
-                                .foregroundColor(.themeTextSecondary)
-                        }
-                        .buttonStyle(.plain)
-                        
-                        Button(action: {
-                            let pasteboard = NSPasteboard.general
-                            pasteboard.clearContents()
-                            pasteboard.setString(securePasswordInput, forType: .string)
-                        }) {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 11))
-                                .foregroundColor(.cyan)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 34)
-                .background(Color.black.opacity(0.4))
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.themeBorder, lineWidth: 1)
-                )
-                
-                // Shuffled keys grid (6x6)
-                VStack(spacing: 6) {
-                    let keysToUse = isSymbolMode ? scrambledSymbols : scrambledKeys
-                    if keysToUse.isEmpty {
-                        ProgressView()
-                    } else {
-                        let rows = Array(0..<6)
-                        ForEach(rows, id: \.self) { r in
+                            
                             HStack(spacing: 6) {
-                                ForEach(0..<6) { c in
-                                    let idx = r * 6 + c
-                                    if idx < keysToUse.count {
-                                        let key = keysToUse[idx]
-                                        Button(action: {
-                                            if securePasswordInput.count < 16 {
-                                                securePasswordInput.append(key)
-                                            }
-                                        }) {
-                                            Text(key)
-                                                .font(.system(size: 12, weight: .bold, design: .rounded))
-                                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                                .background(Color.themeCardBg)
-.cornerRadius(6)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 6)
-                                                        .stroke(Color.themeDivider, lineWidth: 1)
-                                                )
+                                Image(systemName: "checkmark.shield.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                                Text(currentLanguage == "zh-Hans" ? "系统级底层隐私过滤已生效" : "System-level privacy filtering active")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.themeTextSecondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color.themeCardBg)
+                            .cornerRadius(8)
+                            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        }
+                        .frame(maxWidth: .infinity)
+                        
+                        // Column 3: Physical scrambled keyboard view
+                        VStack(spacing: 8) {
+                            HStack {
+                                Image(systemName: "keyboard")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.purple)
+                                Text(currentLanguage == "zh-Hans" ? "物理防窥乱码键盘" : "Secure Keyboard")
+                                    .font(.system(size: 12, weight: .bold))
+                                Spacer()
+                                
+                                HStack(spacing: 8) {
+                                    Button(action: {
+                                        isSymbolMode.toggle()
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: isSymbolMode ? "abc" : "character.textbox")
+                                                .font(.system(size: 10))
+                                            Text(isSymbolMode ? (currentLanguage == "zh-Hans" ? "字母" : "ABC") : (currentLanguage == "zh-Hans" ? "符号" : "SYM"))
+                                                .font(.system(size: 10))
                                         }
-                                        .buttonStyle(ScrambledKeyButtonStyle())
+                                        .foregroundColor(.purple)
+                                    }
+                                    .buttonStyle(.plain)
+                                    
+                                    Button(action: {
+                                        reshuffleKeyboard()
+                                    }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "arrow.triangle.2.circlepath")
+                                                .font(.system(size: 10))
+                                            Text(currentLanguage == "zh-Hans" ? "重洗" : "Shuffle")
+                                                .font(.system(size: 10))
+                                        }
+                                        .foregroundColor(.cyan)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                            
+                            // Password display area with clean controls
+                            HStack(spacing: 8) {
+                                if isPasswordVisible {
+                                    Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : securePasswordInput)
+                                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
+                                } else {
+                                    Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : String(repeating: "•", count: securePasswordInput.count))
+                                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
+                                }
+                                
+                                Spacer()
+                                
+                                if !securePasswordInput.isEmpty {
+                                    Text(passwordStrengthLabel)
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(passwordStrengthColor.opacity(0.2))
+                                        .foregroundColor(passwordStrengthColor)
+                                        .cornerRadius(4)
+                                    
+                                    Button(action: { securePasswordInput = "" }) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.red.opacity(0.8))
+                                    }
+                                    .buttonStyle(.plain)
+                                    
+                                    Button(action: { isPasswordVisible.toggle() }) {
+                                        Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.themeTextSecondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    
+                                    Button(action: {
+                                        let pasteboard = NSPasteboard.general
+                                        pasteboard.clearContents()
+                                        pasteboard.setString(securePasswordInput, forType: .string)
+                                    }) {
+                                        Image(systemName: "doc.on.doc")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.cyan)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 34)
+                            .background(Color.black.opacity(0.4))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.themeBorder, lineWidth: 1)
+                            )
+                            
+                            // Shuffled keys grid (6x6)
+                            VStack(spacing: 6) {
+                                let keysToUse = isSymbolMode ? scrambledSymbols : scrambledKeys
+                                if keysToUse.isEmpty {
+                                    ProgressView()
+                                } else {
+                                    let rows = Array(0..<6)
+                                    ForEach(rows, id: \.self) { r in
+                                        HStack(spacing: 6) {
+                                            ForEach(0..<6) { c in
+                                                let idx = r * 6 + c
+                                                if idx < keysToUse.count {
+                                                    let key = keysToUse[idx]
+                                                    Button(action: {
+                                                        if securePasswordInput.count < 16 {
+                                                            securePasswordInput.append(key)
+                                                        }
+                                                    }) {
+                                                        Text(key)
+                                                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                            .background(Color.themeCardBg)
+                                                            .cornerRadius(6)
+                                                            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                                                            .overlay(
+                                                                RoundedRectangle(cornerRadius: 6)
+                                                                    .stroke(Color.themeDivider, lineWidth: 1)
+                                                            )
+                                                    }
+                                                    .buttonStyle(ScrambledKeyButtonStyle())
+                                                }
+                                            }
+                                        }
+                                        .frame(height: 32)
                                     }
                                 }
                             }
-                            .frame(height: 32)
+                            .padding(6)
+                            .background(Color.themeCardBg)
+                            .cornerRadius(10)
+                            .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.themeCardBg, lineWidth: 1)
+                            )
                         }
+                        .frame(maxWidth: 400)
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
                 }
-                .padding(6)
-                .background(Color.themeCardBg)
-.cornerRadius(10)
-.shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.themeCardBg, lineWidth: 1)
-                )
+            } else {
+                HStack(alignment: .top, spacing: 14) {
+                    // Column 1: Shield Indicator & Security Logs (width 140)
+                    VStack(spacing: 12) {
+                        PrivacyShieldIndicatorView(isActive: cameraPrivacy || micPrivacy || screenPrivacy || autoActionPrivacy)
+                        
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(currentLanguage == "zh-Hans" ? "⚡ 安全审计日志" : "⚡ SECURITY AUDIT")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundColor(.themeTextTertiary)
+                                .padding(.bottom, 2)
+                            
+                            ScrollView(.vertical, showsIndicators: false) {
+                                LazyVStack(alignment: .leading, spacing: 5) {
+                                    if privacyLogs.isEmpty {
+                                        Text(currentLanguage == "zh-Hans" ? "⚠️ 建议开启监控以捕获潜在隐患" : "⚠️ Monitor inactive. Enable switches.")
+                                            .font(.system(size: 8))
+                                            .foregroundColor(.orange.opacity(0.8))
+                                    } else {
+                                        ForEach(privacyLogs, id: \.self) { log in
+                                            Text(log)
+                                                .font(.system(size: 7.8, design: .monospaced))
+                                                .foregroundColor(.themeTextSecondary)
+                                                .lineLimit(2)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                }
+                            }
+                            .frame(height: 125)
+                        }
+                        .padding(8)
+                        .background(Color.black.opacity(0.2))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.themeCardBg, lineWidth: 1)
+                        )
+                    }
+                    .frame(width: 140)
+                    
+                    // Column 2: LazyVGrid of 4 Bento Switches (width 260)
+                    VStack(spacing: 8) {
+                        Text(currentLanguage == "zh-Hans" ? "实时设备设备隐私保护" : "DEVICE PRIVACY")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.themeTextSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
+                        
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                            PrivacySwitchCard(
+                                title: currentLanguage == "zh-Hans" ? "摄像头保护" : "Camera",
+                                subtitle: cameraPrivacy ? (currentLanguage == "zh-Hans" ? "实时防偷窥监控" : "Monitoring") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                icon: "video.fill",
+                                color: Color.green,
+                                isEnabled: $cameraPrivacy
+                            )
+                            .onChange(of: cameraPrivacy) { val in
+                                addPrivacyLog(val ? "摄像头防护已部署并拦截未授权请求" : "摄像头监控被用户暂停")
+                            }
+                            
+                            PrivacySwitchCard(
+                                title: currentLanguage == "zh-Hans" ? "麦克风防窃听" : "Microphone",
+                                subtitle: micPrivacy ? (currentLanguage == "zh-Hans" ? "声敏防护运行中" : "Monitoring") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                icon: "mic.fill",
+                                color: Color.cyan,
+                                isEnabled: $micPrivacy
+                            )
+                            .onChange(of: micPrivacy) { val in
+                                addPrivacyLog(val ? "麦克风反窃听通道开启，实时波形拦截中" : "麦克风防窃听被用户暂停")
+                            }
+                            
+                            PrivacySwitchCard(
+                                title: currentLanguage == "zh-Hans" ? "屏幕隐私防窥" : "Screen Privacy",
+                                subtitle: screenPrivacy ? (currentLanguage == "zh-Hans" ? "防截屏监控运行" : "Active") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                icon: "macwindow",
+                                color: Color.purple,
+                                isEnabled: $screenPrivacy
+                            )
+                            .onChange(of: screenPrivacy) { val in
+                                addPrivacyLog(val ? "已启用全局防截屏阻断滤镜，拦截外部推流" : "防截屏监控被用户暂停")
+                                updateScreenSharingType()
+                            }
+                            
+                            PrivacySwitchCard(
+                                title: currentLanguage == "zh-Hans" ? "自动操作卫士" : "Auto Guard",
+                                subtitle: autoActionPrivacy ? (currentLanguage == "zh-Hans" ? "阻断器已部署" : "Blocked") : (currentLanguage == "zh-Hans" ? "已关闭" : "Off"),
+                                icon: "hand.raised.fill",
+                                color: Color.pink,
+                                isEnabled: $autoActionPrivacy
+                            )
+                            .onChange(of: autoActionPrivacy) { val in
+                                addPrivacyLog(val ? "自动操作防护就绪，阻断键盘连击注入" : "自动操作防护被用户关闭")
+                            }
+                        }
+                        
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(Color(red: 0.22, green: 0.80, blue: 0.45))
+                            Text(currentLanguage == "zh-Hans" ? "系统级底层隐私过滤已生效" : "System-level privacy filtering active")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.themeTextSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(Color.themeCardBg)
+                        .cornerRadius(8)
+                        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                    }
+                    .frame(width: 260)
+                    
+                    // Column 3: Physical scrambled keyboard view (width 220)
+                    VStack(spacing: 8) {
+                        HStack {
+                            Image(systemName: "keyboard")
+                                .font(.system(size: 13))
+                                .foregroundColor(.purple)
+                            Text(currentLanguage == "zh-Hans" ? "物理防窥乱码键盘" : "Secure Keyboard")
+                                .font(.system(size: 12, weight: .bold))
+                            Spacer()
+                            
+                            HStack(spacing: 8) {
+                                Button(action: {
+                                    isSymbolMode.toggle()
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: isSymbolMode ? "abc" : "character.textbox")
+                                            .font(.system(size: 10))
+                                        Text(isSymbolMode ? (currentLanguage == "zh-Hans" ? "字母" : "ABC") : (currentLanguage == "zh-Hans" ? "符号" : "SYM"))
+                                            .font(.system(size: 10))
+                                    }
+                                    .foregroundColor(.purple)
+                                }
+                                .buttonStyle(.plain)
+                                
+                                Button(action: {
+                                    reshuffleKeyboard()
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                            .font(.system(size: 10))
+                                        Text(currentLanguage == "zh-Hans" ? "重洗" : "Shuffle")
+                                            .font(.system(size: 10))
+                                    }
+                                    .foregroundColor(.cyan)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                        
+                        // Password display area with clean controls
+                        HStack(spacing: 8) {
+                            if isPasswordVisible {
+                                Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : securePasswordInput)
+                                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
+                            } else {
+                                Text(securePasswordInput.isEmpty ? (currentLanguage == "zh-Hans" ? "输入安全密码..." : "Enter password...") : String(repeating: "•", count: securePasswordInput.count))
+                                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(securePasswordInput.isEmpty ? .themeTextTertiary : .white)
+                            }
+                            
+                            Spacer()
+                            
+                            if !securePasswordInput.isEmpty {
+                                Text(passwordStrengthLabel)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(passwordStrengthColor.opacity(0.2))
+                                    .foregroundColor(passwordStrengthColor)
+                                    .cornerRadius(4)
+                                
+                                Button(action: { securePasswordInput = "" }) {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.red.opacity(0.8))
+                                }
+                                .buttonStyle(.plain)
+                                
+                                Button(action: { isPasswordVisible.toggle() }) {
+                                    Image(systemName: isPasswordVisible ? "eye.slash" : "eye")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.themeTextSecondary)
+                                }
+                                .buttonStyle(.plain)
+                                
+                                Button(action: {
+                                    let pasteboard = NSPasteboard.general
+                                    pasteboard.clearContents()
+                                    pasteboard.setString(securePasswordInput, forType: .string)
+                                }) {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.cyan)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .background(Color.black.opacity(0.4))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.themeBorder, lineWidth: 1)
+                        )
+                        
+                        // Shuffled keys grid (6x6)
+                        VStack(spacing: 6) {
+                            let keysToUse = isSymbolMode ? scrambledSymbols : scrambledKeys
+                            if keysToUse.isEmpty {
+                                ProgressView()
+                            } else {
+                                let rows = Array(0..<6)
+                                ForEach(rows, id: \.self) { r in
+                                    HStack(spacing: 6) {
+                                        ForEach(0..<6) { c in
+                                            let idx = r * 6 + c
+                                            if idx < keysToUse.count {
+                                                let key = keysToUse[idx]
+                                                Button(action: {
+                                                    if securePasswordInput.count < 16 {
+                                                        securePasswordInput.append(key)
+                                                    }
+                                                }) {
+                                                    Text(key)
+                                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                        .background(Color.themeCardBg)
+                                                        .cornerRadius(6)
+                                                        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: 6)
+                                                                .stroke(Color.themeDivider, lineWidth: 1)
+                                                        )
+                                                }
+                                                .buttonStyle(ScrambledKeyButtonStyle())
+                                            }
+                                        }
+                                    }
+                                    .frame(height: 32)
+                                }
+                            }
+                        }
+                        .padding(6)
+                        .background(Color.themeCardBg)
+                        .cornerRadius(10)
+                        .shadow(color: .themeShadow, radius: 6, x: 0, y: 3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.themeCardBg, lineWidth: 1)
+                        )
+                    }
+                    .frame(width: 220)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
             }
-            .frame(width: 220)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 12)
         .onAppear {
             if scrambledKeys.isEmpty {
                 reshuffleKeyboard()
@@ -6363,7 +6594,11 @@ struct DashboardView: View {
     }
     
     private func refreshStats() {
-        guard isPanelVisible else { return }
+        guard let appDelegate = NSApp.delegate as? AppDelegate,
+              let window = appDelegate.dashboardWindow,
+              window.isVisible else {
+            return
+        }
         
         let tm = TelemetryManager.shared
         
@@ -6805,19 +7040,20 @@ struct DashboardView: View {
             self.batteryLimitValue = Float(limit)
         }
         
-        // 1. Direct SMC attempt (in case of root privileges already present or running natively)
-        if smc.setBatteryChargeLimit(limit, active: enabled) {
-            DispatchQueue.main.async {
-                self.showPrivilegeWarning = false
-            }
-            return
-        }
-        
-        // 2. Privilege-based execution (standard way via smchelper)
         let helperPath = smcHelperPath
         let activeInt = enabled ? 1 : 0
         
         DispatchQueue.global(qos: .userInitiated).async {
+            
+            // 1. Direct SMC attempt (in case of root privileges already present or running natively)
+            if self.smc.setBatteryChargeLimit(limit, active: enabled) {
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = false
+                }
+                return
+            }
+            
+            // 2. Privilege-based execution (standard way via smchelper)
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "charge", String(limit), String(activeInt)]
@@ -7059,23 +7295,26 @@ struct DashboardView: View {
         let bitmask = UInt16(fanCount == 2 ? 3 : 1)
         let helperPath = smcHelperPath
         
-        // 1. Try direct SMC write (if already root / running with native privileges)
-        if smc.setFanManual(manual, fanBitmask: bitmask) {
-            isManualFan = manual
-            showPrivilegeWarning = false
-            if manual {
-                let targets = targetFanSpeed
-                DispatchQueue.global(qos: .userInitiated).async {
+        // Optimistically update UI state immediately
+        isManualFan = manual
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            
+            // 1. Try direct SMC write (if already root / running with native privileges)
+            if self.smc.setFanManual(manual, fanBitmask: bitmask) {
+                if manual {
+                    let targets = self.targetFanSpeed
                     for i in 0..<self.fanCount {
                         let _ = self.smc.setFanSpeed(i, speed: targets[safe: i] ?? 2000)
                     }
                 }
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = false
+                }
+                return
             }
-            return
-        }
-        
-        // 2. sudo securely via Process array
-        DispatchQueue.global(qos: .userInitiated).async {
+            
+            // 2. sudo securely via Process array
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
             proc.arguments  = ["-n", helperPath, "manual", String(manual ? 1 : 0), String(bitmask)]
@@ -7140,23 +7379,24 @@ struct DashboardView: View {
         let fc = fanCount > 0 ? fanCount : 2  // fallback to 2 if not yet initialized
         let indices: [Int] = fanIndex == -1 ? Array(0..<fc) : [fanIndex]
         
-        // 1. Try direct SMC write first to bypass process spawning overhead (extremely fast, <1ms)
-        var allSucceeded = true
-        for i in indices {
-            if !self.smc.setFanSpeed(i, speed: speed) {
-                allSucceeded = false
-            }
-        }
-        if allSucceeded {
-            DispatchQueue.main.async {
-                self.showPrivilegeWarning = false
-            }
-            return
-        }
-        
-        // 2. Fallback to privileged helper tool via sudo
-        let helperPath = smcHelperPath
         DispatchQueue.global(qos: .userInitiated).async {
+            
+            // 1. Try direct SMC write first to bypass process spawning overhead (extremely fast, <1ms)
+            var allSucceeded = true
+            for i in indices {
+                if !self.smc.setFanSpeed(i, speed: speed) {
+                    allSucceeded = false
+                }
+            }
+            if allSucceeded {
+                DispatchQueue.main.async {
+                    self.showPrivilegeWarning = false
+                }
+                return
+            }
+            
+            // 2. Fallback to privileged helper tool via sudo
+            let helperPath = self.smcHelperPath
             for i in indices {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
@@ -8175,6 +8415,7 @@ struct SiliconDieView: View {
     var gpuUsage: Double
     var currentLanguage: String
     
+    @ObservedObject private var telemetry = TelemetryManager.shared
     @State private var isAnimating = false
     
     var body: some View {
@@ -8270,8 +8511,10 @@ struct SiliconDieView: View {
         .background(
             ZStack {
                 Color.black.opacity(0.3)
-                CircuitPattern()
-                    .stroke(Color.themeText.opacity(0.015), lineWidth: 1)
+                if !telemetry.isWindowResizing {
+                    CircuitPattern()
+                        .stroke(Color.themeText.opacity(0.015), lineWidth: 1)
+                }
             }
         )
         .cornerRadius(12)
@@ -8293,6 +8536,8 @@ struct DieBlock: View {
     var load: Double?
     var glowColor: Color
     var isAnimating: Bool
+    
+    @ObservedObject private var telemetry = TelemetryManager.shared
     
     private var heatColor: Color {
         if temp > 72.0 {
@@ -8355,8 +8600,10 @@ struct DieBlock: View {
         .background(
             ZStack {
                 Color.themeText.opacity(0.015)
-                CorePattern()
-                    .stroke(heatColor.opacity(0.025), lineWidth: 0.5)
+                if !telemetry.isWindowResizing {
+                    CorePattern()
+                        .stroke(heatColor.opacity(0.025), lineWidth: 0.5)
+                }
             }
         )
         .cornerRadius(8)
@@ -8418,17 +8665,18 @@ struct RotatingFanIcon: View {
     let color: Color
     let size: CGFloat
     
+    @ObservedObject private var telemetry = TelemetryManager.shared
     @State private var isAnimating = false
     
     var body: some View {
         Image(systemName: "fanblades.fill")
             .font(.system(size: size))
-            .rotationEffect(.degrees(isAnimating ? 360.0 : 0.0))
+            .rotationEffect(.degrees(telemetry.isWindowResizing ? 0.0 : (isAnimating ? 360.0 : 0.0)))
             .foregroundColor(color)
             .animation(
-                speed > 100
-                ? Animation.linear(duration: Double(120.0 / max(100.0, speed))).repeatForever(autoreverses: false)
-                : .default,
+                telemetry.isWindowResizing || speed <= 100
+                ? nil
+                : Animation.linear(duration: Double(120.0 / max(100.0, speed))).repeatForever(autoreverses: false),
                 value: isAnimating
             )
             .onAppear {
@@ -8541,6 +8789,8 @@ struct DiskSpeedChartView: View {
     let currentRead: Double
     let currentWrite: Double
     
+    @ObservedObject private var telemetry = TelemetryManager.shared
+    
     var body: some View {
         VStack(spacing: 12) {
             HStack {
@@ -8577,36 +8827,47 @@ struct DiskSpeedChartView: View {
                 let width = geo.size.width
                 let height = geo.size.height
                 
-                let maxVal = max(10.0, max(readHistory.max() ?? 0, writeHistory.max() ?? 0))
-                
-                ZStack {
-                    // Background grid lines
-                    VStack(spacing: 0) {
-                        ForEach(0..<4) { i in
-                            Spacer()
-                            Path { path in
-                                path.move(to: CGPoint(x: 0, y: 0))
-                                path.addLine(to: CGPoint(x: width, y: 0))
-                            }
-                            .stroke(Color.themeCardBg, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                        }
+                if telemetry.isWindowResizing {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.themeBorder, style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
+                            .padding(8)
+                        Text("图表在缩放时已暂停绘制")
+                            .font(.system(size: 10))
+                            .foregroundColor(.themeTextTertiary)
                     }
+                } else {
+                    let maxVal = max(10.0, max(readHistory.max() ?? 0, writeHistory.max() ?? 0))
                     
-                    // Draw Read Line (Cyan)
-                    chartPath(history: readHistory, width: width, height: height, maxVal: maxVal)
-                        .stroke(
-                            LinearGradient(colors: [.cyan, .cyan.opacity(0.6)], startPoint: .leading, endPoint: .trailing),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
-                        )
-                        .shadow(color: Color.cyan.opacity(0.3), radius: 4)
-                    
-                    // Draw Write Line (Purple)
-                    chartPath(history: writeHistory, width: width, height: height, maxVal: maxVal)
-                        .stroke(
-                            LinearGradient(colors: [.purple, .purple.opacity(0.6)], startPoint: .leading, endPoint: .trailing),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
-                        )
-                        .shadow(color: Color.purple.opacity(0.3), radius: 4)
+                    ZStack {
+                        // Background grid lines
+                        VStack(spacing: 0) {
+                            ForEach(0..<4) { i in
+                                Spacer()
+                                Path { path in
+                                    path.move(to: CGPoint(x: 0, y: 0))
+                                    path.addLine(to: CGPoint(x: width, y: 0))
+                                }
+                                .stroke(Color.themeCardBg, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            }
+                        }
+                        
+                        // Draw Read Line (Cyan)
+                        chartPath(history: readHistory, width: width, height: height, maxVal: maxVal)
+                            .stroke(
+                                LinearGradient(colors: [.cyan, .cyan.opacity(0.6)], startPoint: .leading, endPoint: .trailing),
+                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                            )
+                            .shadow(color: Color.cyan.opacity(0.3), radius: 4)
+                        
+                        // Draw Write Line (Purple)
+                        chartPath(history: writeHistory, width: width, height: height, maxVal: maxVal)
+                            .stroke(
+                                LinearGradient(colors: [.purple, .purple.opacity(0.6)], startPoint: .leading, endPoint: .trailing),
+                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                            )
+                            .shadow(color: Color.purple.opacity(0.3), radius: 4)
+                    }
                 }
             }
             .frame(height: 90)
@@ -12542,29 +12803,21 @@ struct LargeRadarImmersiveView: View {
 }
 
 // ── Mini Dashboard View for Menu Bar Popup ──
-struct MiniDashboardView: View {
+       struct MiniDashboardView: View {
     @AppStorage("themeMode") private var themeMode: Int = 0
     private let smc = SMCController.shared
-    private let cpuMonitor = CPUMonitor()
-    @StateObject private var processMonitor = NetworkProcessMonitor()
     
-    @State private var cpuUsage: Double = 0.0
-    @State private var cpuTemp: Float = 0.0
-    @State private var ramUsage: Double = 0.0
-    @State private var powerStats = PowerMonitor.PowerStats()
+    @ObservedObject private var telemetry = TelemetryManager.shared
+    
     @State private var isPurging = false
     @State private var purgeSuccess = false
-    @State private var pulseGreen = false
     
-    private var totalDownSpeed: Double {
-        processMonitor.topProcesses.reduce(0.0) { $0 + $1.downloadSpeed }
-    }
+    @State private var isManualFan: Bool = false
+    @State private var fanLinked: Bool = true
+    @State private var fanPreset: Int = 0
     
-    private var totalUpSpeed: Double {
-        processMonitor.topProcesses.reduce(0.0) { $0 + $1.uploadSpeed }
-    }
-    
-    // Timer removed, listens to TelemetryManager updates
+    private var totalDownSpeed: Double { telemetry.downSpeed }
+    private var totalUpSpeed: Double { telemetry.upSpeed }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -12580,8 +12833,7 @@ struct MiniDashboardView: View {
                 }
                 Spacer()
                 
-                // Status dot or small model info
-                Text(powerStats.friendlyModelName.isEmpty ? "MacBook" : powerStats.friendlyModelName.prefix(12) + "...")
+                Text(telemetry.powerStats.friendlyModelName.isEmpty ? "MacBook" : telemetry.powerStats.friendlyModelName.prefix(12) + "...")
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundColor(.themeTextTertiary)
             }
@@ -12601,166 +12853,247 @@ struct MiniDashboardView: View {
                     ZStack {
                         Circle()
                             .stroke(Color.themeDivider, lineWidth: 4.5)
-                            .frame(width: 80, height: 80)
+                            .frame(width: 72, height: 72)
                         
                         Circle()
-                            .trim(from: 0, to: CGFloat(min(1.0, max(0.0, cpuUsage / 100.0))))
+                            .trim(from: 0, to: CGFloat(min(1.0, max(0.0, telemetry.cpuUsage / 100.0))))
                             .stroke(
                                 LinearGradient(colors: [.cyan, .purple], startPoint: .top, endPoint: .bottom),
                                 style: StrokeStyle(lineWidth: 4.5, lineCap: .round)
                             )
-                            .frame(width: 80, height: 80)
+                            .frame(width: 72, height: 72)
                             .rotationEffect(.degrees(-90))
-                            .animation(.easeOut(duration: 0.5), value: cpuUsage)
+                            .animation(.easeOut(duration: 0.5), value: telemetry.cpuUsage)
                         
                         VStack(spacing: 1) {
-                            Text(String(format: "%.0f%%", cpuUsage))
-                                .font(.system(size: 16, weight: .black, design: .rounded))
+                            Text(String(format: "%.0f%%", telemetry.cpuUsage))
+                                .font(.system(size: 14, weight: .black, design: .rounded))
                                 .foregroundColor(.themeText)
-                            Text(String(format: "%.1f°C", cpuTemp))
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            Text(String(format: "%.0f°C", telemetry.cpuTemp))
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
                                 .foregroundColor(.cyan)
                         }
                     }
-                    .frame(width: 84, height: 84)
+                    .frame(width: 76, height: 76)
                     
-                    Text("CPU & 温度")
-                        .font(.system(size: 10, weight: .medium))
+                    Text("CPU")
+                        .font(.system(size: 9, weight: .medium))
                         .foregroundColor(.themeTextSecondary)
                 }
-                .frame(width: 100)
+                .frame(width: 90)
                 
                 // Right Part: RAM + Battery + Network
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 8) {
                     // RAM Row with micro-purge
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack {
-                            Label {
-                                Text(String(format: "内存 (RAM): %.1f%%", ramUsage))
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.themeTextSecondary)
-                            } icon: {
-                                Image(systemName: "memorychip")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.purple)
-                            }
+                            Image(systemName: "memorychip")
+                                .font(.system(size: 9))
+                                .foregroundColor(.purple)
+                            Text(String(format: "内存: %.0f%%", telemetry.ramUsage))
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(.themeTextSecondary)
                             Spacer()
                             
-                            // Reclaim Memory Button
-                            Button(action: {
-                                triggerMemoryPurge()
-                            }) {
+                            Button(action: { triggerMemoryPurge() }) {
                                 HStack(spacing: 2) {
                                     if isPurging {
                                         ProgressView()
                                             .controlSize(.small)
-                                            .scaleEffect(0.6)
-                                            .frame(width: 12, height: 12)
+                                            .scaleEffect(0.5)
+                                            .frame(width: 10, height: 10)
                                     } else if purgeSuccess {
                                         Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 10))
+                                            .font(.system(size: 9))
                                             .foregroundColor(.green)
                                     } else {
                                         Image(systemName: "wind")
-                                            .font(.system(size: 10))
+                                            .font(.system(size: 9))
                                             .foregroundColor(.cyan)
                                     }
                                 }
-                                .padding(4)
+                                .padding(3)
                                 .background(Color.themeDivider)
-                                .cornerRadius(5)
+                                .cornerRadius(4)
                             }
                             .buttonStyle(.plain)
                             .disabled(isPurging)
                         }
                         
-                        // RAM progress bar
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {
                                 Capsule()
                                     .fill(Color.themeBorder)
-                                    .frame(height: 5)
-                                
+                                    .frame(height: 4)
                                 Capsule()
                                     .fill(LinearGradient(colors: [.purple, .cyan], startPoint: .leading, endPoint: .trailing))
-                                    .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, ramUsage / 100.0))), height: 5)
-                                    .animation(.easeOut(duration: 0.5), value: ramUsage)
+                                    .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, telemetry.ramUsage / 100.0))), height: 4)
+                                    .animation(.easeOut(duration: 0.5), value: telemetry.ramUsage)
                             }
                         }
-                        .frame(height: 5)
+                        .frame(height: 4)
                     }
                     
                     // Battery Power Row
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Image(systemName: batteryIcon)
-                            .font(.system(size: 11))
-                            .foregroundColor(powerStats.isCharging ? .green : .cyan)
-                        
-                        Text("电池: \(powerStats.stateOfCharge)%")
+                            .font(.system(size: 10))
+                            .foregroundColor(telemetry.powerStats.isCharging ? .green : .cyan)
+                        Text("电池: \(telemetry.powerStats.stateOfCharge)%")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(.themeTextSecondary)
-                        
-                        if powerStats.isConnected {
+                        if telemetry.powerStats.isConnected {
                             Image(systemName: "powerplug.fill")
-                                .font(.system(size: 9))
+                                .font(.system(size: 8))
                                 .foregroundColor(.green)
-                            Text("(\(powerStats.adapterName.prefix(12)))")
-                                .font(.system(size: 9))
-                                .foregroundColor(.themeTextTertiary)
                         }
                     }
                     
                     // Live Net Speed Row
-                    HStack(spacing: 12) {
-                        HStack(spacing: 3) {
+                    HStack(spacing: 10) {
+                        HStack(spacing: 2) {
                             Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 10))
+                                .font(.system(size: 9))
                                 .foregroundColor(.cyan)
                             Text(formatSpeed(totalDownSpeed))
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundColor(.cyan)
                         }
-                        
-                        HStack(spacing: 3) {
+                        HStack(spacing: 2) {
                             Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 10))
+                                .font(.system(size: 9))
                                 .foregroundColor(.purple)
                             Text(formatSpeed(totalUpSpeed))
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundColor(.purple)
                         }
                     }
                 }
                 .padding(.trailing, 16)
             }
-            .padding(.vertical, 14)
+            .padding(.vertical, 10)
             .padding(.horizontal, 16)
+            
+            Divider()
+                .background(Color.themeBorder)
+                .padding(.horizontal, 16)
+            
+            // Fan Control Section
+            if telemetry.fanCount > 0 {
+                VStack(spacing: 8) {
+                    HStack {
+                        Image(systemName: "fan")
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange)
+                        Text("风扇控制")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.themeTextSecondary)
+                        Spacer()
+                        
+                        // Auto/Manual Toggle
+                        Button(action: { toggleFanManual() }) {
+                            Text(isManualFan ? "手动" : "自动")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(isManualFan ? .orange : .green)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(isManualFan ? Color.orange.opacity(0.2) : Color.green.opacity(0.2))
+                                .cornerRadius(4)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
+                    if isManualFan {
+                        VStack(spacing: 6) {
+                            // Fan Speed Slider
+                            HStack(spacing: 8) {
+                                if telemetry.fanCount >= 1 {
+                                    Text(String(format: "F1: %.0f", telemetry.fanSpeeds.first ?? 0))
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundColor(.themeTextTertiary)
+                                }
+                                if telemetry.fanCount >= 2 {
+                                    Text(String(format: "F2: %.0f", telemetry.fanSpeeds[safe: 1] ?? 0))
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundColor(.themeTextTertiary)
+                                }
+                                Spacer()
+                                Text("RPM")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.themeTextTertiary)
+                            }
+                            
+                            Slider(value: Binding(
+                                get: { telemetry.targetFanSpeeds.first ?? 2000 },
+                                set: { newValue in
+                                    setFanSpeed(Float(newValue))
+                                }
+                            ), in: (telemetry.fanMinSpeeds.first ?? 1200)...(telemetry.fanMaxSpeeds.first ?? 6000), step: 100)
+                            .accentColor(.orange)
+                            .frame(height: 16)
+                            
+                            // Preset Buttons
+                            HStack(spacing: 4) {
+                                presetButton(title: "静音", icon: "leaf", speed: 1800)
+                                presetButton(title: "均衡", icon: "scale", speed: 3000)
+                                presetButton(title: "强力", icon: "flame", speed: 4500)
+                                presetButton(title: "极速", icon: "rocket", speed: 6000)
+                            }
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            if telemetry.fanCount >= 1 {
+                                Text(String(format: "F1: %.0f RPM", telemetry.fanSpeeds.first ?? 0))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.themeTextTertiary)
+                            }
+                            if telemetry.fanCount >= 2 {
+                                Text(String(format: "F2: %.0f RPM", telemetry.fanSpeeds[safe: 1] ?? 0))
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.themeTextTertiary)
+                            }
+                            Spacer()
+                            Text("系统自动控制")
+                                .font(.system(size: 9))
+                                .foregroundColor(.green)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
             
             Spacer(minLength: 0)
         }
-        .frame(width: 320, height: 220)
-        .background(
-            Color.themeBg.opacity(0.85)
-        )
+        .frame(width: 320, height: telemetry.fanCount > 0 ? 280 : 220)
+        .background(Color.themeBg.opacity(0.9))
         .preferredColorScheme(themeMode == 0 ? nil : (themeMode == 1 ? .light : .dark))
         .onAppear {
-            TelemetryManager.shared.isUIActive = true
-            updateStats()
-            processMonitor.startMonitoring()
-            pulseGreen = true
+            TelemetryManager.shared.isMiniWindowActive = true
+            
+            // Detect manual mode in background
+            DispatchQueue.global(qos: .userInitiated).async {
+                let smc = SMCController.shared
+                var manual = false
+                if let f0md = smc.readKey("F0Md") {
+                    manual = (f0md.0 != 0)
+                } else if let fs = smc.readKey("FS! ") {
+                    manual = (fs.0 > 0 || fs.1 > 0)
+                }
+                
+                DispatchQueue.main.async {
+                    self.isManualFan = manual
+                }
+            }
         }
         .onDisappear {
-            TelemetryManager.shared.isUIActive = false
-            processMonitor.stopMonitoring()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.statusctrl.telemetryUpdated"))) { _ in
-            updateStats()
+            TelemetryManager.shared.isMiniWindowActive = false
         }
     }
     
     private var batteryIcon: String {
-        let charge = powerStats.stateOfCharge
-        if powerStats.isCharging {
+        let charge = telemetry.powerStats.stateOfCharge
+        if telemetry.powerStats.isCharging {
             return "battery.100.bolt"
         }
         if charge > 85 { return "battery.100" }
@@ -12778,40 +13111,58 @@ struct MiniDashboardView: View {
         }
     }
     
-    private func getRAMUsage() -> Double {
-        var stats = vm_statistics64()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        let kerr: kern_return_t = withUnsafeMutablePointer(to: &stats) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+    private func toggleFanManual() {
+        isManualFan = !isManualFan
+        let manual = isManualFan
+        let fc = telemetry.fanCount
+        let bitmask = UInt16(fc == 2 ? 3 : 1)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let _ = smc.setFanManual(manual, fanBitmask: bitmask)
+            if manual {
+                let speed = telemetry.targetFanSpeeds.first ?? 2000
+                for i in 0..<fc {
+                    let _ = smc.setFanSpeed(i, speed: speed)
+                }
             }
         }
-        guard kerr == KERN_SUCCESS else { return 0.0 }
-        
-        var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
-        
-        let activePages = Double(stats.active_count)
-        let wirePages = Double(stats.wire_count)
-        let compressedPages = Double(stats.compressor_page_count)
-        let freePages = Double(stats.free_count)
-        let inactivePages = Double(stats.inactive_count)
-        
-        let usedPages = activePages + wirePages + compressedPages
-        let totalPages = usedPages + freePages + inactivePages
-        
-        guard totalPages > 0 else { return 0.0 }
-        return (usedPages / totalPages) * 100.0
     }
     
-    private let telemetryQueue = DispatchQueue(label: "com.statusctrl.mini.telemetry", qos: .userInitiated)
+    private func setFanSpeed(_ speed: Float) {
+        let fc = telemetry.fanCount
+        // Optimistically update published target speeds so slider feels instant and smooth
+        telemetry.targetFanSpeeds = Array(repeating: speed, count: fc)
+        DispatchQueue.global(qos: .userInitiated).async {
+            for i in 0..<fc {
+                let _ = smc.setFanSpeed(i, speed: speed)
+            }
+        }
+    }
     
-    private func updateStats() {
-        let tm = TelemetryManager.shared
-        self.cpuUsage = tm.cpuUsage
-        self.cpuTemp = tm.cpuTemp
-        self.ramUsage = tm.ramUsage
-        self.powerStats = tm.powerStats
+    private func presetButton(title: String, icon: String, speed: Float) -> some View {
+        Button(action: {
+            if !isManualFan {
+                isManualFan = true
+                let fc = telemetry.fanCount
+                let bitmask = UInt16(fc == 2 ? 3 : 1)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let _ = smc.setFanManual(true, fanBitmask: bitmask)
+                }
+            }
+            setFanSpeed(speed)
+        }) {
+            HStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 8))
+                Text(title)
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .foregroundColor(.themeTextSecondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.themeDivider)
+            .cornerRadius(4)
+        }
+        .buttonStyle(.plain)
     }
     
     private func triggerMemoryPurge() {
@@ -12822,7 +13173,6 @@ struct MiniDashboardView: View {
             withAnimation(.spring()) {
                 purgeSuccess = true
             }
-            // Auto hide success checkmark after 2 seconds
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                 withAnimation {
                     purgeSuccess = false
@@ -12830,6 +13180,7 @@ struct MiniDashboardView: View {
             }
         }
     }
+
 }
 
 // ── WiFi & Bluetooth Signal Source Tracking Overlay Views ──

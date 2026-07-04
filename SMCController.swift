@@ -905,9 +905,10 @@ class SMCController {
     func setFanManual(_ manual: Bool, fanBitmask: UInt16 = 3) -> Bool {
         let isAppleSilicon = readKey("FS! ") == nil
         
+        var success = false
         if isAppleSilicon {
             let numFans = getFanCount()
-            var success = true
+            success = true
             for i in 0..<numFans {
                 if (fanBitmask & (1 << i)) != 0 {
                     let key = "F\(i)Md"
@@ -919,7 +920,6 @@ class SMCController {
                     }
                 }
             }
-            return success
         } else {
             let key = "FS! "
             let mask: UInt16 = manual ? fanBitmask : 0
@@ -929,8 +929,24 @@ class SMCController {
             bytes.0 = UInt8(mask >> 8)
             bytes.1 = UInt8(mask & 0xff)
             
-            return writeKey(key, bytes: bytes, size: 2)
+            success = writeKey(key, bytes: bytes, size: 2)
         }
+        
+        if !success {
+            let helperPath = "/Library/PrivilegedHelperTools/com.hl.smchelper"
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            proc.arguments  = ["-n", helperPath, "manual", String(manual ? 1 : 0), String(fanBitmask)]
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                success = (proc.terminationStatus == 0)
+            } catch {
+                success = false
+            }
+        }
+        
+        return success
     }
     
     // Set Target Fan Speed (RPM)
@@ -938,39 +954,57 @@ class SMCController {
         let keyStr = "F\(fanIndex)Tg"
         let key = stringToFourCharCode(keyStr)
         
+        var success = false
+        var dataSize: UInt32 = 2
+        var smcBytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        
         var inputInfo = SMCParamStruct()
         inputInfo.key = key
         inputInfo.data8 = 9 // kSMCGetKeyInfo
         let resInfo = callDriver(&inputInfo, forceSync: true)
-        guard resInfo.success else { return false }
-        
-        let dataSize = inputInfo.keyInfo.dataSize
-        var smcBytes: SMCBytes = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-        
-        if dataSize == 4 {
-            var f = speed
-            withUnsafeBytes(of: &f) { buffer in
-                smcBytes.0 = buffer[0]
-                smcBytes.1 = buffer[1]
-                smcBytes.2 = buffer[2]
-                smcBytes.3 = buffer[3]
+        if resInfo.success {
+            dataSize = inputInfo.keyInfo.dataSize
+            if dataSize == 4 {
+                var f = speed
+                withUnsafeBytes(of: &f) { buffer in
+                    smcBytes.0 = buffer[0]
+                    smcBytes.1 = buffer[2 - 2] // buffer[0]
+                    smcBytes.1 = buffer[1]
+                    smcBytes.2 = buffer[2]
+                    smcBytes.3 = buffer[3]
+                }
+            } else {
+                let fpe2Bytes = toFPE2(speed)
+                smcBytes.0 = fpe2Bytes.0
+                smcBytes.1 = fpe2Bytes.1
             }
-        } else {
-            let fpe2Bytes = toFPE2(speed)
-            smcBytes.0 = fpe2Bytes.0
-            smcBytes.1 = fpe2Bytes.1
+            
+            var inputWrite = SMCParamStruct()
+            inputWrite.key = key
+            inputWrite.bytes = smcBytes
+            inputWrite.keyInfo = inputInfo.keyInfo
+            inputWrite.keyInfo.dataSize = dataSize
+            inputWrite.data8 = 6 // kSMCWriteKey
+            
+            let resWrite = callDriver(&inputWrite, forceSync: true)
+            success = resWrite.success
         }
         
-        var inputWrite = SMCParamStruct()
-        inputWrite.key = key
-        inputWrite.bytes = smcBytes
-        inputWrite.keyInfo = inputInfo.keyInfo
-        inputWrite.keyInfo.dataSize = dataSize
-        inputWrite.data8 = 6 // kSMCWriteKey
+        if !success {
+            let helperPath = "/Library/PrivilegedHelperTools/com.hl.smchelper"
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            proc.arguments = ["-n", helperPath, "speed", String(fanIndex), String(Int(speed))]
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                success = (proc.terminationStatus == 0)
+            } catch {
+                success = false
+            }
+        }
         
-        let resWrite = callDriver(&inputWrite, forceSync: true)
-        let success = resWrite.success
         if success {
             cacheLock.lock()
             if fanIndex < _cachedFanTargets.count {
@@ -1010,6 +1044,20 @@ class SMCController {
         ch0bBytes.0 = active ? 1 : 0
         if writeKey(ch0bKey, bytes: ch0bBytes, size: 1) {
             success = true
+        }
+        
+        if !success {
+            let helperPath = "/Library/PrivilegedHelperTools/com.hl.smchelper"
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            proc.arguments = ["-n", helperPath, "charge", String(limit), String(active ? 1 : 0)]
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                success = (proc.terminationStatus == 0)
+            } catch {
+                success = false
+            }
         }
         
         if success {

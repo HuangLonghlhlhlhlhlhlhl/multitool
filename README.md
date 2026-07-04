@@ -8,7 +8,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-12.0%2B-blue)
 ![架构](https://img.shields.io/badge/架构-Apple%20Silicon%20%7C%20Intel-green)
-![版本](https://img.shields.io/badge/版本-1.9.5-orange)
+![版本](https://img.shields.io/badge/版本-1.9.6-orange)
 ![大小](https://img.shields.io/badge/体积-约%209.5MB-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -26,7 +26,7 @@
 
 ## 📦 安装方法
 
-1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.5.dmg`
+1. **下载** [最新 Release](https://github.com/HuangLonghlhlhlhlhlhlhl/multitool/releases/latest) 中的 `STATUS CTRL-v1.9.6.dmg`
 2. 打开 DMG，将 **`STATUS CTRL.app`** 拖入右侧 **`Applications`** 文件夹
 3. 打开 Launchpad 或 Applications，找到「STATUS CTRL」点击启动
 4. **首次运行**：系统弹出「无法打开未经验证的开发者」时，前往  
@@ -49,6 +49,7 @@
 | 📊 续航推演面板 | 根据当前功耗实时推算剩余续航，并与设定限额进行对比 |
 | 🧹 内存深度清理 | 可视化圆环面板与诊断，实时扫描并展现前7个活跃应用进程（Chrome, 微信等）占用，一键深度压迫清空缓存 |
 | 🧹 磁盘深度清理 | **【全新】**Xcode DerivedData/系统日志/应用缓存/应用卸载残留一键智能扫描与深度清理，体验极速 |
+| 🚀 程序模型管理 | **【全新】**已装应用残留文件深度清理，Claude Code/Antigravity 终端 AI 智能体与 Skills 剪枝，以及 Ollama/LM Studio 本地大语言模型扫描与批量删除，极速释放空间 |
 | 👯 重复文件匹配 | **【全新】**三级渐进式 MD5 查重引擎，毫秒级快速识别重复文件，支持安全移至回收站与物理永久删除 |
 | 📈 实时吞吐折线图 | **【全新】**系统健康页面新增 IOKit 驱动级磁盘实时吞吐（Read/Write）发光双折线波动图，监测读写更极客 |
 | 🔌 闲置智能整理 | **【全新】**智能监听用户 Idle 状态且接入 AC 电源时，自动静默 Purge 内存并特权优化 APFS Preboot 引导索引 |

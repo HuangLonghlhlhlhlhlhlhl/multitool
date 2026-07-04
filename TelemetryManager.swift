@@ -53,6 +53,9 @@ public class TelemetryManager: ObservableObject {
     
     @Published public var fanCount: Int = 0
     @Published public var fanSpeeds: [Float] = []
+    @Published public var fanMinSpeeds: [Float] = []
+    @Published public var fanMaxSpeeds: [Float] = []
+    @Published public var targetFanSpeeds: [Float] = []
     
     @Published public var powerStats = PowerMonitor.PowerStats()
     @Published public var activeProcesses: [MemoryPurger.ProcessInfoItem] = []
@@ -60,9 +63,15 @@ public class TelemetryManager: ObservableObject {
     @Published public var diskReadSpeed: Double = 0.0
     @Published public var diskWriteSpeed: Double = 0.0
     @Published public var ssdHealth = SSDHealthData()
+    @Published public var isWindowResizing = false
     
     // Configurable state settings
     public var isUIActive = false {
+        didSet {
+            updateInterval()
+        }
+    }
+    public var isMiniWindowActive = false {
         didSet {
             updateInterval()
         }
@@ -111,9 +120,42 @@ public class TelemetryManager: ObservableObject {
     private init() {
         // Setup initial timer
         updateInterval()
+        
+        // Fetch static hardware configuration in background to avoid blocking main thread at startup
+        telemetryQueue.async { [weak self] in
+            self?.initializeStaticHardwareConfig()
+        }
+    }
+    
+    private func initializeStaticHardwareConfig() {
+        smc.doOpen()
+        let count = smc.getFanCount()
+        var mins: [Float] = []
+        var maxs: [Float] = []
+        var targets: [Float] = []
+        for i in 0..<count {
+            mins.append(smc.getFanMinSpeed(i))
+            maxs.append(smc.getFanMaxSpeed(i))
+            targets.append(smc.getFanTargetSpeed(i))
+        }
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.fanCount = count
+            self.fanMinSpeeds = mins
+            self.fanMaxSpeeds = maxs
+            self.targetFanSpeeds = targets
+        }
     }
     
     public func updateInterval() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateInterval()
+            }
+            return
+        }
+        
         timer?.invalidate()
         timer = nil
         
@@ -124,31 +166,30 @@ public class TelemetryManager: ObservableObject {
         
         let enableBar = UserDefaults.standard.object(forKey: "enableStatusBar") as? Bool ?? true
         
-        // If status bar is disabled AND the UI is not active, we completely pause telemetry
-        guard enableBar || isUIActive else {
+        guard enableBar || isUIActive || isMiniWindowActive else {
             print("[TelemetryManager] Status bar disabled and UI inactive. Telemetry paused completely.")
             return
         }
         
-        // Dynamic interval calculation based on power source and UI activity
         let onBattery = !PowerMonitor.getPowerStats().isConnected
         var interval: TimeInterval = 2.0
         
         if isUIActive {
             interval = onBattery ? 3.0 : 1.5
+        } else if isMiniWindowActive {
+            interval = onBattery ? 4.0 : 2.0
         } else {
             interval = onBattery ? 6.0 : 3.0
         }
         
-        print("[TelemetryManager] Scheduling telemetry timer with interval: \(interval)s (UI Active: \(isUIActive), On Battery: \(onBattery))")
+        print("[TelemetryManager] Scheduling telemetry timer with interval: \(interval)s (UI Active: \(isUIActive), Mini Active: \(isMiniWindowActive), On Battery: \(onBattery))")
         
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.pollHardware()
         }
-        // Add to common run loop mode to avoid getting blocked during UI scrolls
-        RunLoop.current.add(timer!, forMode: .common)
+        timer = t
+        RunLoop.current.add(t, forMode: .common)
         
-        // Trigger initial poll asynchronously
         if !isPolling {
             isPolling = true
             telemetryQueue.async { [weak self] in
@@ -162,7 +203,7 @@ public class TelemetryManager: ObservableObject {
     
     private var isPolling = false
     private func pollHardware() {
-        guard !isPolling else { return }
+        guard !isPolling && !isWindowResizing else { return }
         isPolling = true
         
         telemetryQueue.async { [weak self] in
@@ -184,12 +225,12 @@ public class TelemetryManager: ObservableObject {
         let showGPU = UserDefaults.standard.object(forKey: "showStatusBarGPUUsage") as? Bool ?? true
         let enableAutoPurge = UserDefaults.standard.bool(forKey: "enableAutoIdlePurge")
         
-        let needCPU = isUIActive || showCPU || showCPUTemp
-        let needRAM = isUIActive || showRAM || enableAutoPurge
+        let needCPU = isUIActive || isMiniWindowActive || showCPU || showCPUTemp
+        let needRAM = isUIActive || isMiniWindowActive || showRAM || enableAutoPurge
         let needSSD = isUIActive || showSSD
         let needGPU = isUIActive || showGPU
-        let needNet = isUIActive || showNet
-        let needFan = isUIActive || showFan
+        let needNet = isUIActive || isMiniWindowActive || showNet
+        let needFan = isUIActive || isMiniWindowActive || showFan
         
         // 2. Perform CPU, GPU, RAM, Net speed polling
         let cpuVal = needCPU ? cpuMonitor.getUsage() : 0.0
@@ -224,9 +265,11 @@ public class TelemetryManager: ObservableObject {
         // Fan queries
         let tempFanCount = smc.getFanCount()
         var actualFanSpeeds = [Float]()
+        var actualTargetSpeeds = [Float]()
         if needFan && tempFanCount > 0 {
             for i in 0..<tempFanCount {
                 actualFanSpeeds.append(smc.getFanSpeed(i))
+                actualTargetSpeeds.append(smc.getFanTargetSpeed(i))
             }
         }
         
@@ -393,6 +436,9 @@ public class TelemetryManager: ObservableObject {
             
             self.fanCount = tempFanCount
             self.fanSpeeds = actualFanSpeeds
+            if needFan && !actualTargetSpeeds.isEmpty {
+                self.targetFanSpeeds = actualTargetSpeeds
+            }
             
             self.powerStats = statsPower
             self.activeProcesses = processList

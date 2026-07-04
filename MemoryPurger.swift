@@ -55,9 +55,13 @@ public class MemoryPurger {
             let bytesRead = proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &info, size)
             guard bytesRead == size else { continue }
             
-            let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: 16) {
-                    String(cString: $0)
+            let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: 16) { src in
+                    var buffer = [CChar](repeating: 0, count: 17)
+                    for idx in 0..<16 {
+                        buffer[idx] = src[idx]
+                    }
+                    return String(cString: buffer)
                 }
             }
             
@@ -297,9 +301,13 @@ public class MemoryPurger {
             guard bytesRead == size else { continue }
             
             // 1. Get BSD Name for fast filter (no syscall overhead)
-            let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: 16) {
-                    String(cString: $0)
+            let bsdName = withUnsafePointer(to: &info.pbsd.pbi_name) { ptr in
+                ptr.withMemoryRebound(to: CChar.self, capacity: 16) { src in
+                    var buffer = [CChar](repeating: 0, count: 17)
+                    for idx in 0..<16 {
+                        buffer[idx] = src[idx]
+                    }
+                    return String(cString: buffer)
                 }
             }
             
@@ -948,7 +956,7 @@ public class MemoryPurger {
         var items: [LargeFileItem] = []
         let fileManager = FileManager.default
         
-        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey, .isPackageKey, .isRegularFileKey]
+        let keys: [URLResourceKey] = [.fileSizeKey, .isDirectoryKey, .isPackageKey, .isRegularFileKey, .isSymbolicLinkKey]
         
         guard let enumerator = fileManager.enumerator(at: folder,
                                                      includingPropertiesForKeys: keys,
@@ -971,6 +979,13 @@ public class MemoryPurger {
         let libraryPath = NSHomeDirectory() + "/Library"
         
         while let fileURL = enumerator.nextObject() as? URL {
+            // Prevent infinite loop on symbolic links
+            if let resourceValues = try? fileURL.resourceValues(forKeys: [.isSymbolicLinkKey]),
+               let isSymlink = resourceValues.isSymbolicLink, isSymlink {
+                enumerator.skipDescendants()
+                continue
+            }
+            
             // Check if we should skip Library to avoid scanning massive system/caches/app support directories
             if fileURL.path.hasPrefix(libraryPath) {
                 enumerator.skipDescendants()
